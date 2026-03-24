@@ -86,17 +86,17 @@ export default function Approvals() {
 
       // If approved, create a vulnerability finding
       if (status === "approved" && selected) {
-        await supabase.from("vulnerability_findings").insert({
+        await supabase.from("vulnerability_findings").insert([{
           target_id: selected.target_id,
           endpoint_id: selected.endpoint_id,
           title: selected.title,
-          severity: selected.severity,
+          severity: selected.severity as any,
           cvss_score: selected.cvss_score,
           description: selected.description,
           poc: selected.payload_used ? `Payload: ${selected.payload_used}` : null,
           payload: selected.payload_used,
           remediation: (selected.evidence as any)?.remediation || null,
-        });
+        }]);
       }
     },
     onSuccess: (_, { status }) => {
