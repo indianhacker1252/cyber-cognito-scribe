@@ -1,4 +1,4 @@
-import { LayoutDashboard, Crosshair, Terminal, ShieldAlert, ClipboardCheck } from "lucide-react";
+import { LayoutDashboard, Crosshair, Terminal, ShieldAlert, ClipboardCheck, Activity } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
 import { useLocation } from "react-router-dom";
 import {
