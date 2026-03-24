@@ -19,6 +19,7 @@ const navItems = [
   { title: "Targets", url: "/targets", icon: Crosshair },
   { title: "Neural Log", url: "/logs", icon: Terminal },
   { title: "Findings", url: "/findings", icon: ShieldAlert },
+  { title: "Approvals", url: "/approvals", icon: ClipboardCheck },
 ];
 
 export function AppSidebar() {
