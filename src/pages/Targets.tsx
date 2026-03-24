@@ -23,6 +23,7 @@ export default function Targets() {
   const [ipRange, setIpRange] = useState("");
   const [apiSchema, setApiSchema] = useState("");
   const [scanningTargets, setScanningTargets] = useState<Set<string>>(new Set());
+  const [vulnScanTargets, setVulnScanTargets] = useState<Set<string>>(new Set());
 
   const { data: targets, isLoading } = useQuery({
     queryKey: ["targets"],
