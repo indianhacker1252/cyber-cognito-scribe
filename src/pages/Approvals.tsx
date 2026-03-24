@@ -4,8 +4,9 @@ import { supabase } from "@/integrations/supabase/client";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { CheckCircle, XCircle, AlertTriangle, Eye, ShieldCheck } from "lucide-react";
+import { CheckCircle, XCircle, AlertTriangle, Eye, ShieldCheck, Shield } from "lucide-react";
 import { toast } from "sonner";
+import ValidationModal from "@/components/ValidationModal";
 
 const severityBadge: Record<string, string> = {
   critical: "bg-cyber-red/20 text-cyber-red border-cyber-red/30",
