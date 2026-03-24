@@ -329,6 +329,24 @@ export default function Approvals() {
           source="approval"
         />
       )}
+      {adaptiveTarget && (
+        <AdaptiveValidationModal
+          open={!!adaptiveTarget}
+          onOpenChange={(open) => { if (!open) setAdaptiveTarget(null); }}
+          finding={{
+            id: adaptiveTarget.id,
+            title: adaptiveTarget.title,
+            severity: adaptiveTarget.severity,
+            description: adaptiveTarget.description,
+            parameter: adaptiveTarget.parameter,
+            payload_used: adaptiveTarget.payload_used,
+            cvss_score: adaptiveTarget.cvss_score,
+            finding_type: adaptiveTarget.finding_type,
+            target_id: adaptiveTarget.target_id,
+          }}
+          source="approval"
+        />
+      )}
     </div>
   );
 }
