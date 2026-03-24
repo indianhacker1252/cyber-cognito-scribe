@@ -117,6 +117,22 @@ export default function Findings() {
           source="finding"
         />
       )}
+      {adaptiveFinding && (
+        <AdaptiveValidationModal
+          open={!!adaptiveFinding}
+          onOpenChange={(open) => { if (!open) setAdaptiveFinding(null); }}
+          finding={{
+            id: adaptiveFinding.id,
+            title: adaptiveFinding.title,
+            severity: adaptiveFinding.severity,
+            description: adaptiveFinding.description,
+            payload_used: adaptiveFinding.payload,
+            cvss_score: adaptiveFinding.cvss_score,
+            target_id: adaptiveFinding.target_id,
+          }}
+          source="finding"
+        />
+      )}
     </div>
   );
 }
