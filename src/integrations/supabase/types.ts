@@ -96,6 +96,84 @@ export type Database = {
           },
         ]
       }
+      pending_approvals: {
+        Row: {
+          baseline_response: Json | null
+          created_at: string
+          cve_ids: string[] | null
+          cvss_score: number | null
+          description: string | null
+          endpoint_id: string | null
+          evidence: Json
+          finding_type: string
+          id: string
+          mutated_response: Json | null
+          parameter: string | null
+          payload_used: string | null
+          reviewed_at: string | null
+          reviewer_notes: string | null
+          severity: Database["public"]["Enums"]["severity_level"]
+          status: Database["public"]["Enums"]["approval_status"]
+          target_id: string
+          title: string
+        }
+        Insert: {
+          baseline_response?: Json | null
+          created_at?: string
+          cve_ids?: string[] | null
+          cvss_score?: number | null
+          description?: string | null
+          endpoint_id?: string | null
+          evidence?: Json
+          finding_type: string
+          id?: string
+          mutated_response?: Json | null
+          parameter?: string | null
+          payload_used?: string | null
+          reviewed_at?: string | null
+          reviewer_notes?: string | null
+          severity?: Database["public"]["Enums"]["severity_level"]
+          status?: Database["public"]["Enums"]["approval_status"]
+          target_id: string
+          title: string
+        }
+        Update: {
+          baseline_response?: Json | null
+          created_at?: string
+          cve_ids?: string[] | null
+          cvss_score?: number | null
+          description?: string | null
+          endpoint_id?: string | null
+          evidence?: Json
+          finding_type?: string
+          id?: string
+          mutated_response?: Json | null
+          parameter?: string | null
+          payload_used?: string | null
+          reviewed_at?: string | null
+          reviewer_notes?: string | null
+          severity?: Database["public"]["Enums"]["severity_level"]
+          status?: Database["public"]["Enums"]["approval_status"]
+          target_id?: string
+          title?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "pending_approvals_endpoint_id_fkey"
+            columns: ["endpoint_id"]
+            isOneToOne: false
+            referencedRelation: "discovered_endpoints"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "pending_approvals_target_id_fkey"
+            columns: ["target_id"]
+            isOneToOne: false
+            referencedRelation: "target_workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       scan_logs: {
         Row: {
           created_at: string
@@ -239,6 +317,7 @@ export type Database = {
       [_ in never]: never
     }
     Enums: {
+      approval_status: "pending" | "approved" | "rejected" | "escalated"
       log_type: "thought" | "action" | "result" | "error" | "info"
       severity_level: "critical" | "high" | "medium" | "low" | "info"
       target_status: "queued" | "scanning" | "completed" | "error"
@@ -370,6 +449,7 @@ export type CompositeTypes<
 export const Constants = {
   public: {
     Enums: {
+      approval_status: ["pending", "approved", "rejected", "escalated"],
       log_type: ["thought", "action", "result", "error", "info"],
       severity_level: ["critical", "high", "medium", "low", "info"],
       target_status: ["queued", "scanning", "completed", "error"],

@@ -8,6 +8,7 @@ import Index from "./pages/Index";
 import Targets from "./pages/Targets";
 import NeuralLog from "./pages/NeuralLog";
 import Findings from "./pages/Findings";
+import Approvals from "./pages/Approvals";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -24,6 +25,7 @@ const App = () => (
             <Route path="/targets" element={<Targets />} />
             <Route path="/logs" element={<NeuralLog />} />
             <Route path="/findings" element={<Findings />} />
+            <Route path="/approvals" element={<Approvals />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </Layout>

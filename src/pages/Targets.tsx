@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { Plus, Crosshair, Trash2, Radar, Loader2 } from "lucide-react";
+import { Plus, Crosshair, Trash2, Radar, Loader2, ShieldAlert } from "lucide-react";
 import { toast } from "sonner";
 
 const statusColors: Record<string, string> = {
@@ -23,6 +23,7 @@ export default function Targets() {
   const [ipRange, setIpRange] = useState("");
   const [apiSchema, setApiSchema] = useState("");
   const [scanningTargets, setScanningTargets] = useState<Set<string>>(new Set());
+  const [vulnScanTargets, setVulnScanTargets] = useState<Set<string>>(new Set());
 
   const { data: targets, isLoading } = useQuery({
     queryKey: ["targets"],
@@ -98,6 +99,38 @@ export default function Targets() {
     }
   };
 
+  const startVulnScan = async (targetId: string) => {
+    setVulnScanTargets((prev) => new Set(prev).add(targetId));
+    toast.info("Vuln scan started — findings will appear in Approvals queue");
+
+    try {
+      const { data, error } = await supabase.functions.invoke("vuln-scanner", {
+        body: { targetId },
+      });
+
+      if (error) {
+        toast.error(`Vuln scan failed: ${error.message}`);
+      } else if (data?.error) {
+        toast.error(`Vuln scan failed: ${data.error}`);
+      } else {
+        toast.success(
+          `Vuln scan complete: ${data.vulnsFound} potential vulns, ${data.approvalsQueued} items queued`
+        );
+        queryClient.invalidateQueries({ queryKey: ["targets"] });
+        queryClient.invalidateQueries({ queryKey: ["approvals"] });
+        queryClient.invalidateQueries({ queryKey: ["recent-logs"] });
+      }
+    } catch (e: any) {
+      toast.error(`Vuln scan error: ${e.message}`);
+    } finally {
+      setVulnScanTargets((prev) => {
+        const next = new Set(prev);
+        next.delete(targetId);
+        return next;
+      });
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -134,6 +167,7 @@ export default function Targets() {
         ) : targets && targets.length > 0 ? (
           targets.map((target) => {
             const isScanning = scanningTargets.has(target.id) || target.status === "scanning";
+            const isVulnScanning = vulnScanTargets.has(target.id);
             return (
               <div key={target.id} className="rounded-lg border border-border bg-card p-4 flex items-center justify-between hover:border-primary/30 transition-colors">
                 <div className="flex items-center gap-3">
@@ -163,6 +197,22 @@ export default function Targets() {
                         <Radar className="h-3 w-3" />
                       )}
                       {isScanning ? "Scanning..." : "Start Recon"}
+                    </Button>
+                  )}
+                  {target.domain && target.status === "completed" && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="font-mono text-[10px] gap-1 border-cyber-red/30 text-cyber-red hover:bg-cyber-red/10"
+                      onClick={() => startVulnScan(target.id)}
+                      disabled={isVulnScanning}
+                    >
+                      {isVulnScanning ? (
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                      ) : (
+                        <ShieldAlert className="h-3 w-3" />
+                      )}
+                      {isVulnScanning ? "Scanning..." : "Vuln Scan"}
                     </Button>
                   )}
                   <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" onClick={() => deleteTarget.mutate(target.id)}>

@@ -1,4 +1,4 @@
-import { LayoutDashboard, Crosshair, Terminal, ShieldAlert, Settings } from "lucide-react";
+import { LayoutDashboard, Crosshair, Terminal, ShieldAlert, ClipboardCheck } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
 import { useLocation } from "react-router-dom";
 import {
@@ -19,6 +19,7 @@ const navItems = [
   { title: "Targets", url: "/targets", icon: Crosshair },
   { title: "Neural Log", url: "/logs", icon: Terminal },
   { title: "Findings", url: "/findings", icon: ShieldAlert },
+  { title: "Approvals", url: "/approvals", icon: ClipboardCheck },
 ];
 
 export function AppSidebar() {
