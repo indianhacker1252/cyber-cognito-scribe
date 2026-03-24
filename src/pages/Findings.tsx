@@ -70,14 +70,24 @@ export default function Findings() {
                     {f.description || "—"}
                   </TableCell>
                   <TableCell>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="font-mono text-[10px] gap-1 border-primary/30 text-primary hover:bg-primary/10"
-                      onClick={() => setSelectedFinding(f)}
-                    >
-                      <Shield className="h-3 w-3" /> Validate
-                    </Button>
+                    <div className="flex gap-1">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="font-mono text-[10px] gap-1 border-primary/30 text-primary hover:bg-primary/10"
+                        onClick={() => setSelectedFinding(f)}
+                      >
+                        <Shield className="h-3 w-3" /> Validate
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="font-mono text-[10px] gap-1 border-cyber-amber/30 text-cyber-amber hover:bg-cyber-amber/10"
+                        onClick={() => setAdaptiveFinding(f)}
+                      >
+                        <Shield className="h-3 w-3" /> Adaptive
+                      </Button>
+                    </div>
                   </TableCell>
                 </TableRow>
               ))}
