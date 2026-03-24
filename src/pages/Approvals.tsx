@@ -49,6 +49,7 @@ export default function Approvals() {
   const queryClient = useQueryClient();
   const [selected, setSelected] = useState<Approval | null>(null);
   const [notes, setNotes] = useState("");
+  const [validationTarget, setValidationTarget] = useState<Approval | null>(null);
 
   const { data: approvals, isLoading } = useQuery({
     queryKey: ["approvals"],
