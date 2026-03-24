@@ -18,6 +18,7 @@ const severityBadge: Record<string, string> = {
 
 export default function Findings() {
   const [selectedFinding, setSelectedFinding] = useState<any>(null);
+  const [adaptiveFinding, setAdaptiveFinding] = useState<any>(null);
 
   const { data: findings, isLoading } = useQuery({
     queryKey: ["findings"],
