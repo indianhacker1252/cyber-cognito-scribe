@@ -14,7 +14,223 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      agent_tasks: {
+        Row: {
+          created_at: string
+          id: string
+          result: Json | null
+          status: Database["public"]["Enums"]["task_status"]
+          target_id: string
+          task_type: string
+          thought_log: Json | null
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          result?: Json | null
+          status?: Database["public"]["Enums"]["task_status"]
+          target_id: string
+          task_type: string
+          thought_log?: Json | null
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          result?: Json | null
+          status?: Database["public"]["Enums"]["task_status"]
+          target_id?: string
+          task_type?: string
+          thought_log?: Json | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "agent_tasks_target_id_fkey"
+            columns: ["target_id"]
+            isOneToOne: false
+            referencedRelation: "target_workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      discovered_endpoints: {
+        Row: {
+          created_at: string
+          headers: Json | null
+          id: string
+          method: string
+          parameters: Json | null
+          status_code: number | null
+          target_id: string
+          url: string
+        }
+        Insert: {
+          created_at?: string
+          headers?: Json | null
+          id?: string
+          method?: string
+          parameters?: Json | null
+          status_code?: number | null
+          target_id: string
+          url: string
+        }
+        Update: {
+          created_at?: string
+          headers?: Json | null
+          id?: string
+          method?: string
+          parameters?: Json | null
+          status_code?: number | null
+          target_id?: string
+          url?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "discovered_endpoints_target_id_fkey"
+            columns: ["target_id"]
+            isOneToOne: false
+            referencedRelation: "target_workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      scan_logs: {
+        Row: {
+          created_at: string
+          id: string
+          log_type: Database["public"]["Enums"]["log_type"]
+          message: string
+          metadata: Json | null
+          target_id: string | null
+          task_id: string | null
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          log_type?: Database["public"]["Enums"]["log_type"]
+          message: string
+          metadata?: Json | null
+          target_id?: string | null
+          task_id?: string | null
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          log_type?: Database["public"]["Enums"]["log_type"]
+          message?: string
+          metadata?: Json | null
+          target_id?: string | null
+          task_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "scan_logs_target_id_fkey"
+            columns: ["target_id"]
+            isOneToOne: false
+            referencedRelation: "target_workspaces"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "scan_logs_task_id_fkey"
+            columns: ["task_id"]
+            isOneToOne: false
+            referencedRelation: "agent_tasks"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      target_workspaces: {
+        Row: {
+          api_schema_url: string | null
+          created_at: string
+          domain: string | null
+          id: string
+          ip_range: string | null
+          name: string
+          status: Database["public"]["Enums"]["target_status"]
+          updated_at: string
+        }
+        Insert: {
+          api_schema_url?: string | null
+          created_at?: string
+          domain?: string | null
+          id?: string
+          ip_range?: string | null
+          name: string
+          status?: Database["public"]["Enums"]["target_status"]
+          updated_at?: string
+        }
+        Update: {
+          api_schema_url?: string | null
+          created_at?: string
+          domain?: string | null
+          id?: string
+          ip_range?: string | null
+          name?: string
+          status?: Database["public"]["Enums"]["target_status"]
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      vulnerability_findings: {
+        Row: {
+          created_at: string
+          cvss_score: number | null
+          description: string | null
+          endpoint_id: string | null
+          id: string
+          payload: string | null
+          poc: string | null
+          remediation: string | null
+          severity: Database["public"]["Enums"]["severity_level"]
+          target_id: string
+          title: string
+        }
+        Insert: {
+          created_at?: string
+          cvss_score?: number | null
+          description?: string | null
+          endpoint_id?: string | null
+          id?: string
+          payload?: string | null
+          poc?: string | null
+          remediation?: string | null
+          severity?: Database["public"]["Enums"]["severity_level"]
+          target_id: string
+          title: string
+        }
+        Update: {
+          created_at?: string
+          cvss_score?: number | null
+          description?: string | null
+          endpoint_id?: string | null
+          id?: string
+          payload?: string | null
+          poc?: string | null
+          remediation?: string | null
+          severity?: Database["public"]["Enums"]["severity_level"]
+          target_id?: string
+          title?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "vulnerability_findings_endpoint_id_fkey"
+            columns: ["endpoint_id"]
+            isOneToOne: false
+            referencedRelation: "discovered_endpoints"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "vulnerability_findings_target_id_fkey"
+            columns: ["target_id"]
+            isOneToOne: false
+            referencedRelation: "target_workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Views: {
       [_ in never]: never
@@ -23,7 +239,10 @@ export type Database = {
       [_ in never]: never
     }
     Enums: {
-      [_ in never]: never
+      log_type: "thought" | "action" | "result" | "error" | "info"
+      severity_level: "critical" | "high" | "medium" | "low" | "info"
+      target_status: "queued" | "scanning" | "completed" | "error"
+      task_status: "pending" | "running" | "completed" | "failed"
     }
     CompositeTypes: {
       [_ in never]: never
@@ -150,6 +369,11 @@ export type CompositeTypes<
 
 export const Constants = {
   public: {
-    Enums: {},
+    Enums: {
+      log_type: ["thought", "action", "result", "error", "info"],
+      severity_level: ["critical", "high", "medium", "low", "info"],
+      target_status: ["queued", "scanning", "completed", "error"],
+      task_status: ["pending", "running", "completed", "failed"],
+    },
   },
 } as const
