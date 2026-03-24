@@ -1,8 +1,11 @@
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { ShieldAlert } from "lucide-react";
+import { ShieldAlert, Shield } from "lucide-react";
+import ValidationModal from "@/components/ValidationModal";
 
 const severityBadge: Record<string, string> = {
   critical: "bg-cyber-red/20 text-cyber-red border-cyber-red/30",
@@ -13,6 +16,8 @@ const severityBadge: Record<string, string> = {
 };
 
 export default function Findings() {
+  const [selectedFinding, setSelectedFinding] = useState<any>(null);
+
   const { data: findings, isLoading } = useQuery({
     queryKey: ["findings"],
     queryFn: async () => {
@@ -28,7 +33,7 @@ export default function Findings() {
     <div className="space-y-6">
       <div>
         <h1 className="text-xl font-bold font-mono text-primary text-glow-green">Vulnerability Findings</h1>
-        <p className="text-xs font-mono text-muted-foreground">Discovered vulnerabilities with CVSS scores</p>
+        <p className="text-xs font-mono text-muted-foreground">Discovered vulnerabilities with CVSS scores — click to validate</p>
       </div>
 
       {isLoading ? (
@@ -43,10 +48,11 @@ export default function Findings() {
                 <TableHead className="font-mono text-[10px] uppercase text-muted-foreground">CVSS</TableHead>
                 <TableHead className="font-mono text-[10px] uppercase text-muted-foreground">Target</TableHead>
                 <TableHead className="font-mono text-[10px] uppercase text-muted-foreground">Description</TableHead>
+                <TableHead className="font-mono text-[10px] uppercase text-muted-foreground">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {findings.map((f) => (
+              {findings.map((f: any) => (
                 <TableRow key={f.id} className="border-border hover:bg-muted/30">
                   <TableCell>
                     <Badge variant="outline" className={`text-[9px] font-mono ${severityBadge[f.severity]}`}>
@@ -56,10 +62,20 @@ export default function Findings() {
                   <TableCell className="font-mono text-xs text-card-foreground">{f.title}</TableCell>
                   <TableCell className="font-mono text-xs text-cyber-amber">{f.cvss_score || "—"}</TableCell>
                   <TableCell className="font-mono text-[10px] text-muted-foreground">
-                    {(f as any).target_workspaces?.name || "—"}
+                    {f.target_workspaces?.name || "—"}
                   </TableCell>
                   <TableCell className="font-mono text-[10px] text-muted-foreground max-w-xs truncate">
                     {f.description || "—"}
+                  </TableCell>
+                  <TableCell>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="font-mono text-[10px] gap-1 border-primary/30 text-primary hover:bg-primary/10"
+                      onClick={() => setSelectedFinding(f)}
+                    >
+                      <Shield className="h-3 w-3" /> Validate
+                    </Button>
                   </TableCell>
                 </TableRow>
               ))}
@@ -71,6 +87,23 @@ export default function Findings() {
           <ShieldAlert className="h-8 w-8 text-muted-foreground mx-auto mb-2" />
           <p className="text-xs font-mono text-muted-foreground">No vulnerabilities found yet. Run scans to discover findings.</p>
         </div>
+      )}
+
+      {selectedFinding && (
+        <ValidationModal
+          open={!!selectedFinding}
+          onOpenChange={(open) => { if (!open) setSelectedFinding(null); }}
+          finding={{
+            id: selectedFinding.id,
+            title: selectedFinding.title,
+            severity: selectedFinding.severity,
+            description: selectedFinding.description,
+            payload_used: selectedFinding.payload,
+            cvss_score: selectedFinding.cvss_score,
+            target_id: selectedFinding.target_id,
+          }}
+          source="finding"
+        />
       )}
     </div>
   );

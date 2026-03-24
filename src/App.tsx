@@ -27,6 +27,7 @@ const App = () => (
             <Route path="/logs" element={<NeuralLog />} />
             <Route path="/findings" element={<Findings />} />
             <Route path="/approvals" element={<Approvals />} />
+            <Route path="/system-health" element={<SystemHealth />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </Layout>

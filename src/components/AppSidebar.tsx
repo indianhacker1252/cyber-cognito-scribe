@@ -20,6 +20,7 @@ const navItems = [
   { title: "Neural Log", url: "/logs", icon: Terminal },
   { title: "Findings", url: "/findings", icon: ShieldAlert },
   { title: "Approvals", url: "/approvals", icon: ClipboardCheck },
+  { title: "System Health", url: "/system-health", icon: Activity },
 ];
 
 export function AppSidebar() {
