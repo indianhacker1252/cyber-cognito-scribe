@@ -135,6 +135,7 @@ export default function Targets() {
         ) : targets && targets.length > 0 ? (
           targets.map((target) => {
             const isScanning = scanningTargets.has(target.id) || target.status === "scanning";
+            const isVulnScanning = vulnScanTargets.has(target.id);
             return (
               <div key={target.id} className="rounded-lg border border-border bg-card p-4 flex items-center justify-between hover:border-primary/30 transition-colors">
                 <div className="flex items-center gap-3">
