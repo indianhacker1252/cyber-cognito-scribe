@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { Plus, Crosshair, Trash2, Radar, Loader2 } from "lucide-react";
+import { Plus, Crosshair, Trash2, Radar, Loader2, ShieldAlert } from "lucide-react";
 import { toast } from "sonner";
 
 const statusColors: Record<string, string> = {
