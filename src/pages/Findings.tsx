@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ShieldAlert, Shield } from "lucide-react";
 import ValidationModal from "@/components/ValidationModal";
+import AdaptiveValidationModal from "@/components/AdaptiveValidationModal";
 
 const severityBadge: Record<string, string> = {
   critical: "bg-cyber-red/20 text-cyber-red border-cyber-red/30",
@@ -17,6 +18,7 @@ const severityBadge: Record<string, string> = {
 
 export default function Findings() {
   const [selectedFinding, setSelectedFinding] = useState<any>(null);
+  const [adaptiveFinding, setAdaptiveFinding] = useState<any>(null);
 
   const { data: findings, isLoading } = useQuery({
     queryKey: ["findings"],
@@ -68,14 +70,24 @@ export default function Findings() {
                     {f.description || "—"}
                   </TableCell>
                   <TableCell>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="font-mono text-[10px] gap-1 border-primary/30 text-primary hover:bg-primary/10"
-                      onClick={() => setSelectedFinding(f)}
-                    >
-                      <Shield className="h-3 w-3" /> Validate
-                    </Button>
+                    <div className="flex gap-1">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="font-mono text-[10px] gap-1 border-primary/30 text-primary hover:bg-primary/10"
+                        onClick={() => setSelectedFinding(f)}
+                      >
+                        <Shield className="h-3 w-3" /> Validate
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="font-mono text-[10px] gap-1 border-cyber-amber/30 text-cyber-amber hover:bg-cyber-amber/10"
+                        onClick={() => setAdaptiveFinding(f)}
+                      >
+                        <Shield className="h-3 w-3" /> Adaptive
+                      </Button>
+                    </div>
                   </TableCell>
                 </TableRow>
               ))}
@@ -101,6 +113,22 @@ export default function Findings() {
             payload_used: selectedFinding.payload,
             cvss_score: selectedFinding.cvss_score,
             target_id: selectedFinding.target_id,
+          }}
+          source="finding"
+        />
+      )}
+      {adaptiveFinding && (
+        <AdaptiveValidationModal
+          open={!!adaptiveFinding}
+          onOpenChange={(open) => { if (!open) setAdaptiveFinding(null); }}
+          finding={{
+            id: adaptiveFinding.id,
+            title: adaptiveFinding.title,
+            severity: adaptiveFinding.severity,
+            description: adaptiveFinding.description,
+            payload_used: adaptiveFinding.payload,
+            cvss_score: adaptiveFinding.cvss_score,
+            target_id: adaptiveFinding.target_id,
           }}
           source="finding"
         />

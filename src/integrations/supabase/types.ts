@@ -14,6 +14,85 @@ export type Database = {
   }
   public: {
     Tables: {
+      adaptation_chains: {
+        Row: {
+          adaptation_steps: Json | null
+          ai_reasoning: string | null
+          approval_id: string | null
+          audit_report_markdown: string | null
+          created_at: string
+          cvss_score: number | null
+          cvss_vector: string | null
+          filter_classification: string | null
+          final_poc_language: string | null
+          final_poc_script: string | null
+          finding_id: string | null
+          id: string
+          initial_request: Json | null
+          target_id: string
+          updated_at: string
+          verification_status: string
+        }
+        Insert: {
+          adaptation_steps?: Json | null
+          ai_reasoning?: string | null
+          approval_id?: string | null
+          audit_report_markdown?: string | null
+          created_at?: string
+          cvss_score?: number | null
+          cvss_vector?: string | null
+          filter_classification?: string | null
+          final_poc_language?: string | null
+          final_poc_script?: string | null
+          finding_id?: string | null
+          id?: string
+          initial_request?: Json | null
+          target_id: string
+          updated_at?: string
+          verification_status?: string
+        }
+        Update: {
+          adaptation_steps?: Json | null
+          ai_reasoning?: string | null
+          approval_id?: string | null
+          audit_report_markdown?: string | null
+          created_at?: string
+          cvss_score?: number | null
+          cvss_vector?: string | null
+          filter_classification?: string | null
+          final_poc_language?: string | null
+          final_poc_script?: string | null
+          finding_id?: string | null
+          id?: string
+          initial_request?: Json | null
+          target_id?: string
+          updated_at?: string
+          verification_status?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "adaptation_chains_approval_id_fkey"
+            columns: ["approval_id"]
+            isOneToOne: false
+            referencedRelation: "pending_approvals"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "adaptation_chains_finding_id_fkey"
+            columns: ["finding_id"]
+            isOneToOne: false
+            referencedRelation: "vulnerability_findings"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "adaptation_chains_target_id_fkey"
+            columns: ["target_id"]
+            isOneToOne: false
+            referencedRelation: "target_workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       agent_tasks: {
         Row: {
           created_at: string

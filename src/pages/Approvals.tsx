@@ -7,6 +7,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { CheckCircle, XCircle, AlertTriangle, Eye, ShieldCheck, Shield } from "lucide-react";
 import { toast } from "sonner";
 import ValidationModal from "@/components/ValidationModal";
+import AdaptiveValidationModal from "@/components/AdaptiveValidationModal";
 
 const severityBadge: Record<string, string> = {
   critical: "bg-cyber-red/20 text-cyber-red border-cyber-red/30",
@@ -50,6 +51,7 @@ export default function Approvals() {
   const [selected, setSelected] = useState<Approval | null>(null);
   const [notes, setNotes] = useState("");
   const [validationTarget, setValidationTarget] = useState<Approval | null>(null);
+  const [adaptiveTarget, setAdaptiveTarget] = useState<Approval | null>(null);
 
   const { data: approvals, isLoading } = useQuery({
     queryKey: ["approvals"],
@@ -293,6 +295,14 @@ export default function Approvals() {
                     >
                       <Shield className="h-3 w-3" /> Validate
                     </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="font-mono text-xs gap-1 border-cyber-amber/30 text-cyber-amber hover:bg-cyber-amber/10"
+                      onClick={() => { setAdaptiveTarget(selected); setSelected(null); }}
+                    >
+                      <Shield className="h-3 w-3" /> Adaptive
+                    </Button>
                   </div>
                 )}
               </div>
@@ -315,6 +325,24 @@ export default function Approvals() {
             cvss_score: validationTarget.cvss_score,
             finding_type: validationTarget.finding_type,
             target_id: validationTarget.target_id,
+          }}
+          source="approval"
+        />
+      )}
+      {adaptiveTarget && (
+        <AdaptiveValidationModal
+          open={!!adaptiveTarget}
+          onOpenChange={(open) => { if (!open) setAdaptiveTarget(null); }}
+          finding={{
+            id: adaptiveTarget.id,
+            title: adaptiveTarget.title,
+            severity: adaptiveTarget.severity,
+            description: adaptiveTarget.description,
+            parameter: adaptiveTarget.parameter,
+            payload_used: adaptiveTarget.payload_used,
+            cvss_score: adaptiveTarget.cvss_score,
+            finding_type: adaptiveTarget.finding_type,
+            target_id: adaptiveTarget.target_id,
           }}
           source="approval"
         />
