@@ -167,6 +167,22 @@ export default function Targets() {
                       {isScanning ? "Scanning..." : "Start Recon"}
                     </Button>
                   )}
+                  {target.domain && target.status === "completed" && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="font-mono text-[10px] gap-1 border-cyber-red/30 text-cyber-red hover:bg-cyber-red/10"
+                      onClick={() => startVulnScan(target.id)}
+                      disabled={isVulnScanning}
+                    >
+                      {isVulnScanning ? (
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                      ) : (
+                        <ShieldAlert className="h-3 w-3" />
+                      )}
+                      {isVulnScanning ? "Scanning..." : "Vuln Scan"}
+                    </Button>
+                  )}
                   <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" onClick={() => deleteTarget.mutate(target.id)}>
                     <Trash2 className="h-3 w-3" />
                   </Button>
