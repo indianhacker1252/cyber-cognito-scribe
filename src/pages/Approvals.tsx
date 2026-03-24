@@ -295,6 +295,14 @@ export default function Approvals() {
                     >
                       <Shield className="h-3 w-3" /> Validate
                     </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="font-mono text-xs gap-1 border-cyber-amber/30 text-cyber-amber hover:bg-cyber-amber/10"
+                      onClick={() => { setAdaptiveTarget(selected); setSelected(null); }}
+                    >
+                      <Shield className="h-3 w-3" /> Adaptive
+                    </Button>
                   </div>
                 )}
               </div>
