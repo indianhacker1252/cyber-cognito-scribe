@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { Plus, Crosshair, Trash2 } from "lucide-react";
+import { Plus, Crosshair, Trash2, Radar, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 
 const statusColors: Record<string, string> = {
@@ -22,6 +22,7 @@ export default function Targets() {
   const [domain, setDomain] = useState("");
   const [ipRange, setIpRange] = useState("");
   const [apiSchema, setApiSchema] = useState("");
+  const [scanningTargets, setScanningTargets] = useState<Set<string>>(new Set());
 
   const { data: targets, isLoading } = useQuery({
     queryKey: ["targets"],
@@ -64,12 +65,45 @@ export default function Targets() {
     },
   });
 
+  const startRecon = async (targetId: string) => {
+    setScanningTargets((prev) => new Set(prev).add(targetId));
+    toast.info("Recon pipeline started — check Neural Log for live updates");
+
+    try {
+      const { data, error } = await supabase.functions.invoke("recon-engine", {
+        body: { targetId },
+      });
+
+      if (error) {
+        toast.error(`Recon failed: ${error.message}`);
+      } else if (data?.error) {
+        toast.error(`Recon failed: ${data.error}`);
+      } else {
+        toast.success(
+          `Recon complete: ${data.subdomains} subdomains, ${data.endpointsIngested} endpoints mapped`
+        );
+        queryClient.invalidateQueries({ queryKey: ["targets"] });
+        queryClient.invalidateQueries({ queryKey: ["endpoints-count"] });
+        queryClient.invalidateQueries({ queryKey: ["findings"] });
+        queryClient.invalidateQueries({ queryKey: ["recent-logs"] });
+      }
+    } catch (e: any) {
+      toast.error(`Recon error: ${e.message}`);
+    } finally {
+      setScanningTargets((prev) => {
+        const next = new Set(prev);
+        next.delete(targetId);
+        return next;
+      });
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-bold font-mono text-primary text-glow-green">Target Management</h1>
-          <p className="text-xs font-mono text-muted-foreground">Configure scanning targets</p>
+          <p className="text-xs font-mono text-muted-foreground">Configure and scan targets</p>
         </div>
         <Dialog open={open} onOpenChange={setOpen}>
           <DialogTrigger asChild>
@@ -98,27 +132,46 @@ export default function Targets() {
         {isLoading ? (
           <p className="text-xs font-mono text-muted-foreground">Loading targets...</p>
         ) : targets && targets.length > 0 ? (
-          targets.map((target) => (
-            <div key={target.id} className="rounded-lg border border-border bg-card p-4 flex items-center justify-between hover:border-primary/30 transition-colors">
-              <div className="flex items-center gap-3">
-                <Crosshair className="h-4 w-4 text-primary" />
-                <div>
-                  <p className="text-sm font-mono font-semibold text-card-foreground">{target.name}</p>
-                  <p className="text-[10px] font-mono text-muted-foreground">
-                    {target.domain || target.ip_range || target.api_schema_url || "No target specified"}
-                  </p>
+          targets.map((target) => {
+            const isScanning = scanningTargets.has(target.id) || target.status === "scanning";
+            return (
+              <div key={target.id} className="rounded-lg border border-border bg-card p-4 flex items-center justify-between hover:border-primary/30 transition-colors">
+                <div className="flex items-center gap-3">
+                  <Crosshair className="h-4 w-4 text-primary" />
+                  <div>
+                    <p className="text-sm font-mono font-semibold text-card-foreground">{target.name}</p>
+                    <p className="text-[10px] font-mono text-muted-foreground">
+                      {target.domain || target.ip_range || target.api_schema_url || "No target specified"}
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Badge variant="outline" className={`text-[9px] font-mono ${statusColors[target.status]}`}>
+                    {target.status}
+                  </Badge>
+                  {target.domain && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="font-mono text-[10px] gap-1 border-cyber-cyan/30 text-cyber-cyan hover:bg-cyber-cyan/10"
+                      onClick={() => startRecon(target.id)}
+                      disabled={isScanning}
+                    >
+                      {isScanning ? (
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                      ) : (
+                        <Radar className="h-3 w-3" />
+                      )}
+                      {isScanning ? "Scanning..." : "Start Recon"}
+                    </Button>
+                  )}
+                  <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" onClick={() => deleteTarget.mutate(target.id)}>
+                    <Trash2 className="h-3 w-3" />
+                  </Button>
                 </div>
               </div>
-              <div className="flex items-center gap-2">
-                <Badge variant="outline" className={`text-[9px] font-mono ${statusColors[target.status]}`}>
-                  {target.status}
-                </Badge>
-                <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" onClick={() => deleteTarget.mutate(target.id)}>
-                  <Trash2 className="h-3 w-3" />
-                </Button>
-              </div>
-            </div>
-          ))
+            );
+          })
         ) : (
           <div className="text-center py-12 border border-dashed border-border rounded-lg">
             <Crosshair className="h-8 w-8 text-muted-foreground mx-auto mb-2" />
