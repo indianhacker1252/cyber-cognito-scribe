@@ -4,8 +4,9 @@ import { supabase } from "@/integrations/supabase/client";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { CheckCircle, XCircle, AlertTriangle, Eye, ShieldCheck } from "lucide-react";
+import { CheckCircle, XCircle, AlertTriangle, Eye, ShieldCheck, Shield } from "lucide-react";
 import { toast } from "sonner";
+import ValidationModal from "@/components/ValidationModal";
 
 const severityBadge: Record<string, string> = {
   critical: "bg-cyber-red/20 text-cyber-red border-cyber-red/30",
@@ -48,6 +49,7 @@ export default function Approvals() {
   const queryClient = useQueryClient();
   const [selected, setSelected] = useState<Approval | null>(null);
   const [notes, setNotes] = useState("");
+  const [validationTarget, setValidationTarget] = useState<Approval | null>(null);
 
   const { data: approvals, isLoading } = useQuery({
     queryKey: ["approvals"],
@@ -283,6 +285,14 @@ export default function Approvals() {
                     >
                       <Eye className="h-3 w-3" /> Escalate
                     </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="font-mono text-xs gap-1 border-primary/30 text-primary hover:bg-primary/10"
+                      onClick={() => { setValidationTarget(selected); setSelected(null); }}
+                    >
+                      <Shield className="h-3 w-3" /> Validate
+                    </Button>
                   </div>
                 )}
               </div>
@@ -290,6 +300,25 @@ export default function Approvals() {
           )}
         </DialogContent>
       </Dialog>
+
+      {validationTarget && (
+        <ValidationModal
+          open={!!validationTarget}
+          onOpenChange={(open) => { if (!open) setValidationTarget(null); }}
+          finding={{
+            id: validationTarget.id,
+            title: validationTarget.title,
+            severity: validationTarget.severity,
+            description: validationTarget.description,
+            parameter: validationTarget.parameter,
+            payload_used: validationTarget.payload_used,
+            cvss_score: validationTarget.cvss_score,
+            finding_type: validationTarget.finding_type,
+            target_id: validationTarget.target_id,
+          }}
+          source="approval"
+        />
+      )}
     </div>
   );
 }

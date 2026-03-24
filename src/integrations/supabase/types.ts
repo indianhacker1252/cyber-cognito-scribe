@@ -96,6 +96,82 @@ export type Database = {
           },
         ]
       }
+      evidence_packages: {
+        Row: {
+          approval_id: string | null
+          created_at: string
+          cvss_score: number | null
+          cvss_vector: string | null
+          finding_id: string | null
+          http_request_data: Json | null
+          http_response_data: Json | null
+          id: string
+          poc_script: string | null
+          report_markdown: string | null
+          script_language: string | null
+          target_id: string
+          terminal_output: string | null
+          validated_at: string | null
+          validation_status: string
+        }
+        Insert: {
+          approval_id?: string | null
+          created_at?: string
+          cvss_score?: number | null
+          cvss_vector?: string | null
+          finding_id?: string | null
+          http_request_data?: Json | null
+          http_response_data?: Json | null
+          id?: string
+          poc_script?: string | null
+          report_markdown?: string | null
+          script_language?: string | null
+          target_id: string
+          terminal_output?: string | null
+          validated_at?: string | null
+          validation_status?: string
+        }
+        Update: {
+          approval_id?: string | null
+          created_at?: string
+          cvss_score?: number | null
+          cvss_vector?: string | null
+          finding_id?: string | null
+          http_request_data?: Json | null
+          http_response_data?: Json | null
+          id?: string
+          poc_script?: string | null
+          report_markdown?: string | null
+          script_language?: string | null
+          target_id?: string
+          terminal_output?: string | null
+          validated_at?: string | null
+          validation_status?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "evidence_packages_approval_id_fkey"
+            columns: ["approval_id"]
+            isOneToOne: false
+            referencedRelation: "pending_approvals"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "evidence_packages_finding_id_fkey"
+            columns: ["finding_id"]
+            isOneToOne: false
+            referencedRelation: "vulnerability_findings"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "evidence_packages_target_id_fkey"
+            columns: ["target_id"]
+            isOneToOne: false
+            referencedRelation: "target_workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       pending_approvals: {
         Row: {
           baseline_response: Json | null
@@ -258,6 +334,7 @@ export type Database = {
           cvss_score: number | null
           description: string | null
           endpoint_id: string | null
+          evidence_package_id: string | null
           id: string
           payload: string | null
           poc: string | null
@@ -265,12 +342,14 @@ export type Database = {
           severity: Database["public"]["Enums"]["severity_level"]
           target_id: string
           title: string
+          validation_status: string | null
         }
         Insert: {
           created_at?: string
           cvss_score?: number | null
           description?: string | null
           endpoint_id?: string | null
+          evidence_package_id?: string | null
           id?: string
           payload?: string | null
           poc?: string | null
@@ -278,12 +357,14 @@ export type Database = {
           severity?: Database["public"]["Enums"]["severity_level"]
           target_id: string
           title: string
+          validation_status?: string | null
         }
         Update: {
           created_at?: string
           cvss_score?: number | null
           description?: string | null
           endpoint_id?: string | null
+          evidence_package_id?: string | null
           id?: string
           payload?: string | null
           poc?: string | null
@@ -291,6 +372,7 @@ export type Database = {
           severity?: Database["public"]["Enums"]["severity_level"]
           target_id?: string
           title?: string
+          validation_status?: string | null
         }
         Relationships: [
           {
@@ -298,6 +380,13 @@ export type Database = {
             columns: ["endpoint_id"]
             isOneToOne: false
             referencedRelation: "discovered_endpoints"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "vulnerability_findings_evidence_package_id_fkey"
+            columns: ["evidence_package_id"]
+            isOneToOne: false
+            referencedRelation: "evidence_packages"
             referencedColumns: ["id"]
           },
           {
