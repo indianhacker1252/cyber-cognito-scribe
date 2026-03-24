@@ -9,6 +9,7 @@ import Targets from "./pages/Targets";
 import NeuralLog from "./pages/NeuralLog";
 import Findings from "./pages/Findings";
 import Approvals from "./pages/Approvals";
+import SystemHealth from "./pages/SystemHealth";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
