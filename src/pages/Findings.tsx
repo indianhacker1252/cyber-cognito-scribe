@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ShieldAlert, Shield } from "lucide-react";
 import ValidationModal from "@/components/ValidationModal";
+import AdaptiveValidationModal from "@/components/AdaptiveValidationModal";
 
 const severityBadge: Record<string, string> = {
   critical: "bg-cyber-red/20 text-cyber-red border-cyber-red/30",
