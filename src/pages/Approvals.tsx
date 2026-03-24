@@ -285,6 +285,14 @@ export default function Approvals() {
                     >
                       <Eye className="h-3 w-3" /> Escalate
                     </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="font-mono text-xs gap-1 border-primary/30 text-primary hover:bg-primary/10"
+                      onClick={() => { setValidationTarget(selected); setSelected(null); }}
+                    >
+                      <Shield className="h-3 w-3" /> Validate
+                    </Button>
                   </div>
                 )}
               </div>
@@ -292,6 +300,25 @@ export default function Approvals() {
           )}
         </DialogContent>
       </Dialog>
+
+      {validationTarget && (
+        <ValidationModal
+          open={!!validationTarget}
+          onOpenChange={(open) => { if (!open) setValidationTarget(null); }}
+          finding={{
+            id: validationTarget.id,
+            title: validationTarget.title,
+            severity: validationTarget.severity,
+            description: validationTarget.description,
+            parameter: validationTarget.parameter,
+            payload_used: validationTarget.payload_used,
+            cvss_score: validationTarget.cvss_score,
+            finding_type: validationTarget.finding_type,
+            target_id: validationTarget.target_id,
+          }}
+          source="approval"
+        />
+      )}
     </div>
   );
 }
