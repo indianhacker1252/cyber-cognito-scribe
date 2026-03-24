@@ -99,6 +99,38 @@ export default function Targets() {
     }
   };
 
+  const startVulnScan = async (targetId: string) => {
+    setVulnScanTargets((prev) => new Set(prev).add(targetId));
+    toast.info("Vuln scan started — findings will appear in Approvals queue");
+
+    try {
+      const { data, error } = await supabase.functions.invoke("vuln-scanner", {
+        body: { targetId },
+      });
+
+      if (error) {
+        toast.error(`Vuln scan failed: ${error.message}`);
+      } else if (data?.error) {
+        toast.error(`Vuln scan failed: ${data.error}`);
+      } else {
+        toast.success(
+          `Vuln scan complete: ${data.vulnsFound} potential vulns, ${data.approvalsQueued} items queued`
+        );
+        queryClient.invalidateQueries({ queryKey: ["targets"] });
+        queryClient.invalidateQueries({ queryKey: ["approvals"] });
+        queryClient.invalidateQueries({ queryKey: ["recent-logs"] });
+      }
+    } catch (e: any) {
+      toast.error(`Vuln scan error: ${e.message}`);
+    } finally {
+      setVulnScanTargets((prev) => {
+        const next = new Set(prev);
+        next.delete(targetId);
+        return next;
+      });
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
