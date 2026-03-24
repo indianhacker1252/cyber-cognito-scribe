@@ -7,6 +7,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { CheckCircle, XCircle, AlertTriangle, Eye, ShieldCheck, Shield } from "lucide-react";
 import { toast } from "sonner";
 import ValidationModal from "@/components/ValidationModal";
+import AdaptiveValidationModal from "@/components/AdaptiveValidationModal";
 
 const severityBadge: Record<string, string> = {
   critical: "bg-cyber-red/20 text-cyber-red border-cyber-red/30",
