@@ -212,7 +212,7 @@ export default function Targets() {
                       ) : (
                         <ShieldAlert className="h-3 w-3" />
                       )}
-                      {isVulnScanning ? "Scanning..." : "Vuln Scan"}
+                      {isVulnScanning ? "Scanning..." : "OWASP Scan"}
                     </Button>
                   )}
                   <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" onClick={() => deleteTarget.mutate(target.id)}>
