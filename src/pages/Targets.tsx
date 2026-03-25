@@ -113,8 +113,9 @@ export default function Targets() {
       } else if (data?.error) {
         toast.error(`Vuln scan failed: ${data.error}`);
       } else {
+        const coverageCount = data.owaspCoverage?.length || 0;
         toast.success(
-          `Vuln scan complete: ${data.vulnsFound} potential vulns, ${data.approvalsQueued} items queued`
+          `OWASP scan complete: ${data.vulnsFound} active, ${data.passiveIssues || 0} passive, ${data.approvalsQueued} queued (${coverageCount} OWASP categories)`
         );
         queryClient.invalidateQueries({ queryKey: ["targets"] });
         queryClient.invalidateQueries({ queryKey: ["approvals"] });
