@@ -113,8 +113,9 @@ export default function Targets() {
       } else if (data?.error) {
         toast.error(`Vuln scan failed: ${data.error}`);
       } else {
+        const coverageCount = data.owaspCoverage?.length || 0;
         toast.success(
-          `Vuln scan complete: ${data.vulnsFound} potential vulns, ${data.approvalsQueued} items queued`
+          `OWASP scan complete: ${data.vulnsFound} active, ${data.passiveIssues || 0} passive, ${data.approvalsQueued} queued (${coverageCount} OWASP categories)`
         );
         queryClient.invalidateQueries({ queryKey: ["targets"] });
         queryClient.invalidateQueries({ queryKey: ["approvals"] });
@@ -212,7 +213,7 @@ export default function Targets() {
                       ) : (
                         <ShieldAlert className="h-3 w-3" />
                       )}
-                      {isVulnScanning ? "Scanning..." : "Vuln Scan"}
+                      {isVulnScanning ? "Scanning..." : "OWASP Scan"}
                     </Button>
                   )}
                   <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" onClick={() => deleteTarget.mutate(target.id)}>
