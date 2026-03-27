@@ -4,7 +4,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { CheckCircle, XCircle, AlertTriangle, Eye, ShieldCheck, Shield } from "lucide-react";
+import { CheckCircle, XCircle, AlertTriangle, Eye, ShieldCheck, Shield, Trash2, BrainCircuit } from "lucide-react";
 import { toast } from "sonner";
 import ValidationModal from "@/components/ValidationModal";
 import AdaptiveValidationModal from "@/components/AdaptiveValidationModal";
@@ -22,6 +22,12 @@ const statusBadge: Record<string, string> = {
   approved: "bg-cyber-green/20 text-cyber-green border-cyber-green/30",
   rejected: "bg-muted text-muted-foreground border-border",
   escalated: "bg-cyber-purple/20 text-cyber-purple border-cyber-purple/30",
+};
+
+const confidenceBadge: Record<string, string> = {
+  high: "bg-cyber-green/20 text-cyber-green border-cyber-green/30",
+  medium: "bg-cyber-amber/20 text-cyber-amber border-cyber-amber/30",
+  low: "bg-cyber-red/20 text-cyber-red border-cyber-red/30",
 };
 
 interface Approval {
@@ -43,6 +49,11 @@ interface Approval {
   reviewer_notes: string | null;
   created_at: string;
   reviewed_at: string | null;
+  confidence_level?: string | null;
+  ai_verified?: boolean | null;
+  ai_verification_notes?: string | null;
+  request_data?: Record<string, unknown> | null;
+  response_data?: Record<string, unknown> | null;
   target_workspaces?: { name: string } | null;
 }
 
@@ -64,7 +75,6 @@ export default function Approvals() {
     },
   });
 
-  // Realtime subscription for new approvals
   useEffect(() => {
     const channel = supabase
       .channel("approvals-realtime")
@@ -88,7 +98,6 @@ export default function Approvals() {
       const { error } = await supabase.from("pending_approvals").update(update).eq("id", id);
       if (error) throw error;
 
-      // If approved, create a vulnerability finding
       if (status === "approved" && selected) {
         await supabase.from("vulnerability_findings").insert([{
           target_id: selected.target_id,
@@ -100,6 +109,8 @@ export default function Approvals() {
           poc: selected.payload_used ? `Payload: ${selected.payload_used}` : null,
           payload: selected.payload_used,
           remediation: (selected.evidence as any)?.remediation || null,
+          confidence_level: selected.confidence_level || "medium",
+          ai_verified: selected.ai_verified || false,
         }]);
       }
     },
@@ -113,6 +124,28 @@ export default function Approvals() {
     onError: (e) => toast.error(e.message),
   });
 
+  const deleteApproval = useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase.from("pending_approvals").delete().eq("id", id);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["approvals"] });
+      toast.success("Approval deleted");
+    },
+  });
+
+  const clearAllApprovals = useMutation({
+    mutationFn: async () => {
+      const { error } = await supabase.from("pending_approvals").delete().neq("id", "00000000-0000-0000-0000-000000000000");
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["approvals"] });
+      toast.success("All approvals cleared");
+    },
+  });
+
   const pendingCount = approvals?.filter((a) => a.status === "pending").length || 0;
 
   return (
@@ -124,9 +157,20 @@ export default function Approvals() {
             {pendingCount} findings awaiting human review
           </p>
         </div>
-        <Badge variant="outline" className={`font-mono text-xs ${pendingCount > 0 ? "bg-cyber-amber/20 text-cyber-amber border-cyber-amber/30 animate-pulse-glow" : "text-muted-foreground"}`}>
-          {pendingCount} Pending
-        </Badge>
+        <div className="flex gap-2">
+          <Badge variant="outline" className={`font-mono text-xs ${pendingCount > 0 ? "bg-cyber-amber/20 text-cyber-amber border-cyber-amber/30 animate-pulse-glow" : "text-muted-foreground"}`}>
+            {pendingCount} Pending
+          </Badge>
+          {approvals && approvals.length > 0 && (
+            <Button
+              variant="outline" size="sm"
+              className="font-mono text-[10px] gap-1 text-destructive border-destructive/30 hover:bg-destructive/10"
+              onClick={() => { if (confirm("Clear all approvals?")) clearAllApprovals.mutate(); }}
+            >
+              <Trash2 className="h-3 w-3" /> Clear All
+            </Button>
+          )}
+        </div>
       </div>
 
       {isLoading ? (
@@ -149,12 +193,28 @@ export default function Approvals() {
                 </div>
               </div>
               <div className="flex items-center gap-2 shrink-0">
+                {approval.ai_verified && (
+                  <Badge variant="outline" className="text-[9px] font-mono bg-cyber-green/20 text-cyber-green border-cyber-green/30 gap-0.5">
+                    <BrainCircuit className="h-2.5 w-2.5" /> AI ✓
+                  </Badge>
+                )}
+                {approval.confidence_level && (
+                  <Badge variant="outline" className={`text-[9px] font-mono ${confidenceBadge[approval.confidence_level] || ""}`}>
+                    {approval.confidence_level}
+                  </Badge>
+                )}
                 <Badge variant="outline" className={`text-[9px] font-mono ${severityBadge[approval.severity]}`}>
                   {approval.severity}
                 </Badge>
                 <Badge variant="outline" className={`text-[9px] font-mono ${statusBadge[approval.status]}`}>
                   {approval.status}
                 </Badge>
+                <Button
+                  variant="ghost" size="icon" className="h-6 w-6 text-muted-foreground hover:text-destructive"
+                  onClick={(e) => { e.stopPropagation(); deleteApproval.mutate(approval.id); }}
+                >
+                  <Trash2 className="h-3 w-3" />
+                </Button>
               </div>
             </div>
           ))}
@@ -175,7 +235,7 @@ export default function Approvals() {
                 <DialogTitle className="font-mono text-primary text-sm">{selected.title}</DialogTitle>
               </DialogHeader>
               <div className="space-y-4">
-                <div className="flex gap-2">
+                <div className="flex gap-2 flex-wrap">
                   <Badge variant="outline" className={`text-[9px] font-mono ${severityBadge[selected.severity]}`}>
                     {selected.severity}
                   </Badge>
@@ -187,7 +247,29 @@ export default function Approvals() {
                       CVSS {selected.cvss_score}
                     </Badge>
                   )}
+                  {selected.confidence_level && (
+                    <Badge variant="outline" className={`text-[9px] font-mono ${confidenceBadge[selected.confidence_level] || ""}`}>
+                      Confidence: {selected.confidence_level}
+                    </Badge>
+                  )}
+                  {selected.ai_verified && (
+                    <Badge variant="outline" className="text-[9px] font-mono bg-cyber-green/20 text-cyber-green border-cyber-green/30 gap-0.5">
+                      <BrainCircuit className="h-2.5 w-2.5" /> AI Verified
+                    </Badge>
+                  )}
+                  {selected.ai_verified === false && (
+                    <Badge variant="outline" className="text-[9px] font-mono bg-cyber-amber/20 text-cyber-amber border-cyber-amber/30">
+                      Unverified
+                    </Badge>
+                  )}
                 </div>
+
+                {selected.ai_verification_notes && (
+                  <div>
+                    <p className="text-[10px] font-mono uppercase text-muted-foreground mb-1">AI Verification Notes</p>
+                    <p className="text-xs font-mono text-card-foreground bg-muted/50 p-2 rounded border border-border">{selected.ai_verification_notes}</p>
+                  </div>
+                )}
 
                 {selected.description && (
                   <div>
@@ -210,6 +292,25 @@ export default function Approvals() {
                   </div>
                 )}
 
+                {/* Request/Response Capture (Repeater View) */}
+                {selected.request_data && Object.keys(selected.request_data).length > 0 && (
+                  <div>
+                    <p className="text-[10px] font-mono uppercase text-muted-foreground mb-1">📡 Request (Repeater)</p>
+                    <pre className="text-[10px] font-mono text-card-foreground bg-muted p-2 rounded overflow-auto max-h-32 border border-border">
+                      {JSON.stringify(selected.request_data, null, 2)}
+                    </pre>
+                  </div>
+                )}
+
+                {selected.response_data && Object.keys(selected.response_data).length > 0 && (
+                  <div>
+                    <p className="text-[10px] font-mono uppercase text-muted-foreground mb-1">📥 Response</p>
+                    <pre className="text-[10px] font-mono text-card-foreground bg-muted p-2 rounded overflow-auto max-h-32 border border-border">
+                      {JSON.stringify(selected.response_data, null, 2)}
+                    </pre>
+                  </div>
+                )}
+
                 {selected.baseline_response && (
                   <div className="grid grid-cols-2 gap-2">
                     <div>
@@ -223,6 +324,25 @@ export default function Approvals() {
                       <pre className="text-[10px] font-mono text-card-foreground bg-muted p-2 rounded overflow-auto max-h-24">
                         {JSON.stringify(selected.mutated_response, null, 2)}
                       </pre>
+                    </div>
+                  </div>
+                )}
+
+                {/* Intruder Results */}
+                {(selected.evidence as any)?.intruderResults && (
+                  <div>
+                    <p className="text-[10px] font-mono uppercase text-muted-foreground mb-1">🎯 Intruder Results</p>
+                    <div className="space-y-1">
+                      {((selected.evidence as any).intruderResults as Array<{ payload: string; status: number; length: number; timingMs: number }>).map((ir, idx) => (
+                        <div key={idx} className="flex items-center gap-2 text-[10px] font-mono bg-muted p-1.5 rounded">
+                          <Badge variant="outline" className={`text-[8px] ${ir.status === 200 ? "text-cyber-green border-cyber-green/30" : "text-cyber-red border-cyber-red/30"}`}>
+                            {ir.status}
+                          </Badge>
+                          <span className="text-card-foreground truncate flex-1">{ir.payload}</span>
+                          <span className="text-muted-foreground">{ir.length}B</span>
+                          <span className="text-muted-foreground">{ir.timingMs}ms</span>
+                        </div>
+                      ))}
                     </div>
                   </div>
                 )}
@@ -247,7 +367,6 @@ export default function Approvals() {
                   </pre>
                 </div>
 
-                {/* Reviewer Notes */}
                 <div>
                   <p className="text-[10px] font-mono uppercase text-muted-foreground mb-1">Reviewer Notes</p>
                   <textarea
@@ -258,9 +377,8 @@ export default function Approvals() {
                   />
                 </div>
 
-                {/* Action Buttons */}
                 {selected.status === "pending" && (
-                  <div className="flex gap-2">
+                  <div className="flex gap-2 flex-wrap">
                     <Button
                       size="sm"
                       className="flex-1 font-mono text-xs gap-1 bg-cyber-green/20 text-cyber-green hover:bg-cyber-green/30 border border-cyber-green/30"
@@ -270,8 +388,7 @@ export default function Approvals() {
                       <CheckCircle className="h-3 w-3" /> Confirm & Log
                     </Button>
                     <Button
-                      size="sm"
-                      variant="outline"
+                      size="sm" variant="outline"
                       className="flex-1 font-mono text-xs gap-1"
                       onClick={() => updateApproval.mutate({ id: selected.id, status: "rejected" })}
                       disabled={updateApproval.isPending}
@@ -279,8 +396,7 @@ export default function Approvals() {
                       <XCircle className="h-3 w-3" /> False Positive
                     </Button>
                     <Button
-                      size="sm"
-                      variant="outline"
+                      size="sm" variant="outline"
                       className="font-mono text-xs gap-1 border-cyber-purple/30 text-cyber-purple hover:bg-cyber-purple/10"
                       onClick={() => updateApproval.mutate({ id: selected.id, status: "escalated" })}
                       disabled={updateApproval.isPending}
@@ -288,16 +404,14 @@ export default function Approvals() {
                       <Eye className="h-3 w-3" /> Escalate
                     </Button>
                     <Button
-                      size="sm"
-                      variant="outline"
+                      size="sm" variant="outline"
                       className="font-mono text-xs gap-1 border-primary/30 text-primary hover:bg-primary/10"
                       onClick={() => { setValidationTarget(selected); setSelected(null); }}
                     >
                       <Shield className="h-3 w-3" /> Validate
                     </Button>
                     <Button
-                      size="sm"
-                      variant="outline"
+                      size="sm" variant="outline"
                       className="font-mono text-xs gap-1 border-cyber-amber/30 text-cyber-amber hover:bg-cyber-amber/10"
                       onClick={() => { setAdaptiveTarget(selected); setSelected(null); }}
                     >
@@ -316,14 +430,10 @@ export default function Approvals() {
           open={!!validationTarget}
           onOpenChange={(open) => { if (!open) setValidationTarget(null); }}
           finding={{
-            id: validationTarget.id,
-            title: validationTarget.title,
-            severity: validationTarget.severity,
-            description: validationTarget.description,
-            parameter: validationTarget.parameter,
-            payload_used: validationTarget.payload_used,
-            cvss_score: validationTarget.cvss_score,
-            finding_type: validationTarget.finding_type,
+            id: validationTarget.id, title: validationTarget.title,
+            severity: validationTarget.severity, description: validationTarget.description,
+            parameter: validationTarget.parameter, payload_used: validationTarget.payload_used,
+            cvss_score: validationTarget.cvss_score, finding_type: validationTarget.finding_type,
             target_id: validationTarget.target_id,
           }}
           source="approval"
@@ -334,14 +444,10 @@ export default function Approvals() {
           open={!!adaptiveTarget}
           onOpenChange={(open) => { if (!open) setAdaptiveTarget(null); }}
           finding={{
-            id: adaptiveTarget.id,
-            title: adaptiveTarget.title,
-            severity: adaptiveTarget.severity,
-            description: adaptiveTarget.description,
-            parameter: adaptiveTarget.parameter,
-            payload_used: adaptiveTarget.payload_used,
-            cvss_score: adaptiveTarget.cvss_score,
-            finding_type: adaptiveTarget.finding_type,
+            id: adaptiveTarget.id, title: adaptiveTarget.title,
+            severity: adaptiveTarget.severity, description: adaptiveTarget.description,
+            parameter: adaptiveTarget.parameter, payload_used: adaptiveTarget.payload_used,
+            cvss_score: adaptiveTarget.cvss_score, finding_type: adaptiveTarget.finding_type,
             target_id: adaptiveTarget.target_id,
           }}
           source="approval"

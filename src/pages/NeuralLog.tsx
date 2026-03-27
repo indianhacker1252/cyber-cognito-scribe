@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Pause, Play, Terminal, Trash2 } from "lucide-react";
+import { toast } from "sonner";
 
 const logColors: Record<string, string> = {
   thought: "text-cyber-cyan",
@@ -30,11 +31,11 @@ interface ScanLog {
 }
 
 export default function NeuralLog() {
+  const queryClient = useQueryClient();
   const [logs, setLogs] = useState<ScanLog[]>([]);
   const [paused, setPaused] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // Initial load
   const { data: initialLogs } = useQuery({
     queryKey: ["scan-logs"],
     queryFn: async () => {
@@ -47,7 +48,6 @@ export default function NeuralLog() {
     if (initialLogs) setLogs(initialLogs);
   }, [initialLogs]);
 
-  // Realtime subscription
   useEffect(() => {
     const channel = supabase
       .channel("scan-logs-realtime")
@@ -58,17 +58,27 @@ export default function NeuralLog() {
       })
       .subscribe();
 
-    return () => {
-      supabase.removeChannel(channel);
-    };
+    return () => { supabase.removeChannel(channel); };
   }, [paused]);
 
-  // Auto-scroll
   useEffect(() => {
     if (!paused && scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [logs, paused]);
+
+  const clearDbLogs = useMutation({
+    mutationFn: async () => {
+      const { error } = await supabase.from("scan_logs").delete().neq("id", "00000000-0000-0000-0000-000000000000");
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      setLogs([]);
+      queryClient.invalidateQueries({ queryKey: ["scan-logs"] });
+      toast.success("All logs cleared from database");
+    },
+    onError: (e) => toast.error(e.message),
+  });
 
   const formatTime = (ts: string) => {
     const d = new Date(ts);
@@ -88,7 +98,14 @@ export default function NeuralLog() {
             {paused ? "Resume" : "Pause"}
           </Button>
           <Button variant="outline" size="sm" className="font-mono text-xs gap-1" onClick={() => setLogs([])}>
-            <Trash2 className="h-3 w-3" /> Clear
+            <Trash2 className="h-3 w-3" /> Clear View
+          </Button>
+          <Button
+            variant="outline" size="sm"
+            className="font-mono text-xs gap-1 text-destructive border-destructive/30 hover:bg-destructive/10"
+            onClick={() => { if (confirm("Delete all logs from database?")) clearDbLogs.mutate(); }}
+          >
+            <Trash2 className="h-3 w-3" /> Delete All
           </Button>
         </div>
       </div>
