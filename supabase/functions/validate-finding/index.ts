@@ -8,11 +8,12 @@ const corsHeaders = {
 };
 
 // Forbidden patterns - never execute scripts containing these
+// These are narrowly scoped to avoid false positives on legitimate PoC scripts
 const FORBIDDEN_PATTERNS = [
-  /drop\s+table/i, /truncate/i, /delete\s+from/i, /rm\s+-rf/i,
-  /shutdown/i, /xp_cmdshell/i, /exec\s*\(/i, /eval\s*\(/i,
-  /os\.system/i, /subprocess\.call/i, /import\s+os/i,
-  /__import__/i, /open\s*\(\s*['"]\/etc/i,
+  /drop\s+table/i, /truncate\s+table/i, /delete\s+from/i, /rm\s+-rf/i,
+  /shutdown/i, /xp_cmdshell/i,
+  /os\.system\s*\(/i, /subprocess\.(call|run|Popen)\s*\(/i,
+  /__import__\s*\(\s*['"]os['"]\)/i, /open\s*\(\s*['"]\/etc/i,
 ];
 
 function isScriptSafe(script: string): { safe: boolean; reason?: string } {
