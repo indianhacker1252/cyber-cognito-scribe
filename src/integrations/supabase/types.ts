@@ -253,7 +253,10 @@ export type Database = {
       }
       pending_approvals: {
         Row: {
+          ai_verification_notes: string | null
+          ai_verified: boolean | null
           baseline_response: Json | null
+          confidence_level: string | null
           created_at: string
           cve_ids: string[] | null
           cvss_score: number | null
@@ -265,6 +268,8 @@ export type Database = {
           mutated_response: Json | null
           parameter: string | null
           payload_used: string | null
+          request_data: Json | null
+          response_data: Json | null
           reviewed_at: string | null
           reviewer_notes: string | null
           severity: Database["public"]["Enums"]["severity_level"]
@@ -273,7 +278,10 @@ export type Database = {
           title: string
         }
         Insert: {
+          ai_verification_notes?: string | null
+          ai_verified?: boolean | null
           baseline_response?: Json | null
+          confidence_level?: string | null
           created_at?: string
           cve_ids?: string[] | null
           cvss_score?: number | null
@@ -285,6 +293,8 @@ export type Database = {
           mutated_response?: Json | null
           parameter?: string | null
           payload_used?: string | null
+          request_data?: Json | null
+          response_data?: Json | null
           reviewed_at?: string | null
           reviewer_notes?: string | null
           severity?: Database["public"]["Enums"]["severity_level"]
@@ -293,7 +303,10 @@ export type Database = {
           title: string
         }
         Update: {
+          ai_verification_notes?: string | null
+          ai_verified?: boolean | null
           baseline_response?: Json | null
+          confidence_level?: string | null
           created_at?: string
           cve_ids?: string[] | null
           cvss_score?: number | null
@@ -305,6 +318,8 @@ export type Database = {
           mutated_response?: Json | null
           parameter?: string | null
           payload_used?: string | null
+          request_data?: Json | null
+          response_data?: Json | null
           reviewed_at?: string | null
           reviewer_notes?: string | null
           severity?: Database["public"]["Enums"]["severity_level"]
@@ -409,6 +424,8 @@ export type Database = {
       }
       vulnerability_findings: {
         Row: {
+          ai_verified: boolean | null
+          confidence_level: string | null
           created_at: string
           cvss_score: number | null
           description: string | null
@@ -424,6 +441,8 @@ export type Database = {
           validation_status: string | null
         }
         Insert: {
+          ai_verified?: boolean | null
+          confidence_level?: string | null
           created_at?: string
           cvss_score?: number | null
           description?: string | null
@@ -439,6 +458,8 @@ export type Database = {
           validation_status?: string | null
         }
         Update: {
+          ai_verified?: boolean | null
+          confidence_level?: string | null
           created_at?: string
           cvss_score?: number | null
           description?: string | null

@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -17,7 +17,7 @@ interface AgentStatus {
 }
 
 export default function SystemHealth() {
-  const [refreshing, setRefreshing] = useState<Set<string>>(new Set());
+  const queryClient = useQueryClient();
 
   const { data: agents, isLoading, refetch } = useQuery({
     queryKey: ["agent-health"],
@@ -42,6 +42,28 @@ export default function SystemHealth() {
     },
   });
 
+  const clearTasks = useMutation({
+    mutationFn: async () => {
+      const { error } = await supabase.from("agent_tasks").delete().neq("id", "00000000-0000-0000-0000-000000000000");
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["agent-health"] });
+      toast.success("All task history cleared");
+    },
+  });
+
+  const clearEvidence = useMutation({
+    mutationFn: async () => {
+      const { error } = await supabase.from("evidence_packages").delete().neq("id", "00000000-0000-0000-0000-000000000000");
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["evidence-count"] });
+      toast.success("All evidence packages cleared");
+    },
+  });
+
   const getHeartbeat = (updatedAt: string) => {
     const diff = Date.now() - new Date(updatedAt).getTime();
     if (diff < 60000) return { label: "Active", color: "bg-cyber-green", textColor: "text-cyber-green" };
@@ -56,6 +78,16 @@ export default function SystemHealth() {
     } else {
       toast.success("Agent terminated");
       refetch();
+    }
+  };
+
+  const deleteAgent = async (id: string) => {
+    const { error } = await supabase.from("agent_tasks").delete().eq("id", id);
+    if (error) {
+      toast.error("Failed to delete task");
+    } else {
+      toast.success("Task deleted");
+      queryClient.invalidateQueries({ queryKey: ["agent-health"] });
     }
   };
 
@@ -76,9 +108,29 @@ export default function SystemHealth() {
           <h1 className="text-xl font-bold font-mono text-primary text-glow-green">System Health</h1>
           <p className="text-xs font-mono text-muted-foreground">Agent management & audit endpoint monitoring</p>
         </div>
-        <Button variant="outline" size="sm" className="font-mono text-xs gap-1" onClick={() => refetch()}>
-          <RefreshCw className="h-3 w-3" /> Refresh
-        </Button>
+        <div className="flex gap-2">
+          <Button variant="outline" size="sm" className="font-mono text-xs gap-1" onClick={() => refetch()}>
+            <RefreshCw className="h-3 w-3" /> Refresh
+          </Button>
+          {agents && agents.length > 0 && (
+            <Button
+              variant="outline" size="sm"
+              className="font-mono text-[10px] gap-1 text-destructive border-destructive/30 hover:bg-destructive/10"
+              onClick={() => { if (confirm("Clear all task history?")) clearTasks.mutate(); }}
+            >
+              <Trash2 className="h-3 w-3" /> Clear Tasks
+            </Button>
+          )}
+          {(evidenceCount || 0) > 0 && (
+            <Button
+              variant="outline" size="sm"
+              className="font-mono text-[10px] gap-1 text-destructive border-destructive/30 hover:bg-destructive/10"
+              onClick={() => { if (confirm("Clear all evidence packages?")) clearEvidence.mutate(); }}
+            >
+              <Trash2 className="h-3 w-3" /> Clear Evidence
+            </Button>
+          )}
+        </div>
       </div>
 
       {/* Stats */}
@@ -119,9 +171,7 @@ export default function SystemHealth() {
                     <span className={`absolute -top-0.5 -right-0.5 h-2 w-2 rounded-full ${heartbeat.color} ${heartbeat.label === "Active" ? "animate-pulse" : ""}`} />
                   </div>
                   <div>
-                    <p className="text-sm font-mono font-semibold text-card-foreground">
-                      {agent.task_type}
-                    </p>
+                    <p className="text-sm font-mono font-semibold text-card-foreground">{agent.task_type}</p>
                     <p className="text-[10px] font-mono text-muted-foreground">
                       {agent.target_name || "Unknown"} • {new Date(agent.updated_at).toLocaleTimeString()}
                     </p>
@@ -136,10 +186,18 @@ export default function SystemHealth() {
                   </Badge>
                   {(agent.status === "running" || agent.status === "pending") && (
                     <Button
-                      variant="ghost"
-                      size="icon"
+                      variant="ghost" size="icon"
                       className="h-7 w-7 text-muted-foreground hover:text-destructive"
                       onClick={() => terminateAgent(agent.id)}
+                    >
+                      <Trash2 className="h-3 w-3" />
+                    </Button>
+                  )}
+                  {(agent.status === "completed" || agent.status === "failed") && (
+                    <Button
+                      variant="ghost" size="icon"
+                      className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                      onClick={() => deleteAgent(agent.id)}
                     >
                       <Trash2 className="h-3 w-3" />
                     </Button>
