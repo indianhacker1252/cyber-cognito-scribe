@@ -429,6 +429,16 @@ async function runDifferentialTest(
         }
       }
 
+      // ─── Apply execution evidence boost ───
+      if (executionEvidence.hasEvidence) {
+        result.isVulnerable = true;
+        result.confidenceScore = Math.min(result.confidenceScore + executionEvidence.confidenceBoost, 99);
+        if (result.confidenceScore >= 80) result.confidence = "high";
+      } else if (result.isVulnerable && executionEvidence.confidenceBoost < 0) {
+        result.confidenceScore = Math.max(result.confidenceScore + executionEvidence.confidenceBoost, 10);
+        if (result.confidenceScore < 50) result.confidence = "low";
+      }
+
       // ─── Intruder Mode: run additional payloads for confirmed vulns ───
       if (result.isVulnerable) {
         const intruderPayloads = getIntruderPayloads(vulnClass, paramValue);
@@ -449,7 +459,6 @@ async function runDifferentialTest(
 
         result.intruderResults = intruderResults;
 
-        // Boost confidence if intruder confirms
         const successfulIntruder = intruderResults.filter((ir) => ir.status === 200 || ir.status === 500).length;
         if (successfulIntruder >= 2) {
           result.confidenceScore = Math.min(result.confidenceScore + 15, 99);
