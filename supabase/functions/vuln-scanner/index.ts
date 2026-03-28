@@ -281,6 +281,9 @@ async function runDifferentialTest(
         continue;
       }
 
+      // ─── Response-Payload Correlation (LogicVerifier) ───
+      const executionEvidence = analyzeExecutionEvidence(vulnClass, attempt.payload, trueBody, falseBody);
+
       const result: DiffResult = {
         isVulnerable: false,
         vulnClass,
