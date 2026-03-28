@@ -27,8 +27,8 @@ export async function markAsFalsePositive(
     target_id: targetId || null,
     finding_type: findingType,
     vuln_class: vulnClass,
-    request_pattern: requestPattern,
-    response_pattern: responsePattern,
+    request_pattern: requestPattern as any,
+    response_pattern: responsePattern as any,
     suppression_reason: reason,
   }]);
 
