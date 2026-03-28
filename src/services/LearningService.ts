@@ -23,14 +23,14 @@ export async function markAsFalsePositive(
   reason: string,
   targetId?: string
 ): Promise<boolean> {
-  const { error } = await supabase.from("suppression_vectors").insert({
+  const { error } = await supabase.from("suppression_vectors").insert([{
     target_id: targetId || null,
     finding_type: findingType,
     vuln_class: vulnClass,
     request_pattern: requestPattern,
     response_pattern: responsePattern,
     suppression_reason: reason,
-  });
+  }]);
 
   return !error;
 }
