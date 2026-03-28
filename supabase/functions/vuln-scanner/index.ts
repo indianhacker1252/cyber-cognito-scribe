@@ -874,9 +874,15 @@ serve(async (req) => {
       approvalCount++;
     }
 
-    // Active differential findings with request/response capture
+    // Active differential findings with request/response capture + suppression check
     for (const diff of vulnFindings) {
       const matchingCheck = vulnChecks.find((c) => c.vulnClasses.includes(diff.vulnClass));
+      const suppressKey = `active-${diff.vulnClass}:${diff.vulnClass}`;
+      if (suppressedTypes.has(suppressKey)) {
+        await log(db, targetId, taskId, "info", `⛔ Suppressed ${diff.vulnClass} — matches false positive pattern`);
+        continue;
+      }
+
       const severityMap: Record<string, string> = { high: "high", medium: "medium", low: "low" };
       const confidenceLabel = diff.confidenceScore >= 80 ? "high" : diff.confidenceScore >= 50 ? "medium" : "low";
 
@@ -894,6 +900,7 @@ serve(async (req) => {
         request_data: diff.requestData,
         response_data: diff.responseData,
         confidence_level: confidenceLabel,
+        confidence_score: diff.confidenceScore,
         ai_verified: false,
         ai_verification_notes: `Differential analysis confidence: ${diff.confidenceScore}%. Awaiting AI verification.`,
         evidence: {
@@ -909,8 +916,15 @@ serve(async (req) => {
       approvalCount++;
     }
 
-    // CVE findings
+    // CVE findings with version sanity check
+    const serverHeader = techStack.server || "";
     for (const cve of cveResults.slice(0, 10)) {
+      const versionCheck = checkVersionSanity(cve.cveId, serverHeader);
+      if (versionCheck.shouldSuppress) {
+        await log(db, targetId, taskId, "info", `⛔ Suppressed ${cve.cveId} — ${versionCheck.reason}`);
+        continue;
+      }
+
       const severityMap: Record<string, string> = { CRITICAL: "critical", HIGH: "high", MEDIUM: "medium", LOW: "low" };
       await db.from("pending_approvals").insert({
         target_id: targetId,
