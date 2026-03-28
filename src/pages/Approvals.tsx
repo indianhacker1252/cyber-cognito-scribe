@@ -4,10 +4,12 @@ import { supabase } from "@/integrations/supabase/client";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { CheckCircle, XCircle, AlertTriangle, Eye, ShieldCheck, Shield, Trash2, BrainCircuit } from "lucide-react";
+import { CheckCircle, XCircle, AlertTriangle, Eye, ShieldCheck, Shield, Trash2, BrainCircuit, Ban, Gauge } from "lucide-react";
 import { toast } from "sonner";
 import ValidationModal from "@/components/ValidationModal";
 import AdaptiveValidationModal from "@/components/AdaptiveValidationModal";
+import { markAsFalsePositive } from "@/services/LearningService";
+import { triageFinding } from "@/services/TriageBrain";
 
 const severityBadge: Record<string, string> = {
   critical: "bg-cyber-red/20 text-cyber-red border-cyber-red/30",
@@ -50,10 +52,13 @@ interface Approval {
   created_at: string;
   reviewed_at: string | null;
   confidence_level?: string | null;
+  confidence_score?: number | null;
   ai_verified?: boolean | null;
   ai_verification_notes?: string | null;
   request_data?: Record<string, unknown> | null;
   response_data?: Record<string, unknown> | null;
+  reachability_status?: string | null;
+  triage_reasoning?: string | null;
   target_workspaces?: { name: string } | null;
 }
 
@@ -63,6 +68,7 @@ export default function Approvals() {
   const [notes, setNotes] = useState("");
   const [validationTarget, setValidationTarget] = useState<Approval | null>(null);
   const [adaptiveTarget, setAdaptiveTarget] = useState<Approval | null>(null);
+  const [triaging, setTriaging] = useState<string | null>(null);
 
   const { data: approvals, isLoading } = useQuery({
     queryKey: ["approvals"],
@@ -83,7 +89,6 @@ export default function Approvals() {
         toast.info("New finding requires review");
       })
       .subscribe();
-
     return () => { supabase.removeChannel(channel); };
   }, [queryClient]);
 
@@ -110,7 +115,10 @@ export default function Approvals() {
           payload: selected.payload_used,
           remediation: (selected.evidence as any)?.remediation || null,
           confidence_level: selected.confidence_level || "medium",
+          confidence_score: selected.confidence_score || 0,
           ai_verified: selected.ai_verified || false,
+          triage_reasoning: selected.triage_reasoning,
+          reachability_status: selected.reachability_status,
         }]);
       }
     },
@@ -123,6 +131,54 @@ export default function Approvals() {
     },
     onError: (e) => toast.error(e.message),
   });
+
+  const handleFalsePositive = async (approval: Approval) => {
+    const success = await markAsFalsePositive(
+      approval.finding_type,
+      (approval.evidence as any)?.vulnClass || null,
+      approval.request_data || {},
+      approval.response_data || {},
+      notes || "Marked as false positive by human reviewer",
+      approval.target_id
+    );
+    if (success) {
+      updateApproval.mutate({ id: approval.id, status: "rejected" });
+      toast.success("False positive recorded — pattern added to suppression database");
+    } else {
+      toast.error("Failed to record suppression vector");
+    }
+  };
+
+  const handleAiTriage = async (approval: Approval) => {
+    setTriaging(approval.id);
+    try {
+      const result = await triageFinding({
+        title: approval.title,
+        vulnClass: (approval.evidence as any)?.vulnClass || approval.finding_type,
+        severity: approval.severity,
+        payload: approval.payload_used || "",
+        requestData: approval.request_data || {},
+        responseData: approval.response_data || {},
+        baselineResponse: approval.baseline_response || {},
+        mutatedResponse: approval.mutated_response || {},
+        reachabilityStatus: approval.reachability_status || "unknown",
+      });
+
+      await supabase.from("pending_approvals").update({
+        confidence_score: result.confidenceScore,
+        triage_reasoning: result.reasoning,
+        ai_verified: result.classification === "deep_finding" || result.classification === "confirmed",
+        confidence_level: result.confidenceScore >= 80 ? "high" : result.confidenceScore >= 50 ? "medium" : "low",
+      }).eq("id", approval.id);
+
+      queryClient.invalidateQueries({ queryKey: ["approvals"] });
+      toast.success(`AI Triage: ${result.classification} (${result.confidenceScore}%)`);
+    } catch {
+      toast.error("AI triage failed");
+    } finally {
+      setTriaging(null);
+    }
+  };
 
   const deleteApproval = useMutation({
     mutationFn: async (id: string) => {
@@ -147,6 +203,14 @@ export default function Approvals() {
   });
 
   const pendingCount = approvals?.filter((a) => a.status === "pending").length || 0;
+
+  const getConfidenceColor = (score: number | null | undefined) => {
+    if (!score) return "text-muted-foreground";
+    if (score >= 90) return "text-cyber-green";
+    if (score >= 85) return "text-cyber-cyan";
+    if (score >= 50) return "text-cyber-amber";
+    return "text-cyber-red";
+  };
 
   return (
     <div className="space-y-6">
@@ -193,6 +257,11 @@ export default function Approvals() {
                 </div>
               </div>
               <div className="flex items-center gap-2 shrink-0">
+                {approval.confidence_score != null && approval.confidence_score > 0 && (
+                  <Badge variant="outline" className={`text-[9px] font-mono ${getConfidenceColor(approval.confidence_score)} border-current/30 gap-0.5`}>
+                    <Gauge className="h-2.5 w-2.5" /> {approval.confidence_score}%
+                  </Badge>
+                )}
                 {approval.ai_verified && (
                   <Badge variant="outline" className="text-[9px] font-mono bg-cyber-green/20 text-cyber-green border-cyber-green/30 gap-0.5">
                     <BrainCircuit className="h-2.5 w-2.5" /> AI ✓
@@ -247,6 +316,11 @@ export default function Approvals() {
                       CVSS {selected.cvss_score}
                     </Badge>
                   )}
+                  {selected.confidence_score != null && selected.confidence_score > 0 && (
+                    <Badge variant="outline" className={`text-[9px] font-mono ${getConfidenceColor(selected.confidence_score)} border-current/30 gap-0.5`}>
+                      <Gauge className="h-2.5 w-2.5" /> {selected.confidence_score}%
+                    </Badge>
+                  )}
                   {selected.confidence_level && (
                     <Badge variant="outline" className={`text-[9px] font-mono ${confidenceBadge[selected.confidence_level] || ""}`}>
                       Confidence: {selected.confidence_level}
@@ -257,12 +331,22 @@ export default function Approvals() {
                       <BrainCircuit className="h-2.5 w-2.5" /> AI Verified
                     </Badge>
                   )}
-                  {selected.ai_verified === false && (
-                    <Badge variant="outline" className="text-[9px] font-mono bg-cyber-amber/20 text-cyber-amber border-cyber-amber/30">
-                      Unverified
+                  {selected.reachability_status && selected.reachability_status !== "unknown" && (
+                    <Badge variant="outline" className={`text-[9px] font-mono ${selected.reachability_status === "reachable" ? "text-cyber-red border-cyber-red/30" : "text-cyber-green border-cyber-green/30"}`}>
+                      {selected.reachability_status === "reachable" ? "🌐 Public" : "🛡️ Protected"}
                     </Badge>
                   )}
                 </div>
+
+                {/* AI Triage Reasoning */}
+                {selected.triage_reasoning && (
+                  <div className="border border-primary/20 rounded-lg p-3 bg-primary/5">
+                    <p className="text-[10px] font-mono uppercase text-primary mb-1 flex items-center gap-1">
+                      <BrainCircuit className="h-3 w-3" /> AI Triage Reasoning
+                    </p>
+                    <p className="text-xs font-mono text-card-foreground whitespace-pre-wrap">{selected.triage_reasoning}</p>
+                  </div>
+                )}
 
                 {selected.ai_verification_notes && (
                   <div>
@@ -292,7 +376,6 @@ export default function Approvals() {
                   </div>
                 )}
 
-                {/* Request/Response Capture (Repeater View) */}
                 {selected.request_data && Object.keys(selected.request_data).length > 0 && (
                   <div>
                     <p className="text-[10px] font-mono uppercase text-muted-foreground mb-1">📡 Request (Repeater)</p>
@@ -328,7 +411,6 @@ export default function Approvals() {
                   </div>
                 )}
 
-                {/* Intruder Results */}
                 {(selected.evidence as any)?.intruderResults && (
                   <div>
                     <p className="text-[10px] font-mono uppercase text-muted-foreground mb-1">🎯 Intruder Results</p>
@@ -378,45 +460,59 @@ export default function Approvals() {
                 </div>
 
                 {selected.status === "pending" && (
-                  <div className="flex gap-2 flex-wrap">
+                  <div className="space-y-2">
+                    {/* AI Triage Button */}
                     <Button
-                      size="sm"
-                      className="flex-1 font-mono text-xs gap-1 bg-cyber-green/20 text-cyber-green hover:bg-cyber-green/30 border border-cyber-green/30"
-                      onClick={() => updateApproval.mutate({ id: selected.id, status: "approved" })}
-                      disabled={updateApproval.isPending}
+                      size="sm" className="w-full font-mono text-xs gap-1 bg-primary/20 text-primary hover:bg-primary/30 border border-primary/30"
+                      onClick={() => handleAiTriage(selected)}
+                      disabled={triaging === selected.id}
                     >
-                      <CheckCircle className="h-3 w-3" /> Confirm & Log
+                      <BrainCircuit className="h-3 w-3" />
+                      {triaging === selected.id ? "AI Triaging..." : "🧠 Run AI Triage"}
                     </Button>
-                    <Button
-                      size="sm" variant="outline"
-                      className="flex-1 font-mono text-xs gap-1"
-                      onClick={() => updateApproval.mutate({ id: selected.id, status: "rejected" })}
-                      disabled={updateApproval.isPending}
-                    >
-                      <XCircle className="h-3 w-3" /> False Positive
-                    </Button>
-                    <Button
-                      size="sm" variant="outline"
-                      className="font-mono text-xs gap-1 border-cyber-purple/30 text-cyber-purple hover:bg-cyber-purple/10"
-                      onClick={() => updateApproval.mutate({ id: selected.id, status: "escalated" })}
-                      disabled={updateApproval.isPending}
-                    >
-                      <Eye className="h-3 w-3" /> Escalate
-                    </Button>
-                    <Button
-                      size="sm" variant="outline"
-                      className="font-mono text-xs gap-1 border-primary/30 text-primary hover:bg-primary/10"
-                      onClick={() => { setValidationTarget(selected); setSelected(null); }}
-                    >
-                      <Shield className="h-3 w-3" /> Validate
-                    </Button>
-                    <Button
-                      size="sm" variant="outline"
-                      className="font-mono text-xs gap-1 border-cyber-amber/30 text-cyber-amber hover:bg-cyber-amber/10"
-                      onClick={() => { setAdaptiveTarget(selected); setSelected(null); }}
-                    >
-                      <Shield className="h-3 w-3" /> Adaptive
-                    </Button>
+
+                    <div className="flex gap-2 flex-wrap">
+                      <Button
+                        size="sm"
+                        className="flex-1 font-mono text-xs gap-1 bg-cyber-green/20 text-cyber-green hover:bg-cyber-green/30 border border-cyber-green/30"
+                        onClick={() => updateApproval.mutate({ id: selected.id, status: "approved" })}
+                        disabled={updateApproval.isPending}
+                      >
+                        <CheckCircle className="h-3 w-3" /> Confirm & Log
+                      </Button>
+                      <Button
+                        size="sm" variant="outline"
+                        className="flex-1 font-mono text-xs gap-1 text-cyber-red border-cyber-red/30 hover:bg-cyber-red/10"
+                        onClick={() => handleFalsePositive(selected)}
+                        disabled={updateApproval.isPending}
+                      >
+                        <Ban className="h-3 w-3" /> False Positive + Learn
+                      </Button>
+                      <Button
+                        size="sm" variant="outline"
+                        className="font-mono text-xs gap-1 border-cyber-purple/30 text-cyber-purple hover:bg-cyber-purple/10"
+                        onClick={() => updateApproval.mutate({ id: selected.id, status: "escalated" })}
+                        disabled={updateApproval.isPending}
+                      >
+                        <Eye className="h-3 w-3" /> Escalate
+                      </Button>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button
+                        size="sm" variant="outline"
+                        className="flex-1 font-mono text-xs gap-1 border-primary/30 text-primary hover:bg-primary/10"
+                        onClick={() => { setValidationTarget(selected); setSelected(null); }}
+                      >
+                        <Shield className="h-3 w-3" /> Validate
+                      </Button>
+                      <Button
+                        size="sm" variant="outline"
+                        className="flex-1 font-mono text-xs gap-1 border-cyber-amber/30 text-cyber-amber hover:bg-cyber-amber/10"
+                        onClick={() => { setAdaptiveTarget(selected); setSelected(null); }}
+                      >
+                        <Shield className="h-3 w-3" /> Adaptive
+                      </Button>
+                    </div>
                   </div>
                 )}
               </div>

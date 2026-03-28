@@ -4,10 +4,12 @@ import { supabase } from "@/integrations/supabase/client";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { ShieldAlert, Shield, Trash2, BrainCircuit } from "lucide-react";
+import { ShieldAlert, Shield, Trash2, BrainCircuit, Gauge, Ban } from "lucide-react";
 import { toast } from "sonner";
 import ValidationModal from "@/components/ValidationModal";
 import AdaptiveValidationModal from "@/components/AdaptiveValidationModal";
+import { markAsFalsePositive } from "@/services/LearningService";
+import { triageFinding } from "@/services/TriageBrain";
 
 const severityBadge: Record<string, string> = {
   critical: "bg-cyber-red/20 text-cyber-red border-cyber-red/30",
@@ -27,6 +29,7 @@ export default function Findings() {
   const queryClient = useQueryClient();
   const [selectedFinding, setSelectedFinding] = useState<any>(null);
   const [adaptiveFinding, setAdaptiveFinding] = useState<any>(null);
+  const [triaging, setTriaging] = useState<string | null>(null);
 
   const { data: findings, isLoading } = useQuery({
     queryKey: ["findings"],
@@ -61,12 +64,61 @@ export default function Findings() {
     },
   });
 
+  const handleFalsePositive = async (f: any) => {
+    const success = await markAsFalsePositive(
+      f.title,
+      null,
+      {},
+      {},
+      "Marked as false positive from findings page",
+      f.target_id
+    );
+    if (success) {
+      deleteFinding.mutate(f.id);
+      toast.success("False positive recorded & finding removed");
+    }
+  };
+
+  const handleAiTriage = async (f: any) => {
+    setTriaging(f.id);
+    try {
+      const result = await triageFinding({
+        title: f.title,
+        vulnClass: f.title,
+        severity: f.severity,
+        payload: f.payload || "",
+      });
+
+      await supabase.from("vulnerability_findings").update({
+        confidence_score: result.confidenceScore,
+        confidence_level: result.confidenceScore >= 80 ? "high" : result.confidenceScore >= 50 ? "medium" : "low",
+        ai_verified: result.classification === "deep_finding" || result.classification === "confirmed",
+        triage_reasoning: result.reasoning,
+      }).eq("id", f.id);
+
+      queryClient.invalidateQueries({ queryKey: ["findings"] });
+      toast.success(`AI Triage: ${result.classification} (${result.confidenceScore}%)`);
+    } catch {
+      toast.error("AI triage failed");
+    } finally {
+      setTriaging(null);
+    }
+  };
+
+  const getConfidenceColor = (score: number | null | undefined) => {
+    if (!score) return "text-muted-foreground";
+    if (score >= 90) return "text-cyber-green";
+    if (score >= 85) return "text-cyber-cyan";
+    if (score >= 50) return "text-cyber-amber";
+    return "text-cyber-red";
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-bold font-mono text-primary text-glow-green">Vulnerability Findings</h1>
-          <p className="text-xs font-mono text-muted-foreground">Discovered vulnerabilities with CVSS scores — click to validate</p>
+          <p className="text-xs font-mono text-muted-foreground">Verified vulnerabilities with confidence scores — AI triaged</p>
         </div>
         {findings && findings.length > 0 && (
           <Button
@@ -89,6 +141,7 @@ export default function Findings() {
                 <TableHead className="font-mono text-[10px] uppercase text-muted-foreground">Severity</TableHead>
                 <TableHead className="font-mono text-[10px] uppercase text-muted-foreground">Title</TableHead>
                 <TableHead className="font-mono text-[10px] uppercase text-muted-foreground">CVSS</TableHead>
+                <TableHead className="font-mono text-[10px] uppercase text-muted-foreground">Score</TableHead>
                 <TableHead className="font-mono text-[10px] uppercase text-muted-foreground">Confidence</TableHead>
                 <TableHead className="font-mono text-[10px] uppercase text-muted-foreground">Target</TableHead>
                 <TableHead className="font-mono text-[10px] uppercase text-muted-foreground">Status</TableHead>
@@ -103,8 +156,20 @@ export default function Findings() {
                       {f.severity}
                     </Badge>
                   </TableCell>
-                  <TableCell className="font-mono text-xs text-card-foreground max-w-xs truncate">{f.title}</TableCell>
+                  <TableCell className="font-mono text-xs text-card-foreground max-w-xs truncate">
+                    {f.title}
+                    {f.triage_reasoning && (
+                      <p className="text-[9px] text-muted-foreground mt-0.5 truncate" title={f.triage_reasoning}>
+                        💡 {f.triage_reasoning.slice(0, 60)}...
+                      </p>
+                    )}
+                  </TableCell>
                   <TableCell className="font-mono text-xs text-cyber-amber">{f.cvss_score || "—"}</TableCell>
+                  <TableCell>
+                    <span className={`font-mono text-xs font-bold ${getConfidenceColor(f.confidence_score)}`}>
+                      {f.confidence_score ? `${f.confidence_score}%` : "—"}
+                    </span>
+                  </TableCell>
                   <TableCell>
                     <div className="flex items-center gap-1">
                       {f.confidence_level && (
@@ -140,6 +205,21 @@ export default function Findings() {
                         onClick={() => setAdaptiveFinding(f)}
                       >
                         <Shield className="h-3 w-3" /> Adaptive
+                      </Button>
+                      <Button
+                        variant="outline" size="sm"
+                        className="font-mono text-[10px] gap-1 border-cyber-cyan/30 text-cyber-cyan hover:bg-cyber-cyan/10"
+                        onClick={() => handleAiTriage(f)}
+                        disabled={triaging === f.id}
+                      >
+                        <Gauge className="h-3 w-3" /> {triaging === f.id ? "..." : "Triage"}
+                      </Button>
+                      <Button
+                        variant="outline" size="sm"
+                        className="font-mono text-[10px] gap-1 border-cyber-red/30 text-cyber-red hover:bg-cyber-red/10"
+                        onClick={() => handleFalsePositive(f)}
+                      >
+                        <Ban className="h-3 w-3" /> FP
                       </Button>
                       <Button
                         variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive"
