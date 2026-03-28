@@ -854,6 +854,10 @@ serve(async (req) => {
     await log(db, targetId, taskId, "thought", "Routing verified findings to HITL approval queue");
     let approvalCount = 0;
 
+    // ── Check suppression vectors ──
+    const { data: suppressionVectors } = await db.from("suppression_vectors").select("*");
+    const suppressedTypes = new Set((suppressionVectors || []).map((v: any) => `${v.finding_type}:${v.vuln_class || ""}`));
+
     // Passive findings
     for (const passive of passiveResults) {
       await db.from("pending_approvals").insert({
