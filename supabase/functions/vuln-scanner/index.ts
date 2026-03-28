@@ -41,6 +41,47 @@ function isSafePayload(payload: string): boolean {
   return !FORBIDDEN_PATTERNS.some((p) => p.test(payload));
 }
 
+// ─── RESPONSE-PAYLOAD CORRELATION (LogicVerifier) ───────
+function analyzeExecutionEvidence(vulnClass: string, payload: string, responseBody: string, baselineBody: string): { hasEvidence: boolean; evidenceType: string; details: string; confidenceBoost: number } {
+  const result = { hasEvidence: false, evidenceType: "none", details: "No execution evidence", confidenceBoost: 0 };
+  const sqlErrors = [/you have an error in your sql syntax/i, /mysql_fetch/i, /pg_query/i, /ORA-\d{4,5}/i, /SQLSTATE\[/i, /PDOException/i, /unclosed quotation mark/i, /syntax error at or near/i];
+  const cmdiEvidence = [/uid=\d+\(/, /root:.*:0:0/, /cyberscope_marker/, /bin\/bash/, /bin\/sh/];
+  const pathEvidence = [/root:.*:0:0/, /\[boot loader\]/i, /bin\//, /etc\/passwd/];
+
+  if (vulnClass === "sqli" || vulnClass === "auth-bypass") {
+    for (const p of sqlErrors) { if (p.test(responseBody) && !p.test(baselineBody)) { result.hasEvidence = true; result.evidenceType = "sql_error"; result.details = `DB error: ${p.source}`; result.confidenceBoost = 25; return result; } }
+    const ratio = Math.abs(responseBody.length - baselineBody.length) / Math.max(baselineBody.length, 1);
+    if (ratio > 0.3) { result.hasEvidence = true; result.evidenceType = "body_change"; result.details = `Body changed ${(ratio*100).toFixed(1)}%`; result.confidenceBoost = 15; }
+  } else if (vulnClass === "rxss" || vulnClass === "stored-xss") {
+    if (responseBody.includes("<cyberscope>") || responseBody.includes("onerror=cyberscope")) { result.hasEvidence = true; result.evidenceType = "xss_unescaped"; result.details = "Probe reflected unescaped"; result.confidenceBoost = 30; }
+  } else if (vulnClass === "cmdi") {
+    for (const p of cmdiEvidence) { if (p.test(responseBody) && !p.test(baselineBody)) { result.hasEvidence = true; result.evidenceType = "cmd_output"; result.details = `Cmd evidence: ${p.source}`; result.confidenceBoost = 30; return result; } }
+  } else if (vulnClass === "ssti") {
+    if (/\b49\b/.test(responseBody) && !/\b49\b/.test(baselineBody)) { result.hasEvidence = true; result.evidenceType = "template_eval"; result.details = "7*7=49 evaluated"; result.confidenceBoost = 28; }
+  } else if (vulnClass === "path-traversal" || vulnClass === "lfi") {
+    for (const p of pathEvidence) { if (p.test(responseBody)) { result.hasEvidence = true; result.evidenceType = "file_leak"; result.details = `File content: ${p.source}`; result.confidenceBoost = 30; return result; } }
+  } else if (vulnClass === "xxe") {
+    if (responseBody.includes("cyberscope") && !baselineBody.includes("cyberscope")) { result.hasEvidence = true; result.evidenceType = "entity_expansion"; result.details = "XXE entity expanded"; result.confidenceBoost = 30; }
+  } else if (vulnClass === "ssrf") {
+    if (/169\.254\.169\.254|metadata|ami-id/.test(responseBody) && !/169\.254\.169\.254/.test(baselineBody)) { result.hasEvidence = true; result.evidenceType = "internal_data"; result.details = "Internal service data"; result.confidenceBoost = 28; }
+  }
+  return result;
+}
+
+// ─── VERSION SANITY CHECK (Backported Patches) ──────────
+function checkVersionSanity(detectedVersion: string, serverHeader: string): { shouldSuppress: boolean; reason: string } {
+  const allHeaders = `${detectedVersion} ${serverHeader}`.toLowerCase();
+  const backportMarkers = [/\.el\d+/i, /\.deb\d+/i, /ubuntu/i, /\.amzn\d+/i, /\.fc\d+/i];
+  const distroNames = ["rhel", "centos", "debian", "ubuntu", "fedora", "amazon linux", "suse"];
+  for (const marker of backportMarkers) {
+    if (marker.test(allHeaders)) return { shouldSuppress: true, reason: `Enterprise build detected (${marker.source}) — backported patches likely` };
+  }
+  for (const name of distroNames) {
+    if (allHeaders.includes(name)) return { shouldSuppress: true, reason: `${name} detected — security fixes likely backported` };
+  }
+  return { shouldSuppress: false, reason: "No backport indicators" };
+}
+
 // ─── 1. COMPREHENSIVE HEURISTIC ROUTER ──────────────────
 
 interface VulnCheck {
@@ -281,6 +322,9 @@ async function runDifferentialTest(
         continue;
       }
 
+      // ─── Response-Payload Correlation (LogicVerifier) ───
+      const executionEvidence = analyzeExecutionEvidence(vulnClass, attempt.payload, trueBody, falseBody);
+
       const result: DiffResult = {
         isVulnerable: false,
         vulnClass,
@@ -385,6 +429,16 @@ async function runDifferentialTest(
         }
       }
 
+      // ─── Apply execution evidence boost ───
+      if (executionEvidence.hasEvidence) {
+        result.isVulnerable = true;
+        result.confidenceScore = Math.min(result.confidenceScore + executionEvidence.confidenceBoost, 99);
+        if (result.confidenceScore >= 80) result.confidence = "high";
+      } else if (result.isVulnerable && executionEvidence.confidenceBoost < 0) {
+        result.confidenceScore = Math.max(result.confidenceScore + executionEvidence.confidenceBoost, 10);
+        if (result.confidenceScore < 50) result.confidence = "low";
+      }
+
       // ─── Intruder Mode: run additional payloads for confirmed vulns ───
       if (result.isVulnerable) {
         const intruderPayloads = getIntruderPayloads(vulnClass, paramValue);
@@ -405,7 +459,6 @@ async function runDifferentialTest(
 
         result.intruderResults = intruderResults;
 
-        // Boost confidence if intruder confirms
         const successfulIntruder = intruderResults.filter((ir) => ir.status === 200 || ir.status === 500).length;
         if (successfulIntruder >= 2) {
           result.confidenceScore = Math.min(result.confidenceScore + 15, 99);
@@ -801,6 +854,10 @@ serve(async (req) => {
     await log(db, targetId, taskId, "thought", "Routing verified findings to HITL approval queue");
     let approvalCount = 0;
 
+    // ── Check suppression vectors ──
+    const { data: suppressionVectors } = await db.from("suppression_vectors").select("*");
+    const suppressedTypes = new Set((suppressionVectors || []).map((v: any) => `${v.finding_type}:${v.vuln_class || ""}`));
+
     // Passive findings
     for (const passive of passiveResults) {
       await db.from("pending_approvals").insert({
@@ -817,9 +874,15 @@ serve(async (req) => {
       approvalCount++;
     }
 
-    // Active differential findings with request/response capture
+    // Active differential findings with request/response capture + suppression check
     for (const diff of vulnFindings) {
       const matchingCheck = vulnChecks.find((c) => c.vulnClasses.includes(diff.vulnClass));
+      const suppressKey = `active-${diff.vulnClass}:${diff.vulnClass}`;
+      if (suppressedTypes.has(suppressKey)) {
+        await log(db, targetId, taskId, "info", `⛔ Suppressed ${diff.vulnClass} — matches false positive pattern`);
+        continue;
+      }
+
       const severityMap: Record<string, string> = { high: "high", medium: "medium", low: "low" };
       const confidenceLabel = diff.confidenceScore >= 80 ? "high" : diff.confidenceScore >= 50 ? "medium" : "low";
 
@@ -837,6 +900,7 @@ serve(async (req) => {
         request_data: diff.requestData,
         response_data: diff.responseData,
         confidence_level: confidenceLabel,
+        confidence_score: diff.confidenceScore,
         ai_verified: false,
         ai_verification_notes: `Differential analysis confidence: ${diff.confidenceScore}%. Awaiting AI verification.`,
         evidence: {
@@ -852,8 +916,15 @@ serve(async (req) => {
       approvalCount++;
     }
 
-    // CVE findings
+    // CVE findings with version sanity check
+    const serverHeader = techStack.server || "";
     for (const cve of cveResults.slice(0, 10)) {
+      const versionCheck = checkVersionSanity(cve.cveId, serverHeader);
+      if (versionCheck.shouldSuppress) {
+        await log(db, targetId, taskId, "info", `⛔ Suppressed ${cve.cveId} — ${versionCheck.reason}`);
+        continue;
+      }
+
       const severityMap: Record<string, string> = { CRITICAL: "critical", HIGH: "high", MEDIUM: "medium", LOW: "low" };
       await db.from("pending_approvals").insert({
         target_id: targetId,

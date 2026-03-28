@@ -257,6 +257,7 @@ export type Database = {
           ai_verified: boolean | null
           baseline_response: Json | null
           confidence_level: string | null
+          confidence_score: number | null
           created_at: string
           cve_ids: string[] | null
           cvss_score: number | null
@@ -268,6 +269,7 @@ export type Database = {
           mutated_response: Json | null
           parameter: string | null
           payload_used: string | null
+          reachability_status: string | null
           request_data: Json | null
           response_data: Json | null
           reviewed_at: string | null
@@ -276,12 +278,14 @@ export type Database = {
           status: Database["public"]["Enums"]["approval_status"]
           target_id: string
           title: string
+          triage_reasoning: string | null
         }
         Insert: {
           ai_verification_notes?: string | null
           ai_verified?: boolean | null
           baseline_response?: Json | null
           confidence_level?: string | null
+          confidence_score?: number | null
           created_at?: string
           cve_ids?: string[] | null
           cvss_score?: number | null
@@ -293,6 +297,7 @@ export type Database = {
           mutated_response?: Json | null
           parameter?: string | null
           payload_used?: string | null
+          reachability_status?: string | null
           request_data?: Json | null
           response_data?: Json | null
           reviewed_at?: string | null
@@ -301,12 +306,14 @@ export type Database = {
           status?: Database["public"]["Enums"]["approval_status"]
           target_id: string
           title: string
+          triage_reasoning?: string | null
         }
         Update: {
           ai_verification_notes?: string | null
           ai_verified?: boolean | null
           baseline_response?: Json | null
           confidence_level?: string | null
+          confidence_score?: number | null
           created_at?: string
           cve_ids?: string[] | null
           cvss_score?: number | null
@@ -318,6 +325,7 @@ export type Database = {
           mutated_response?: Json | null
           parameter?: string | null
           payload_used?: string | null
+          reachability_status?: string | null
           request_data?: Json | null
           response_data?: Json | null
           reviewed_at?: string | null
@@ -326,6 +334,7 @@ export type Database = {
           status?: Database["public"]["Enums"]["approval_status"]
           target_id?: string
           title?: string
+          triage_reasoning?: string | null
         }
         Relationships: [
           {
@@ -389,6 +398,50 @@ export type Database = {
           },
         ]
       }
+      suppression_vectors: {
+        Row: {
+          created_at: string
+          created_by: string | null
+          finding_type: string
+          id: string
+          request_pattern: Json | null
+          response_pattern: Json | null
+          suppression_reason: string | null
+          target_id: string | null
+          vuln_class: string | null
+        }
+        Insert: {
+          created_at?: string
+          created_by?: string | null
+          finding_type: string
+          id?: string
+          request_pattern?: Json | null
+          response_pattern?: Json | null
+          suppression_reason?: string | null
+          target_id?: string | null
+          vuln_class?: string | null
+        }
+        Update: {
+          created_at?: string
+          created_by?: string | null
+          finding_type?: string
+          id?: string
+          request_pattern?: Json | null
+          response_pattern?: Json | null
+          suppression_reason?: string | null
+          target_id?: string | null
+          vuln_class?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "suppression_vectors_target_id_fkey"
+            columns: ["target_id"]
+            isOneToOne: false
+            referencedRelation: "target_workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       target_workspaces: {
         Row: {
           api_schema_url: string | null
@@ -426,6 +479,7 @@ export type Database = {
         Row: {
           ai_verified: boolean | null
           confidence_level: string | null
+          confidence_score: number | null
           created_at: string
           cvss_score: number | null
           description: string | null
@@ -434,15 +488,18 @@ export type Database = {
           id: string
           payload: string | null
           poc: string | null
+          reachability_status: string | null
           remediation: string | null
           severity: Database["public"]["Enums"]["severity_level"]
           target_id: string
           title: string
+          triage_reasoning: string | null
           validation_status: string | null
         }
         Insert: {
           ai_verified?: boolean | null
           confidence_level?: string | null
+          confidence_score?: number | null
           created_at?: string
           cvss_score?: number | null
           description?: string | null
@@ -451,15 +508,18 @@ export type Database = {
           id?: string
           payload?: string | null
           poc?: string | null
+          reachability_status?: string | null
           remediation?: string | null
           severity?: Database["public"]["Enums"]["severity_level"]
           target_id: string
           title: string
+          triage_reasoning?: string | null
           validation_status?: string | null
         }
         Update: {
           ai_verified?: boolean | null
           confidence_level?: string | null
+          confidence_score?: number | null
           created_at?: string
           cvss_score?: number | null
           description?: string | null
@@ -468,10 +528,12 @@ export type Database = {
           id?: string
           payload?: string | null
           poc?: string | null
+          reachability_status?: string | null
           remediation?: string | null
           severity?: Database["public"]["Enums"]["severity_level"]
           target_id?: string
           title?: string
+          triage_reasoning?: string | null
           validation_status?: string | null
         }
         Relationships: [
