@@ -505,6 +505,15 @@ export default function Approvals() {
                       {triaging === selected.id ? "AI Triaging..." : "🧠 Run AI Triage"}
                     </Button>
 
+                    <Button
+                      size="sm" className="w-full font-mono text-xs gap-1 bg-cyber-purple/20 text-cyber-purple hover:bg-cyber-purple/30 border border-cyber-purple/30"
+                      onClick={() => handleDeepTriage(selected)}
+                      disabled={deepTriaging === selected.id}
+                    >
+                      <Gauge className="h-3 w-3" />
+                      {deepTriaging === selected.id ? "Deep Judging..." : "🔬 Deep Signal Triage"}
+                    </Button>
+
                     <div className="flex gap-2 flex-wrap">
                       <Button
                         size="sm"
