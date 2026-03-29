@@ -10,6 +10,7 @@ import ValidationModal from "@/components/ValidationModal";
 import AdaptiveValidationModal from "@/components/AdaptiveValidationModal";
 import { markAsFalsePositive } from "@/services/LearningService";
 import { triageFinding } from "@/services/TriageBrain";
+import { deepTriageFinding } from "@/services/DeepSignalTriage";
 
 const severityBadge: Record<string, string> = {
   critical: "bg-cyber-red/20 text-cyber-red border-cyber-red/30",
@@ -69,6 +70,7 @@ export default function Approvals() {
   const [validationTarget, setValidationTarget] = useState<Approval | null>(null);
   const [adaptiveTarget, setAdaptiveTarget] = useState<Approval | null>(null);
   const [triaging, setTriaging] = useState<string | null>(null);
+  const [deepTriaging, setDeepTriaging] = useState<string | null>(null);
 
   const { data: approvals, isLoading } = useQuery({
     queryKey: ["approvals"],
@@ -177,6 +179,38 @@ export default function Approvals() {
       toast.error("AI triage failed");
     } finally {
       setTriaging(null);
+    }
+  };
+
+  const handleDeepTriage = async (approval: Approval) => {
+    setDeepTriaging(approval.id);
+    try {
+      const result = await deepTriageFinding({
+        findingTitle: approval.title,
+        vulnClass: (approval.evidence as any)?.vulnClass || approval.finding_type,
+        severity: approval.severity,
+        payload: approval.payload_used || "",
+        baselineResponse: approval.baseline_response || {},
+        mutatedResponse: approval.mutated_response || {},
+        intruderResults: (approval.evidence as any)?.intruderResults || [],
+        techStack: {},
+        confidenceScore: approval.confidence_score || 0,
+      });
+
+      const newScore = result.confidenceScore;
+      await supabase.from("pending_approvals").update({
+        confidence_score: newScore,
+        triage_reasoning: `[Deep Signal Judge] ${result.reasoning}\n\nVerdict: ${result.verdict} | Math consistency: ${result.mathematicalConsistency}% | Evidence chain: ${result.evidenceChainValid ? "Valid" : "Invalid"}\n\nRecommendations: ${result.recommendations.join("; ")}`,
+        ai_verified: result.verdict === "promote",
+        confidence_level: newScore >= 80 ? "high" : newScore >= 50 ? "medium" : "low",
+      }).eq("id", approval.id);
+
+      queryClient.invalidateQueries({ queryKey: ["approvals"] });
+      toast.success(`Deep Triage: ${result.verdict} (${newScore}%, math: ${result.mathematicalConsistency}%)`);
+    } catch {
+      toast.error("Deep signal triage failed");
+    } finally {
+      setDeepTriaging(null);
     }
   };
 
@@ -469,6 +503,15 @@ export default function Approvals() {
                     >
                       <BrainCircuit className="h-3 w-3" />
                       {triaging === selected.id ? "AI Triaging..." : "🧠 Run AI Triage"}
+                    </Button>
+
+                    <Button
+                      size="sm" className="w-full font-mono text-xs gap-1 bg-cyber-purple/20 text-cyber-purple hover:bg-cyber-purple/30 border border-cyber-purple/30"
+                      onClick={() => handleDeepTriage(selected)}
+                      disabled={deepTriaging === selected.id}
+                    >
+                      <Gauge className="h-3 w-3" />
+                      {deepTriaging === selected.id ? "Deep Judging..." : "🔬 Deep Signal Triage"}
                     </Button>
 
                     <div className="flex gap-2 flex-wrap">
