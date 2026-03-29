@@ -10,6 +10,7 @@ import ValidationModal from "@/components/ValidationModal";
 import AdaptiveValidationModal from "@/components/AdaptiveValidationModal";
 import { markAsFalsePositive } from "@/services/LearningService";
 import { triageFinding } from "@/services/TriageBrain";
+import { deepTriageFinding } from "@/services/DeepSignalTriage";
 
 const severityBadge: Record<string, string> = {
   critical: "bg-cyber-red/20 text-cyber-red border-cyber-red/30",
