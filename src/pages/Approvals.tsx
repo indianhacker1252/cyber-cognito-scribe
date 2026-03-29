@@ -70,6 +70,7 @@ export default function Approvals() {
   const [validationTarget, setValidationTarget] = useState<Approval | null>(null);
   const [adaptiveTarget, setAdaptiveTarget] = useState<Approval | null>(null);
   const [triaging, setTriaging] = useState<string | null>(null);
+  const [deepTriaging, setDeepTriaging] = useState<string | null>(null);
 
   const { data: approvals, isLoading } = useQuery({
     queryKey: ["approvals"],
