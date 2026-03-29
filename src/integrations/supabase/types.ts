@@ -251,6 +251,115 @@ export type Database = {
           },
         ]
       }
+      experience_vault: {
+        Row: {
+          confidence_score: number | null
+          created_at: string
+          embedding_vector: string | null
+          http_method: string | null
+          id: string
+          metadata: Json | null
+          outcome: string
+          payload_used: string
+          response_length: number | null
+          response_snippet: string | null
+          response_status: number | null
+          reward_score: number | null
+          target_id: string | null
+          tech_stack: Json | null
+          vuln_class: string
+        }
+        Insert: {
+          confidence_score?: number | null
+          created_at?: string
+          embedding_vector?: string | null
+          http_method?: string | null
+          id?: string
+          metadata?: Json | null
+          outcome: string
+          payload_used: string
+          response_length?: number | null
+          response_snippet?: string | null
+          response_status?: number | null
+          reward_score?: number | null
+          target_id?: string | null
+          tech_stack?: Json | null
+          vuln_class: string
+        }
+        Update: {
+          confidence_score?: number | null
+          created_at?: string
+          embedding_vector?: string | null
+          http_method?: string | null
+          id?: string
+          metadata?: Json | null
+          outcome?: string
+          payload_used?: string
+          response_length?: number | null
+          response_snippet?: string | null
+          response_status?: number | null
+          reward_score?: number | null
+          target_id?: string | null
+          tech_stack?: Json | null
+          vuln_class?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "experience_vault_target_id_fkey"
+            columns: ["target_id"]
+            isOneToOne: false
+            referencedRelation: "target_workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      method_discoveries: {
+        Row: {
+          created_at: string
+          custom_headers: Json | null
+          endpoint_url: string
+          http_method: string
+          id: string
+          is_interesting: boolean | null
+          notes: string | null
+          response_diff_pct: number | null
+          response_status: number | null
+          target_id: string | null
+        }
+        Insert: {
+          created_at?: string
+          custom_headers?: Json | null
+          endpoint_url: string
+          http_method: string
+          id?: string
+          is_interesting?: boolean | null
+          notes?: string | null
+          response_diff_pct?: number | null
+          response_status?: number | null
+          target_id?: string | null
+        }
+        Update: {
+          created_at?: string
+          custom_headers?: Json | null
+          endpoint_url?: string
+          http_method?: string
+          id?: string
+          is_interesting?: boolean | null
+          notes?: string | null
+          response_diff_pct?: number | null
+          response_status?: number | null
+          target_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "method_discoveries_target_id_fkey"
+            columns: ["target_id"]
+            isOneToOne: false
+            referencedRelation: "target_workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       pending_approvals: {
         Row: {
           ai_verification_notes: string | null
@@ -397,6 +506,39 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      strategy_weights: {
+        Row: {
+          effectiveness_pct: number | null
+          failure_count: number | null
+          id: string
+          last_updated: string | null
+          success_count: number | null
+          tech_stack_key: string
+          tool_name: string
+          vuln_class: string
+        }
+        Insert: {
+          effectiveness_pct?: number | null
+          failure_count?: number | null
+          id?: string
+          last_updated?: string | null
+          success_count?: number | null
+          tech_stack_key: string
+          tool_name: string
+          vuln_class: string
+        }
+        Update: {
+          effectiveness_pct?: number | null
+          failure_count?: number | null
+          id?: string
+          last_updated?: string | null
+          success_count?: number | null
+          tech_stack_key?: string
+          tool_name?: string
+          vuln_class?: string
+        }
+        Relationships: []
       }
       suppression_vectors: {
         Row: {
