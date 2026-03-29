@@ -838,6 +838,14 @@ serve(async (req) => {
       `Classified ${vulnChecks.length} parameter-vuln pairs across ${uniqueVulnClasses.size} classes: ${[...uniqueVulnClasses].join(", ")}`
     );
 
+    // ── Fetch tech stack early for Phase 8 ──
+    const { data: reconTask } = await db
+      .from("agent_tasks").select("result")
+      .eq("target_id", targetId).eq("task_type", "reconnaissance")
+      .eq("status", "completed").order("created_at", { ascending: false })
+      .limit(1).single();
+    const techStack = (reconTask?.result as any)?.tech_fingerprint || {};
+
     // ── Step 2.5: Phase 8 — Query Experience Vault & Strategy Weights ──
     await log(db, targetId, taskId, "thought", "🧠 Phase 8: Querying Experience Vault for past scan intelligence");
 
