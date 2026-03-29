@@ -1,6 +1,42 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
+// ─── PHASE 8: Learning Engine Types ─────────────────────
+interface ExperienceRecord {
+  target_id: string | null;
+  tech_stack: Record<string, string | undefined>;
+  vuln_class: string;
+  payload_used: string;
+  http_method: string;
+  response_status: number | null;
+  response_length: number | null;
+  response_snippet: string | null;
+  outcome: "confirmed" | "false_positive" | "blocked" | "error";
+  confidence_score: number;
+  reward_score: number;
+  metadata: Record<string, unknown>;
+}
+
+const REWARD_TABLE: Record<string, number> = {
+  unique_path_found: 10, filter_bypassed: 10, true_positive_confirmed: 10,
+  new_method_discovered: 8, high_confidence_finding: 7, execution_evidence: 9,
+  waf_blocked: -5, false_positive: -5, "404_hit": -5,
+  timeout: -3, rate_limited: -4, low_confidence_noise: -3,
+};
+
+// Evolutionary mutation operators for genetic payload evolution
+const GENETIC_MUTATIONS: Array<{ name: string; mutate: (s: string) => string }> = [
+  { name: "url_encode_special", mutate: (p) => p.replace(/[<>"'&;|`]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`) },
+  { name: "double_url_encode", mutate: (p) => p.replace(/[<>"'&;|`]/g, (c) => `%25${c.charCodeAt(0).toString(16).toUpperCase()}`) },
+  { name: "null_byte_prefix", mutate: (p) => `%00${p}` },
+  { name: "newline_break", mutate: (p) => p.replace(/ /g, "%0a") },
+  { name: "concat_split", mutate: (p) => {
+    if (p.includes("SELECT")) return p.replace("SELECT", "SEL"+"ECT");
+    if (p.includes("script")) return p.replace("script", "scr"+"ipt");
+    return p + "/**/";
+  }},
+];
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers":
