@@ -1074,13 +1074,6 @@ serve(async (req) => {
 
     // ── Step 4: CVE Correlation ──
     await log(db, targetId, taskId, "thought", "Querying NVD for CVE correlation");
-    const { data: reconTask } = await db
-      .from("agent_tasks").select("result")
-      .eq("target_id", targetId).eq("task_type", "reconnaissance")
-      .eq("status", "completed").order("created_at", { ascending: false })
-      .limit(1).single();
-
-    const techStack = (reconTask?.result as any)?.tech_fingerprint || {};
     const cveResults = await queryCveDatabase(techStack);
     await log(db, targetId, taskId, "result", `CVE correlation found ${cveResults.length} potentially relevant CVEs`);
 
