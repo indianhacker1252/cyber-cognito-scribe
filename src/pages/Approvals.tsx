@@ -182,6 +182,38 @@ export default function Approvals() {
     }
   };
 
+  const handleDeepTriage = async (approval: Approval) => {
+    setDeepTriaging(approval.id);
+    try {
+      const result = await deepTriageFinding({
+        findingTitle: approval.title,
+        vulnClass: (approval.evidence as any)?.vulnClass || approval.finding_type,
+        severity: approval.severity,
+        payload: approval.payload_used || "",
+        baselineResponse: approval.baseline_response || {},
+        mutatedResponse: approval.mutated_response || {},
+        intruderResults: (approval.evidence as any)?.intruderResults || [],
+        techStack: {},
+        confidenceScore: approval.confidence_score || 0,
+      });
+
+      const newScore = result.confidenceScore;
+      await supabase.from("pending_approvals").update({
+        confidence_score: newScore,
+        triage_reasoning: `[Deep Signal Judge] ${result.reasoning}\n\nVerdict: ${result.verdict} | Math consistency: ${result.mathematicalConsistency}% | Evidence chain: ${result.evidenceChainValid ? "Valid" : "Invalid"}\n\nRecommendations: ${result.recommendations.join("; ")}`,
+        ai_verified: result.verdict === "promote",
+        confidence_level: newScore >= 80 ? "high" : newScore >= 50 ? "medium" : "low",
+      }).eq("id", approval.id);
+
+      queryClient.invalidateQueries({ queryKey: ["approvals"] });
+      toast.success(`Deep Triage: ${result.verdict} (${newScore}%, math: ${result.mathematicalConsistency}%)`);
+    } catch {
+      toast.error("Deep signal triage failed");
+    } finally {
+      setDeepTriaging(null);
+    }
+  };
+
   const deleteApproval = useMutation({
     mutationFn: async (id: string) => {
       const { error } = await supabase.from("pending_approvals").delete().eq("id", id);
