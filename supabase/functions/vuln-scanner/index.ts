@@ -1228,6 +1228,11 @@ serve(async (req) => {
         owasp_categories_covered: owaspCoverage,
         adaptive_mutations_used: vulnFindings.filter((v) => v.adaptationUsed).length,
         intruder_tests_run: vulnFindings.reduce((sum, v) => sum + (v.intruderResults?.length || 0), 0),
+        // Phase 8 metrics
+        experiences_recorded: experienceRecords.length,
+        strategy_classes_disabled: disabledClasses.size,
+        method_discoveries: methodDiscoveryCount,
+        evolutionary_mutations: experienceRecords.filter(e => (e.metadata as any)?.mutation).length,
       },
     }).eq("id", taskId);
 
@@ -1246,6 +1251,11 @@ serve(async (req) => {
         falsePositivesFlagged: falsePositiveCount,
         approvalsQueued: approvalCount,
         owaspCoverage,
+        // Phase 8 stats
+        experiencesRecorded: experienceRecords.length,
+        strategyClassesDisabled: disabledClasses.size,
+        methodDiscoveries: methodDiscoveryCount,
+        evolutionaryMutations: experienceRecords.filter(e => (e.metadata as any)?.mutation).length,
       }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
