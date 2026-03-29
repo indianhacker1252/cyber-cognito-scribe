@@ -838,28 +838,227 @@ serve(async (req) => {
       `Classified ${vulnChecks.length} parameter-vuln pairs across ${uniqueVulnClasses.size} classes: ${[...uniqueVulnClasses].join(", ")}`
     );
 
-    // ── Step 3: Differential Analysis + Intruder ──
-    await log(db, targetId, taskId, "thought", "Running differential tests with Intruder/Repeater mode and adaptive mutation retry");
+    // ── Step 2.5: Phase 8 — Query Experience Vault & Strategy Weights ──
+    await log(db, targetId, taskId, "thought", "🧠 Phase 8: Querying Experience Vault for past scan intelligence");
+
+    // Get disabled vuln classes from strategy weights
+    const techStackKey = [
+      (techStack.server || "").split("/")[0].toLowerCase(),
+      (techStack.framework || "").split("/")[0].toLowerCase(),
+      (techStack.poweredBy || "").split("/")[0].toLowerCase(),
+    ].filter(Boolean).join(":") || "unknown";
+
+    const { data: strategyWeights } = await db
+      .from("strategy_weights")
+      .select("*")
+      .eq("tech_stack_key", techStackKey);
+
+    const disabledClasses = new Set(
+      (strategyWeights || [])
+        .filter((w: any) => (w.success_count + w.failure_count) >= 5 && w.effectiveness_pct < 10)
+        .map((w: any) => w.vuln_class)
+    );
+
+    if (disabledClasses.size > 0) {
+      await log(db, targetId, taskId, "info", `⚡ Strategy engine disabled ${disabledClasses.size} low-yield classes for ${techStackKey}: ${[...disabledClasses].join(", ")}`);
+    }
+
+    // Get best-performing payloads from experience vault
+    const { data: pastExperiences } = await db
+      .from("experience_vault")
+      .select("vuln_class, payload_used, reward_score")
+      .eq("outcome", "confirmed")
+      .order("reward_score", { ascending: false })
+      .limit(50);
+
+    const highYieldPayloads = new Map<string, string[]>();
+    for (const exp of (pastExperiences || []) as any[]) {
+      const existing = highYieldPayloads.get(exp.vuln_class) || [];
+      if (existing.length < 3) {
+        existing.push(exp.payload_used);
+        highYieldPayloads.set(exp.vuln_class, existing);
+      }
+    }
+
+    if (highYieldPayloads.size > 0) {
+      await log(db, targetId, taskId, "info", `📚 Loaded ${highYieldPayloads.size} vuln classes with proven payloads from Experience Vault`);
+    }
+
+    // ── Step 3: Differential Analysis + Intruder + Evolutionary Fuzzing ──
+    await log(db, targetId, taskId, "thought", "Running differential tests with Intruder/Repeater, adaptive mutation, and evolutionary fuzzing");
     const diffResults: DiffResult[] = [];
+    const experienceRecords: ExperienceRecord[] = [];
     const maxTests = Math.min(vulnChecks.length, 30);
+    const totalSteps = maxTests;
 
     for (let i = 0; i < maxTests; i++) {
       const check = vulnChecks[i];
+      // Exploration vs Exploitation strategy (Phase 8)
+      const isExploring = i < Math.ceil(totalSteps * 0.1);
+
       for (const vulnClass of check.vulnClasses) {
-        await log(db, targetId, taskId, "action", `Testing ${check.paramName} for ${vulnClass} at ${check.url}`);
+        // Skip disabled classes (strategy weights)
+        if (disabledClasses.has(vulnClass) && !isExploring) {
+          await log(db, targetId, taskId, "info", `⏭️ Skipping ${vulnClass} — disabled by strategy engine for ${techStackKey}`);
+          continue;
+        }
+
+        await log(db, targetId, taskId, "action",
+          `${isExploring ? "🔍 [EXPLORE]" : "🎯 [EXPLOIT]"} Testing ${check.paramName} for ${vulnClass} at ${check.url}`
+        );
+
         const result = await runDifferentialTest(check.url, check.paramName, check.paramValue, vulnClass);
         if (result) {
           diffResults.push(result);
+
+          // Phase 8: Record experience
+          const outcome = result.isVulnerable
+            ? "confirmed"
+            : result.mutated.status === 403 || result.mutated.status === 406
+              ? "blocked"
+              : "false_positive";
+
+          const rewardType = result.isVulnerable
+            ? (result.confidenceScore >= 80 ? "high_confidence_finding" : "true_positive_confirmed")
+            : (result.mutated.status === 403 ? "waf_blocked" : "false_positive");
+
+          experienceRecords.push({
+            target_id: targetId,
+            tech_stack: techStack,
+            vuln_class: vulnClass,
+            payload_used: result.truePayload,
+            http_method: "GET",
+            response_status: result.mutated.status,
+            response_length: result.mutated.length,
+            response_snippet: result.mutated.bodySnippet?.slice(0, 200) || null,
+            outcome,
+            confidence_score: result.confidenceScore,
+            reward_score: REWARD_TABLE[rewardType] || 0,
+            metadata: {
+              adaptationUsed: result.adaptationUsed || null,
+              intruderHits: result.intruderResults?.filter(i => i.status === 200).length || 0,
+            },
+          });
+
           if (result.isVulnerable) {
             const adaptNote = result.adaptationUsed ? ` (via ${result.adaptationUsed})` : "";
             const intruderNote = result.intruderResults ? ` [Intruder: ${result.intruderResults.length} payloads tested]` : "";
             await log(db, targetId, taskId, "result",
               `⚠️ POTENTIAL ${vulnClass.toUpperCase()} [${result.owaspCategory}]: ${check.paramName} (confidence: ${result.confidenceScore}%)${adaptNote}${intruderNote}`
             );
+
+            // Phase 8: Evolutionary Fuzzing — if close but not confirmed (500/403), evolve the payload
+            if (result.confidenceScore < 80 && result.confidenceScore >= 30) {
+              await log(db, targetId, taskId, "action", `🧬 Evolutionary fuzzing: mutating payload for ${vulnClass} (fitness: ${result.confidenceScore})`);
+              for (const gm of GENETIC_MUTATIONS.slice(0, 3)) {
+                const evolved = gm.mutate(result.truePayload);
+                if (evolved === result.truePayload) continue;
+
+                const evoResult = await runDifferentialTest(check.url, check.paramName, check.paramValue, vulnClass);
+                if (evoResult && evoResult.isVulnerable && evoResult.confidenceScore > result.confidenceScore) {
+                  diffResults.push(evoResult);
+                  experienceRecords.push({
+                    target_id: targetId, tech_stack: techStack, vuln_class: vulnClass,
+                    payload_used: evolved, http_method: "GET",
+                    response_status: evoResult.mutated.status, response_length: evoResult.mutated.length,
+                    response_snippet: evoResult.mutated.bodySnippet?.slice(0, 200) || null,
+                    outcome: "confirmed", confidence_score: evoResult.confidenceScore,
+                    reward_score: REWARD_TABLE["filter_bypassed"] || 10,
+                    metadata: { mutation: gm.name, parentFitness: result.confidenceScore },
+                  });
+                  await log(db, targetId, taskId, "result",
+                    `🧬 Evolved payload via ${gm.name} improved confidence: ${result.confidenceScore}% → ${evoResult.confidenceScore}%`
+                  );
+                  break;
+                }
+                await new Promise((r) => setTimeout(r, 300));
+              }
+            }
           }
         }
         await new Promise((r) => setTimeout(r, 500));
       }
+    }
+
+    // Phase 8: Batch store all experiences
+    if (experienceRecords.length > 0) {
+      await db.from("experience_vault").insert(experienceRecords);
+      await log(db, targetId, taskId, "info", `📝 Stored ${experienceRecords.length} experiences in Memory Vault`);
+
+      // Update strategy weights
+      const weightUpdates = new Map<string, { success: number; failure: number }>();
+      for (const exp of experienceRecords) {
+        const key = `${techStackKey}|${exp.vuln_class}|differential`;
+        const existing = weightUpdates.get(key) || { success: 0, failure: 0 };
+        if (exp.outcome === "confirmed") existing.success++;
+        else existing.failure++;
+        weightUpdates.set(key, existing);
+      }
+
+      for (const [key, counts] of weightUpdates) {
+        const [stackKey, vulnClass, toolName] = key.split("|");
+        const { data: existing } = await db
+          .from("strategy_weights")
+          .select("*")
+          .eq("tech_stack_key", stackKey)
+          .eq("vuln_class", vulnClass)
+          .eq("tool_name", toolName)
+          .single();
+
+        if (existing) {
+          const s = (existing as any).success_count + counts.success;
+          const f = (existing as any).failure_count + counts.failure;
+          await db.from("strategy_weights")
+            .update({ success_count: s, failure_count: f, effectiveness_pct: Math.round((s / (s + f)) * 1000) / 10 })
+            .eq("id", (existing as any).id);
+        } else {
+          const total = counts.success + counts.failure;
+          await db.from("strategy_weights").insert({
+            tech_stack_key: stackKey, vuln_class: vulnClass, tool_name: toolName,
+            success_count: counts.success, failure_count: counts.failure,
+            effectiveness_pct: total > 0 ? Math.round((counts.success / total) * 1000) / 10 : 50,
+          });
+        }
+      }
+      await log(db, targetId, taskId, "info", `📊 Updated ${weightUpdates.size} strategy weights`);
+    }
+
+    // ── Step 3.5: Phase 8 — Method Expansion Discovery ──
+    const sampleEndpoints = endpoints.slice(0, 5);
+    let methodDiscoveryCount = 0;
+    for (const ep of sampleEndpoints) {
+      try {
+        const baseResp = await fetch(ep.url, { method: "GET", headers: { "User-Agent": "CyberScope-Scanner/1.0" }, redirect: "manual" });
+        const baseBody = await baseResp.text();
+
+        const methodsToTry = ["PUT", "PATCH", "DELETE", "OPTIONS", "TRACE"];
+        for (const method of methodsToTry) {
+          try {
+            const resp = await fetch(ep.url, { method, headers: { "User-Agent": "CyberScope-Scanner/1.0" }, redirect: "manual" });
+            const isInteresting = resp.status !== baseResp.status && resp.status !== 405 && resp.status !== 501;
+            if (isInteresting) {
+              await db.from("method_discoveries").insert({
+                target_id: targetId, endpoint_url: ep.url, http_method: method,
+                custom_headers: {}, response_status: resp.status, response_diff_pct: 0,
+                is_interesting: true, notes: `${method} returned ${resp.status} (GET: ${baseResp.status})`,
+              });
+              methodDiscoveryCount++;
+              experienceRecords.push({
+                target_id: targetId, tech_stack: techStack, vuln_class: "method-discovery",
+                payload_used: method, http_method: method, response_status: resp.status,
+                response_length: 0, response_snippet: null, outcome: "confirmed",
+                confidence_score: 70, reward_score: REWARD_TABLE["new_method_discovered"] || 8,
+                metadata: { endpoint: ep.url },
+              });
+            }
+            await new Promise((r) => setTimeout(r, 150));
+          } catch { /* skip */ }
+        }
+      } catch { /* skip */ }
+    }
+
+    if (methodDiscoveryCount > 0) {
+      await log(db, targetId, taskId, "result", `🔎 Method Discovery: found ${methodDiscoveryCount} interesting method variations`);
     }
 
     const vulnFindings = diffResults.filter((r) => r.isVulnerable);
