@@ -1217,8 +1217,9 @@ serve(async (req) => {
       approvalCount++;
     }
 
-    // Active differential findings with request/response capture + suppression check
-    for (const diff of vulnFindings) {
+    // Active differential findings with Phase 9 proof & peer review data
+    for (let idx = 0; idx < vulnFindings.length; idx++) {
+      const diff = vulnFindings[idx];
       const matchingCheck = vulnChecks.find((c) => c.vulnClasses.includes(diff.vulnClass));
       const suppressKey = `active-${diff.vulnClass}:${diff.vulnClass}`;
       if (suppressedTypes.has(suppressKey)) {
@@ -1226,16 +1227,33 @@ serve(async (req) => {
         continue;
       }
 
+      const proof = proofResults.get(idx);
+      const peer = peerResults.get(idx);
+
+      // Skip disputed findings with no proof
+      if (peer?.verdict === "disputed" && !proof?.proven) {
+        await log(db, targetId, taskId, "info", `🚫 Dropped ${diff.vulnClass} — disputed by peer review and no deterministic proof`);
+        continue;
+      }
+
       const severityMap: Record<string, string> = { high: "high", medium: "medium", low: "low" };
-      const confidenceLabel = diff.confidenceScore >= 80 ? "high" : diff.confidenceScore >= 50 ? "medium" : "low";
+      const effectiveConfidence = peer?.finalConfidence ?? diff.confidenceScore;
+      const confidenceLabel = effectiveConfidence >= 80 ? "high" : effectiveConfidence >= 50 ? "medium" : "low";
+
+      // Severity downgrade: if no 1-click repro proof, cannot be critical
+      let effectiveSeverity = severityMap[diff.confidence] || "medium";
+      if (effectiveSeverity === "critical" && !proof?.proven) effectiveSeverity = "high";
+
+      const proofNote = proof?.proven ? `\n\n🛡️ **Gauntlet Proof**: ${proof.proofType} — ${proof.mathematicalBasis}` : "\n\n⚠️ No deterministic proof — requires manual verification";
+      const peerNote = peer ? `\n\n🤔 **Peer Review**: ${peer.verdict.toUpperCase()} (skeptic score: ${peer.skepticScore}) — ${peer.reasoning}` : "";
 
       await db.from("pending_approvals").insert({
         target_id: targetId,
         endpoint_id: matchingCheck?.endpointId || null,
         finding_type: `active-${diff.vulnClass}`,
-        severity: severityMap[diff.confidence] || "medium",
-        title: `Potential ${diff.vulnClass.toUpperCase()} [${diff.owaspCategory}]`,
-        description: `Parameter "${matchingCheck?.paramName}" showed differential response behavior indicating possible ${diff.vulnClass}.${diff.adaptationUsed ? `\n\nAdaptive mutation "${diff.adaptationUsed}" was used.` : ""}${diff.intruderResults ? `\n\n**Intruder Results:** ${diff.intruderResults.length} payloads tested, ${diff.intruderResults.filter(i => i.status === 200).length} returned 200 OK.` : ""}`,
+        severity: effectiveSeverity,
+        title: `${proof?.proven ? "✅" : "⚠️"} ${diff.vulnClass.toUpperCase()} [${diff.owaspCategory}]`,
+        description: `Parameter "${matchingCheck?.paramName}" showed differential response behavior indicating possible ${diff.vulnClass}.${diff.adaptationUsed ? `\n\nAdaptive mutation "${diff.adaptationUsed}" was used.` : ""}${diff.intruderResults ? `\n\n**Intruder Results:** ${diff.intruderResults.length} payloads tested, ${diff.intruderResults.filter(i => i.status === 200).length} returned 200 OK.` : ""}${proofNote}${peerNote}`,
         parameter: matchingCheck?.paramName,
         payload_used: diff.truePayload,
         baseline_response: diff.baseline,
@@ -1243,17 +1261,22 @@ serve(async (req) => {
         request_data: diff.requestData,
         response_data: diff.responseData,
         confidence_level: confidenceLabel,
-        confidence_score: diff.confidenceScore,
-        ai_verified: false,
-        ai_verification_notes: `Differential analysis confidence: ${diff.confidenceScore}%. Awaiting AI verification.`,
+        confidence_score: Math.round(effectiveConfidence),
+        ai_verified: proof?.proven || false,
+        ai_verification_notes: proof?.proven
+          ? `Deterministic proof: ${proof.proofType}. ${proof.mathematicalBasis}. Peer review: ${peer?.verdict || "pending"}`
+          : `Unproven — awaiting manual verification. Peer review: ${peer?.verdict || "pending"}`,
+        triage_reasoning: `Gauntlet: ${proof?.proven ? "PROVEN" : "UNPROVEN"} (${proof?.proofType || "N/A"}). Peer: ${peer?.verdict || "N/A"} (skeptic: ${peer?.skepticScore || 0})`,
         evidence: {
           vulnClass: diff.vulnClass,
           confidence: diff.confidence,
-          confidenceScore: diff.confidenceScore,
+          confidenceScore: effectiveConfidence,
           url: matchingCheck?.url,
           owaspCategory: diff.owaspCategory,
           adaptationUsed: diff.adaptationUsed || null,
           intruderResults: diff.intruderResults || null,
+          gauntletProof: proof || null,
+          peerReview: peer || null,
         },
       });
       approvalCount++;
