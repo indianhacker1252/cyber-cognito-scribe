@@ -296,6 +296,21 @@ export default function Approvals() {
                     <Gauge className="h-2.5 w-2.5" /> {approval.confidence_score}%
                   </Badge>
                 )}
+                {(approval.evidence as any)?.gauntletProof?.proven && (
+                  <Badge variant="outline" className="text-[9px] font-mono bg-cyber-green/20 text-cyber-green border-cyber-green/30 gap-0.5">
+                    🛡️ Proven
+                  </Badge>
+                )}
+                {(approval.evidence as any)?.peerReview?.verdict === "upheld" && (
+                  <Badge variant="outline" className="text-[9px] font-mono bg-cyber-cyan/20 text-cyber-cyan border-cyber-cyan/30 gap-0.5">
+                    🤔 Upheld
+                  </Badge>
+                )}
+                {(approval.evidence as any)?.peerReview?.verdict === "disputed" && (
+                  <Badge variant="outline" className="text-[9px] font-mono bg-cyber-red/20 text-cyber-red border-cyber-red/30 gap-0.5">
+                    🤔 Disputed
+                  </Badge>
+                )}
                 {approval.ai_verified && (
                   <Badge variant="outline" className="text-[9px] font-mono bg-cyber-green/20 text-cyber-green border-cyber-green/30 gap-0.5">
                     <BrainCircuit className="h-2.5 w-2.5" /> AI ✓
@@ -371,6 +386,32 @@ export default function Approvals() {
                     </Badge>
                   )}
                 </div>
+
+                {/* Phase 9: Gauntlet Proof & Peer Review */}
+                {(selected.evidence as any)?.gauntletProof && (
+                  <div className={`border rounded-lg p-3 ${(selected.evidence as any).gauntletProof.proven ? "border-cyber-green/30 bg-cyber-green/5" : "border-cyber-amber/30 bg-cyber-amber/5"}`}>
+                    <p className="text-[10px] font-mono uppercase mb-1 flex items-center gap-1">
+                      🛡️ <span className={(selected.evidence as any).gauntletProof.proven ? "text-cyber-green" : "text-cyber-amber"}>
+                        Gauntlet Proof: {(selected.evidence as any).gauntletProof.proven ? "PROVEN" : "UNPROVEN"}
+                      </span>
+                    </p>
+                    <p className="text-xs font-mono text-card-foreground">{(selected.evidence as any).gauntletProof.mathematicalBasis}</p>
+                    <p className="text-[10px] font-mono text-muted-foreground mt-1">Type: {(selected.evidence as any).gauntletProof.proofType}</p>
+                  </div>
+                )}
+
+                {(selected.evidence as any)?.peerReview && (
+                  <div className={`border rounded-lg p-3 ${(selected.evidence as any).peerReview.verdict === "upheld" ? "border-cyber-green/30 bg-cyber-green/5" : (selected.evidence as any).peerReview.verdict === "disputed" ? "border-cyber-red/30 bg-cyber-red/5" : "border-cyber-amber/30 bg-cyber-amber/5"}`}>
+                    <p className="text-[10px] font-mono uppercase mb-1 flex items-center gap-1">
+                      🤔 <span className={(selected.evidence as any).peerReview.verdict === "upheld" ? "text-cyber-green" : "text-cyber-red"}>
+                        Peer Review: {(selected.evidence as any).peerReview.verdict.toUpperCase()}
+                      </span>
+                      <span className="text-muted-foreground ml-2">Skeptic Score: {(selected.evidence as any).peerReview.skepticScore}</span>
+                    </p>
+                    <p className="text-xs font-mono text-card-foreground">{(selected.evidence as any).peerReview.reasoning}</p>
+                    <p className="text-[10px] font-mono text-muted-foreground mt-1">Final Confidence: {Math.round((selected.evidence as any).peerReview.finalConfidence)}%</p>
+                  </div>
+                )}
 
                 {/* AI Triage Reasoning */}
                 {selected.triage_reasoning && (

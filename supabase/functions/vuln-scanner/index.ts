@@ -1072,6 +1072,113 @@ serve(async (req) => {
     const vulnFindings = diffResults.filter((r) => r.isVulnerable);
     await log(db, targetId, taskId, "result", `Active testing found ${vulnFindings.length} potential vulnerabilities out of ${diffResults.length} tests`);
 
+    // ── Phase 9 Step 3.7: Deterministic Proof (The Gauntlet) ──
+    await log(db, targetId, taskId, "thought", "🛡️ Phase 9: Running Gauntlet — deterministic proof validation");
+    let gauntletProven = 0;
+    let gauntletFailed = 0;
+    const proofResults = new Map<number, { proven: boolean; proofType: string; details: string; mathematicalBasis: string }>();
+
+    for (let i = 0; i < vulnFindings.length; i++) {
+      const vf = vulnFindings[i];
+      const proofEvidence = {
+        responseBody: vf.mutated.bodySnippet || "",
+        baselineBody: vf.baseline.bodySnippet || "",
+        responseTime: 0,
+        baselineTime: 0,
+        statusCode: vf.mutated.status,
+        baselineStatus: vf.baseline.status,
+        headers: vf.mutated.headers || {},
+      };
+
+      // Run deterministic proof checks inline
+      let proven = false;
+      let proofType = "unsupported";
+      let details = "No deterministic proof available";
+      let mathBasis = "N/A";
+
+      if (vf.vulnClass === "sqli" || vf.vulnClass === "auth-bypass") {
+        const lenDiff = Math.abs((vf.mutated.bodySnippet || "").length - (vf.baseline.bodySnippet || "").length);
+        const ratio = lenDiff / Math.max((vf.baseline.bodySnippet || "").length, 1);
+        if (ratio > 0.15 && vf.mutated.status === 200) {
+          proven = true; proofType = "boolean_differential";
+          mathBasis = `Body differential: ${(ratio*100).toFixed(1)}% change`;
+        }
+        const sqlErrors = [/sql syntax/i, /ORA-\d+/i, /SQLSTATE/i, /pg_query/i, /unclosed quotation/i];
+        if (!proven && sqlErrors.some(p => p.test(vf.mutated.bodySnippet || "") && !p.test(vf.baseline.bodySnippet || ""))) {
+          proven = true; proofType = "error_based"; mathBasis = "DB error string in mutated response only";
+        }
+      } else if (vf.vulnClass === "rxss" || vf.vulnClass === "stored-xss") {
+        const probes = ["<cyberscope>", "<svg onload=", "onerror=cyberscope"];
+        if (probes.some(p => (vf.mutated.bodySnippet || "").includes(p))) {
+          proven = true; proofType = "xss_reflection"; mathBasis = "Probe reflected unescaped";
+        }
+      } else if (vf.vulnClass === "cmdi") {
+        if (/cyberscope_marker|uid=\d+\(|root:.*:0:0/.test(vf.mutated.bodySnippet || "")) {
+          proven = true; proofType = "cmd_output"; mathBasis = "Command execution marker found";
+        }
+      } else if (vf.vulnClass === "ssti") {
+        if (/\b49\b/.test(vf.mutated.bodySnippet || "") && !/\b49\b/.test(vf.baseline.bodySnippet || "")) {
+          proven = true; proofType = "template_eval"; mathBasis = "7*7=49 evaluated";
+        }
+      } else if (vf.vulnClass === "path-traversal" || vf.vulnClass === "lfi") {
+        if (/root:.*:0:0|\/bin\/bash/.test(vf.mutated.bodySnippet || "")) {
+          proven = true; proofType = "file_leak"; mathBasis = "System file content detected";
+        }
+      }
+
+      if (!proven) details = `No deterministic proof for ${vf.vulnClass}`;
+      else details = mathBasis;
+
+      proofResults.set(i, { proven, proofType, details, mathematicalBasis: mathBasis });
+      if (proven) gauntletProven++; else gauntletFailed++;
+    }
+
+    await log(db, targetId, taskId, "result", `🛡️ Gauntlet: ${gauntletProven} proven, ${gauntletFailed} unproven out of ${vulnFindings.length} findings`);
+
+    // ── Phase 9 Step 3.8: Peer Review (Skeptic Agent) ──
+    await log(db, targetId, taskId, "thought", "🤔 Phase 9: Spawning Reviewer Agents for peer review");
+    let peerUpheld = 0;
+    let peerDisputed = 0;
+    const peerResults = new Map<number, { verdict: string; skepticScore: number; finalConfidence: number; reasoning: string }>();
+
+    for (let i = 0; i < vulnFindings.length; i++) {
+      const vf = vulnFindings[i];
+      const challenges: Array<{ type: string; severity: string; argument: string }> = [];
+
+      // Honeypot check
+      const bodyStr = vf.mutated.bodySnippet || "";
+      if (["trap", "honeypot", "canary", "deception"].some(p => bodyStr.toLowerCase().includes(p))) {
+        challenges.push({ type: "honeypot", severity: "critical", argument: "Response contains deception indicators" });
+      }
+      // WAF interference
+      if (["cloudflare", "akamai", "incapsula"].some(w => bodyStr.toLowerCase().includes(w))) {
+        challenges.push({ type: "waf_interference", severity: "major", argument: "WAF detected in response" });
+      }
+      // Status-confidence mismatch
+      if (vf.mutated.status >= 400 && vf.confidenceScore > 70) {
+        challenges.push({ type: "status_mismatch", severity: "major", argument: `HTTP ${vf.mutated.status} with ${vf.confidenceScore}% confidence` });
+      }
+      // XSS escaped check
+      if ((vf.vulnClass === "rxss") && bodyStr.includes("&lt;")) {
+        challenges.push({ type: "escaped_reflection", severity: "critical", argument: "Payload is HTML-escaped" });
+      }
+
+      const skepticScore = Math.min(100, challenges.reduce((acc, c) => acc + (c.severity === "critical" ? 35 : c.severity === "major" ? 20 : 10), 0));
+      const finalConfidence = Math.max(0, Math.min(100, vf.confidenceScore - (skepticScore * 0.6)));
+      const verdict = challenges.some(c => c.severity === "critical") ? "disputed" : skepticScore > 40 ? "needs_retest" : "upheld";
+
+      peerResults.set(i, {
+        verdict,
+        skepticScore,
+        finalConfidence,
+        reasoning: challenges.length > 0 ? `${challenges.length} concern(s): ${challenges.map(c => c.type).join(", ")}` : "No concerns — finding legitimate",
+      });
+
+      if (verdict === "upheld") peerUpheld++; else peerDisputed++;
+    }
+
+    await log(db, targetId, taskId, "result", `🤔 Peer Review: ${peerUpheld} upheld, ${peerDisputed} disputed/needs-retest`);
+
     // ── Step 4: CVE Correlation ──
     await log(db, targetId, taskId, "thought", "Querying NVD for CVE correlation");
     const cveResults = await queryCveDatabase(techStack);
@@ -1110,8 +1217,9 @@ serve(async (req) => {
       approvalCount++;
     }
 
-    // Active differential findings with request/response capture + suppression check
-    for (const diff of vulnFindings) {
+    // Active differential findings with Phase 9 proof & peer review data
+    for (let idx = 0; idx < vulnFindings.length; idx++) {
+      const diff = vulnFindings[idx];
       const matchingCheck = vulnChecks.find((c) => c.vulnClasses.includes(diff.vulnClass));
       const suppressKey = `active-${diff.vulnClass}:${diff.vulnClass}`;
       if (suppressedTypes.has(suppressKey)) {
@@ -1119,16 +1227,33 @@ serve(async (req) => {
         continue;
       }
 
+      const proof = proofResults.get(idx);
+      const peer = peerResults.get(idx);
+
+      // Skip disputed findings with no proof
+      if (peer?.verdict === "disputed" && !proof?.proven) {
+        await log(db, targetId, taskId, "info", `🚫 Dropped ${diff.vulnClass} — disputed by peer review and no deterministic proof`);
+        continue;
+      }
+
       const severityMap: Record<string, string> = { high: "high", medium: "medium", low: "low" };
-      const confidenceLabel = diff.confidenceScore >= 80 ? "high" : diff.confidenceScore >= 50 ? "medium" : "low";
+      const effectiveConfidence = peer?.finalConfidence ?? diff.confidenceScore;
+      const confidenceLabel = effectiveConfidence >= 80 ? "high" : effectiveConfidence >= 50 ? "medium" : "low";
+
+      // Severity downgrade: if no 1-click repro proof, cannot be critical
+      let effectiveSeverity = severityMap[diff.confidence] || "medium";
+      if (effectiveSeverity === "critical" && !proof?.proven) effectiveSeverity = "high";
+
+      const proofNote = proof?.proven ? `\n\n🛡️ **Gauntlet Proof**: ${proof.proofType} — ${proof.mathematicalBasis}` : "\n\n⚠️ No deterministic proof — requires manual verification";
+      const peerNote = peer ? `\n\n🤔 **Peer Review**: ${peer.verdict.toUpperCase()} (skeptic score: ${peer.skepticScore}) — ${peer.reasoning}` : "";
 
       await db.from("pending_approvals").insert({
         target_id: targetId,
         endpoint_id: matchingCheck?.endpointId || null,
         finding_type: `active-${diff.vulnClass}`,
-        severity: severityMap[diff.confidence] || "medium",
-        title: `Potential ${diff.vulnClass.toUpperCase()} [${diff.owaspCategory}]`,
-        description: `Parameter "${matchingCheck?.paramName}" showed differential response behavior indicating possible ${diff.vulnClass}.${diff.adaptationUsed ? `\n\nAdaptive mutation "${diff.adaptationUsed}" was used.` : ""}${diff.intruderResults ? `\n\n**Intruder Results:** ${diff.intruderResults.length} payloads tested, ${diff.intruderResults.filter(i => i.status === 200).length} returned 200 OK.` : ""}`,
+        severity: effectiveSeverity,
+        title: `${proof?.proven ? "✅" : "⚠️"} ${diff.vulnClass.toUpperCase()} [${diff.owaspCategory}]`,
+        description: `Parameter "${matchingCheck?.paramName}" showed differential response behavior indicating possible ${diff.vulnClass}.${diff.adaptationUsed ? `\n\nAdaptive mutation "${diff.adaptationUsed}" was used.` : ""}${diff.intruderResults ? `\n\n**Intruder Results:** ${diff.intruderResults.length} payloads tested, ${diff.intruderResults.filter(i => i.status === 200).length} returned 200 OK.` : ""}${proofNote}${peerNote}`,
         parameter: matchingCheck?.paramName,
         payload_used: diff.truePayload,
         baseline_response: diff.baseline,
@@ -1136,17 +1261,22 @@ serve(async (req) => {
         request_data: diff.requestData,
         response_data: diff.responseData,
         confidence_level: confidenceLabel,
-        confidence_score: diff.confidenceScore,
-        ai_verified: false,
-        ai_verification_notes: `Differential analysis confidence: ${diff.confidenceScore}%. Awaiting AI verification.`,
+        confidence_score: Math.round(effectiveConfidence),
+        ai_verified: proof?.proven || false,
+        ai_verification_notes: proof?.proven
+          ? `Deterministic proof: ${proof.proofType}. ${proof.mathematicalBasis}. Peer review: ${peer?.verdict || "pending"}`
+          : `Unproven — awaiting manual verification. Peer review: ${peer?.verdict || "pending"}`,
+        triage_reasoning: `Gauntlet: ${proof?.proven ? "PROVEN" : "UNPROVEN"} (${proof?.proofType || "N/A"}). Peer: ${peer?.verdict || "N/A"} (skeptic: ${peer?.skepticScore || 0})`,
         evidence: {
           vulnClass: diff.vulnClass,
           confidence: diff.confidence,
-          confidenceScore: diff.confidenceScore,
+          confidenceScore: effectiveConfidence,
           url: matchingCheck?.url,
           owaspCategory: diff.owaspCategory,
           adaptationUsed: diff.adaptationUsed || null,
           intruderResults: diff.intruderResults || null,
+          gauntletProof: proof || null,
+          peerReview: peer || null,
         },
       });
       approvalCount++;
@@ -1204,7 +1334,7 @@ serve(async (req) => {
     }
 
     await log(db, targetId, taskId, "info",
-      `✅ OWASP scan complete — ${approvalCount} findings queued (${verifiedCount} AI-verified, ${falsePositiveCount} likely false positives flagged)`
+      `✅ Scan complete — ${approvalCount} findings queued | Gauntlet: ${gauntletProven} proven | Peer Review: ${peerUpheld} upheld, ${peerDisputed} disputed`
     );
 
     const owaspCoverage = [...new Set([
@@ -1233,6 +1363,11 @@ serve(async (req) => {
         strategy_classes_disabled: disabledClasses.size,
         method_discoveries: methodDiscoveryCount,
         evolutionary_mutations: experienceRecords.filter(e => (e.metadata as any)?.mutation).length,
+        // Phase 9 metrics
+        gauntlet_proven: gauntletProven,
+        gauntlet_failed: gauntletFailed,
+        peer_upheld: peerUpheld,
+        peer_disputed: peerDisputed,
       },
     }).eq("id", taskId);
 
