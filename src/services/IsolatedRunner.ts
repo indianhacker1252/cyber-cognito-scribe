@@ -148,7 +148,7 @@ else:
     cmdi: `import requests
 url = "${targetUrl}"
 marker = "cyberscope_cmd_proof"
-payloads = ["; echo " + marker, "| echo " + marker, "\\`echo " + marker + "\\`"]
+payloads = ["; echo " + marker, "| echo " + marker, "$" + "(echo " + marker + ")"]
 for p in payloads:
     r = requests.get(url, params={"test": p}, timeout=15)
     if marker in r.text:
