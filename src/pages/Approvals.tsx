@@ -296,6 +296,21 @@ export default function Approvals() {
                     <Gauge className="h-2.5 w-2.5" /> {approval.confidence_score}%
                   </Badge>
                 )}
+                {(approval.evidence as any)?.gauntletProof?.proven && (
+                  <Badge variant="outline" className="text-[9px] font-mono bg-cyber-green/20 text-cyber-green border-cyber-green/30 gap-0.5">
+                    🛡️ Proven
+                  </Badge>
+                )}
+                {(approval.evidence as any)?.peerReview?.verdict === "upheld" && (
+                  <Badge variant="outline" className="text-[9px] font-mono bg-cyber-cyan/20 text-cyber-cyan border-cyber-cyan/30 gap-0.5">
+                    🤔 Upheld
+                  </Badge>
+                )}
+                {(approval.evidence as any)?.peerReview?.verdict === "disputed" && (
+                  <Badge variant="outline" className="text-[9px] font-mono bg-cyber-red/20 text-cyber-red border-cyber-red/30 gap-0.5">
+                    🤔 Disputed
+                  </Badge>
+                )}
                 {approval.ai_verified && (
                   <Badge variant="outline" className="text-[9px] font-mono bg-cyber-green/20 text-cyber-green border-cyber-green/30 gap-0.5">
                     <BrainCircuit className="h-2.5 w-2.5" /> AI ✓
