@@ -1334,7 +1334,7 @@ serve(async (req) => {
     }
 
     await log(db, targetId, taskId, "info",
-      `✅ OWASP scan complete — ${approvalCount} findings queued (${verifiedCount} AI-verified, ${falsePositiveCount} likely false positives flagged)`
+      `✅ Scan complete — ${approvalCount} findings queued | Gauntlet: ${gauntletProven} proven | Peer Review: ${peerUpheld} upheld, ${peerDisputed} disputed`
     );
 
     const owaspCoverage = [...new Set([
@@ -1363,6 +1363,11 @@ serve(async (req) => {
         strategy_classes_disabled: disabledClasses.size,
         method_discoveries: methodDiscoveryCount,
         evolutionary_mutations: experienceRecords.filter(e => (e.metadata as any)?.mutation).length,
+        // Phase 9 metrics
+        gauntlet_proven: gauntletProven,
+        gauntlet_failed: gauntletFailed,
+        peer_upheld: peerUpheld,
+        peer_disputed: peerDisputed,
       },
     }).eq("id", taskId);
 
