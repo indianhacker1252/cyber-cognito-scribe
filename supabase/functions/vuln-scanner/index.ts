@@ -344,7 +344,7 @@ async function runDifferentialTest(
       const trueTiming = Date.now() - trueStart;
       const trueHeaders = captureHeaders(trueResp);
 
-      await new Promise((r) => setTimeout(r, 300));
+      await new Promise((r) => setTimeout(r, 100));
 
       // Falsy (baseline) test
       url.searchParams.set(paramName, pair.falsy);
@@ -653,7 +653,7 @@ async function queryCveDatabase(techStack: Record<string, string | undefined>): 
           });
         }
       }
-      await new Promise((r) => setTimeout(r, 6500));
+      await new Promise((r) => setTimeout(r, 1000));
     } catch (e) {
       console.error(`NVD query error for "${term}":`, e);
     }
@@ -896,7 +896,7 @@ serve(async (req) => {
     await log(db, targetId, taskId, "thought", "Running differential tests with Intruder/Repeater, adaptive mutation, and evolutionary fuzzing");
     const diffResults: DiffResult[] = [];
     const experienceRecords: ExperienceRecord[] = [];
-    const maxTests = Math.min(vulnChecks.length, 30);
+    const maxTests = Math.min(vulnChecks.length, 10);
     const totalSteps = maxTests;
 
     for (let i = 0; i < maxTests; i++) {
@@ -984,7 +984,7 @@ serve(async (req) => {
             }
           }
         }
-        await new Promise((r) => setTimeout(r, 500));
+        await new Promise((r) => setTimeout(r, 150));
       }
     }
 
@@ -1032,7 +1032,7 @@ serve(async (req) => {
     }
 
     // ── Step 3.5: Phase 8 — Method Expansion Discovery ──
-    const sampleEndpoints = endpoints.slice(0, 5);
+    const sampleEndpoints = endpoints.slice(0, 2);
     let methodDiscoveryCount = 0;
     for (const ep of sampleEndpoints) {
       try {
