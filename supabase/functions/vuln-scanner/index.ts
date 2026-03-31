@@ -1032,7 +1032,7 @@ serve(async (req) => {
     }
 
     // ── Step 3.5: Phase 8 — Method Expansion Discovery ──
-    const sampleEndpoints = endpoints.slice(0, 5);
+    const sampleEndpoints = endpoints.slice(0, 2);
     let methodDiscoveryCount = 0;
     for (const ep of sampleEndpoints) {
       try {
