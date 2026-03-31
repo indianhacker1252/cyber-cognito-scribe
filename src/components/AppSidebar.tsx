@@ -21,6 +21,7 @@ const navItems = [
   { title: "Findings", url: "/findings", icon: ShieldAlert },
   { title: "Approvals", url: "/approvals", icon: ClipboardCheck },
   { title: "System Health", url: "/system-health", icon: Activity },
+  { title: "Intel Feed", url: "/intel-feed", icon: Rss },
 ];
 
 export function AppSidebar() {
