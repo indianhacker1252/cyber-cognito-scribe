@@ -313,6 +313,168 @@ export type Database = {
           },
         ]
       }
+      intel_feeds: {
+        Row: {
+          affected_tech_stack: Json | null
+          ai_interpretation: string | null
+          bypass_techniques: Json | null
+          extracted_payloads: Json | null
+          id: string
+          ingested_at: string
+          matched_targets: Json | null
+          processed_at: string | null
+          raw_summary: string | null
+          report_id: string | null
+          rescan_triggered: boolean | null
+          severity: string | null
+          signal_strength: string | null
+          source: string
+          source_url: string | null
+          status: string | null
+          template_language: string | null
+          template_script: string | null
+          test_template: Json | null
+          title: string
+          vulnerability_class: string | null
+          waf_bypass_logic: string | null
+        }
+        Insert: {
+          affected_tech_stack?: Json | null
+          ai_interpretation?: string | null
+          bypass_techniques?: Json | null
+          extracted_payloads?: Json | null
+          id?: string
+          ingested_at?: string
+          matched_targets?: Json | null
+          processed_at?: string | null
+          raw_summary?: string | null
+          report_id?: string | null
+          rescan_triggered?: boolean | null
+          severity?: string | null
+          signal_strength?: string | null
+          source?: string
+          source_url?: string | null
+          status?: string | null
+          template_language?: string | null
+          template_script?: string | null
+          test_template?: Json | null
+          title: string
+          vulnerability_class?: string | null
+          waf_bypass_logic?: string | null
+        }
+        Update: {
+          affected_tech_stack?: Json | null
+          ai_interpretation?: string | null
+          bypass_techniques?: Json | null
+          extracted_payloads?: Json | null
+          id?: string
+          ingested_at?: string
+          matched_targets?: Json | null
+          processed_at?: string | null
+          raw_summary?: string | null
+          report_id?: string | null
+          rescan_triggered?: boolean | null
+          severity?: string | null
+          signal_strength?: string | null
+          source?: string
+          source_url?: string | null
+          status?: string | null
+          template_language?: string | null
+          template_script?: string | null
+          test_template?: Json | null
+          title?: string
+          vulnerability_class?: string | null
+          waf_bypass_logic?: string | null
+        }
+        Relationships: []
+      }
+      intel_notifications: {
+        Row: {
+          action_url: string | null
+          created_at: string
+          id: string
+          intel_feed_id: string | null
+          is_read: boolean | null
+          message: string | null
+          notification_type: string
+          target_id: string | null
+          title: string
+        }
+        Insert: {
+          action_url?: string | null
+          created_at?: string
+          id?: string
+          intel_feed_id?: string | null
+          is_read?: boolean | null
+          message?: string | null
+          notification_type?: string
+          target_id?: string | null
+          title: string
+        }
+        Update: {
+          action_url?: string | null
+          created_at?: string
+          id?: string
+          intel_feed_id?: string | null
+          is_read?: boolean | null
+          message?: string | null
+          notification_type?: string
+          target_id?: string | null
+          title?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "intel_notifications_intel_feed_id_fkey"
+            columns: ["intel_feed_id"]
+            isOneToOne: false
+            referencedRelation: "intel_feeds"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "intel_notifications_target_id_fkey"
+            columns: ["target_id"]
+            isOneToOne: false
+            referencedRelation: "target_workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      intel_sync_runs: {
+        Row: {
+          completed_at: string | null
+          error_message: string | null
+          id: string
+          reports_fetched: number | null
+          reports_processed: number | null
+          rescans_triggered: number | null
+          started_at: string
+          status: string | null
+          templates_generated: number | null
+        }
+        Insert: {
+          completed_at?: string | null
+          error_message?: string | null
+          id?: string
+          reports_fetched?: number | null
+          reports_processed?: number | null
+          rescans_triggered?: number | null
+          started_at?: string
+          status?: string | null
+          templates_generated?: number | null
+        }
+        Update: {
+          completed_at?: string | null
+          error_message?: string | null
+          id?: string
+          reports_fetched?: number | null
+          reports_processed?: number | null
+          rescans_triggered?: number | null
+          started_at?: string
+          status?: string | null
+          templates_generated?: number | null
+        }
+        Relationships: []
+      }
       method_discoveries: {
         Row: {
           created_at: string

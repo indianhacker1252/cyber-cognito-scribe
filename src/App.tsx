@@ -10,6 +10,7 @@ import NeuralLog from "./pages/NeuralLog";
 import Findings from "./pages/Findings";
 import Approvals from "./pages/Approvals";
 import SystemHealth from "./pages/SystemHealth";
+import IntelFeed from "./pages/IntelFeed";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -28,6 +29,7 @@ const App = () => (
             <Route path="/findings" element={<Findings />} />
             <Route path="/approvals" element={<Approvals />} />
             <Route path="/system-health" element={<SystemHealth />} />
+            <Route path="/intel-feed" element={<IntelFeed />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </Layout>
