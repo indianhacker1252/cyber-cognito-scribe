@@ -896,7 +896,7 @@ serve(async (req) => {
     await log(db, targetId, taskId, "thought", "Running differential tests with Intruder/Repeater, adaptive mutation, and evolutionary fuzzing");
     const diffResults: DiffResult[] = [];
     const experienceRecords: ExperienceRecord[] = [];
-    const maxTests = Math.min(vulnChecks.length, 30);
+    const maxTests = Math.min(vulnChecks.length, 10);
     const totalSteps = maxTests;
 
     for (let i = 0; i < maxTests; i++) {
