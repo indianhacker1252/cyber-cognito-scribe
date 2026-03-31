@@ -344,7 +344,7 @@ async function runDifferentialTest(
       const trueTiming = Date.now() - trueStart;
       const trueHeaders = captureHeaders(trueResp);
 
-      await new Promise((r) => setTimeout(r, 300));
+      await new Promise((r) => setTimeout(r, 100));
 
       // Falsy (baseline) test
       url.searchParams.set(paramName, pair.falsy);
