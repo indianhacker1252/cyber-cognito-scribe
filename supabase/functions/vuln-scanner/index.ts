@@ -653,7 +653,7 @@ async function queryCveDatabase(techStack: Record<string, string | undefined>): 
           });
         }
       }
-      await new Promise((r) => setTimeout(r, 6500));
+      await new Promise((r) => setTimeout(r, 1000));
     } catch (e) {
       console.error(`NVD query error for "${term}":`, e);
     }
