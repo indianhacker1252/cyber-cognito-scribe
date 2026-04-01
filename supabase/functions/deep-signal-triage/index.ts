@@ -24,12 +24,12 @@ serve(async (req) => {
         confidenceScore: 0,
         mathematicalConsistency: 0,
         evidenceChainValid: false,
-        reasoning: "AI judge not configured",
+        reasoning: "AI judge not configured — LOVABLE_API_KEY missing",
         recommendations: ["Configure AI gateway"],
       }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
-    const prompt = `You are a Principal Security Researcher acting as a SECONDARY JUDGE in a vulnerability triage pipeline (similar to Cantina's high-signal approach).
+    const prompt = `You are a Principal Security Researcher acting as a SECONDARY JUDGE in a vulnerability triage pipeline.
 
 Your job is to review the COMPLETE EVIDENCE CHAIN and determine if a finding should be PROMOTED to the dashboard or DEMOTED as noise.
 
@@ -40,10 +40,10 @@ You must be MATHEMATICALLY RIGOROUS. Check for:
 4. Reproduction confidence: Could another researcher reproduce this finding?
 
 Finding Under Review:
-- Title: ${finding.findingTitle}
-- Vulnerability Class: ${finding.vulnClass}
-- Severity: ${finding.severity}
-- Current Confidence: ${finding.confidenceScore}%
+- Title: ${finding.findingTitle || "Unknown"}
+- Vulnerability Class: ${finding.vulnClass || "Unknown"}
+- Severity: ${finding.severity || "Unknown"}
+- Current Confidence: ${finding.confidenceScore || 0}%
 - Payload: ${finding.payload || "N/A"}
 
 Tech Stack: ${JSON.stringify(finding.techStack || {})}
@@ -99,12 +99,29 @@ Provide mathematicalConsistency as a 0-100 score measuring how statistically sig
     });
 
     if (!resp.ok) {
+      const errText = await resp.text();
+      console.error("AI gateway error:", resp.status, errText);
       if (resp.status === 429) {
-        return new Response(JSON.stringify({ error: "Rate limited" }), {
-          status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
+        return new Response(JSON.stringify({
+          verdict: "manual_review",
+          confidenceScore: finding.confidenceScore || 50,
+          mathematicalConsistency: 0,
+          evidenceChainValid: false,
+          reasoning: "Rate limited — try again in a moment",
+          recommendations: ["Retry after brief delay"],
+        }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
       }
-      throw new Error(`AI error: ${resp.status}`);
+      if (resp.status === 402) {
+        return new Response(JSON.stringify({
+          verdict: "manual_review",
+          confidenceScore: finding.confidenceScore || 50,
+          mathematicalConsistency: 0,
+          evidenceChainValid: false,
+          reasoning: "AI credits exhausted — add funds to continue",
+          recommendations: ["Add credits at Settings > Workspace > Usage"],
+        }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+      throw new Error(`AI error: ${resp.status} - ${errText.slice(0, 200)}`);
     }
 
     const data = await resp.json();
@@ -117,23 +134,28 @@ Provide mathematicalConsistency as a 0-100 score measuring how statistically sig
       });
     }
 
+    // Fallback: try to extract from content
+    const content = data.choices?.[0]?.message?.content || "";
     return new Response(JSON.stringify({
       verdict: "manual_review",
-      confidenceScore: 50,
+      confidenceScore: finding.confidenceScore || 50,
       mathematicalConsistency: 0,
       evidenceChainValid: false,
-      reasoning: "AI returned unstructured response",
+      reasoning: content || "AI returned unstructured response — manual review needed",
       recommendations: ["Manual review required"],
     }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
   } catch (e) {
     console.error("deep-signal-triage error:", e);
     return new Response(JSON.stringify({
-      error: e instanceof Error ? e.message : "Unknown error",
       verdict: "manual_review",
       confidenceScore: 0,
-      reasoning: "Triage failed",
+      mathematicalConsistency: 0,
+      evidenceChainValid: false,
+      reasoning: `Triage engine error: ${e instanceof Error ? e.message : "Unknown"}`,
+      recommendations: ["Review manually — AI triage encountered an error"],
     }), {
-      status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
+      status: 200,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
 });

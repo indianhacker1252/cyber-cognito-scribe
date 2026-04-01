@@ -12,6 +12,7 @@ import { toast } from "sonner";
 import {
   Rss, RefreshCw, Bell, BellOff, ExternalLink, Zap, Clock,
   Shield, AlertTriangle, CheckCircle2, FileCode, Trash2, Download,
+  Crosshair, Play,
 } from "lucide-react";
 
 export default function IntelFeed() {
@@ -22,10 +23,12 @@ export default function IntelFeed() {
   const [isSyncing, setIsSyncing] = useState(false);
   const [loading, setLoading] = useState(true);
   const [selectedFeed, setSelectedFeed] = useState<any>(null);
+  const [rescanning, setRescanning] = useState<string | null>(null);
+  const [targets, setTargets] = useState<any[]>([]);
 
   useEffect(() => {
     loadAll();
-    // Subscribe to realtime notifications
+    loadTargets();
     const channel = supabase
       .channel("intel-notifications")
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "intel_notifications" }, (payload) => {
@@ -40,9 +43,9 @@ export default function IntelFeed() {
   async function loadAll() {
     setLoading(true);
     const [feedData, notifData, histData, syncData] = await Promise.all([
-      getIntelFeeds({ limit: 50 }),
-      fetchUnreadNotifications(20),
-      getSyncHistory(10),
+      getIntelFeeds({ limit: 200 }),
+      fetchUnreadNotifications(50),
+      getSyncHistory(20),
       getLatestSyncStatus(),
     ]);
     setFeeds(feedData);
@@ -50,6 +53,11 @@ export default function IntelFeed() {
     setSyncHistory(histData);
     setLatestSync(syncData);
     setLoading(false);
+  }
+
+  async function loadTargets() {
+    const { data } = await supabase.from("target_workspaces").select("id, name, domain, status");
+    setTargets(data || []);
   }
 
   async function handleSync() {
@@ -63,6 +71,25 @@ export default function IntelFeed() {
       toast.error(`Sync failed: ${result.error}`);
     }
     setIsSyncing(false);
+  }
+
+  async function handleRescan(feedId: string, targetId: string, vulnClass?: string) {
+    setRescanning(`${feedId}-${targetId}`);
+    try {
+      const { data, error } = await supabase.functions.invoke("intel-sync", {
+        body: { action: "trigger-rescan", targetId, vulnClass, intelFeedId: feedId },
+      });
+      if (error) throw error;
+      if (data?.triggered) {
+        toast.success(`✅ Rescan triggered on target — check Approvals page for results`);
+      } else {
+        toast.warning(data?.error || data?.message || "Rescan could not be triggered");
+      }
+    } catch (e: any) {
+      toast.error(`Rescan failed: ${e.message}`);
+    } finally {
+      setRescanning(null);
+    }
   }
 
   async function handleMarkAllRead() {
@@ -83,6 +110,12 @@ export default function IntelFeed() {
     toast.success("Sync history cleared");
   }
 
+  async function handleClearAllFeeds() {
+    await supabase.from("intel_feeds").delete().neq("id", "00000000-0000-0000-0000-000000000000");
+    setFeeds([]);
+    toast.success("All feeds cleared");
+  }
+
   const signalBadge = (s: string) => {
     if (s === "high") return <Badge className="bg-red-500/20 text-red-400 border-red-500/30">🔴 High Signal</Badge>;
     if (s === "medium") return <Badge className="bg-yellow-500/20 text-yellow-400 border-yellow-500/30">🟡 Medium</Badge>;
@@ -96,6 +129,9 @@ export default function IntelFeed() {
     };
     return <Badge className={`${colors[s] || colors.medium} border-0`}>{s}</Badge>;
   };
+
+  // Targets available for rescanning
+  const completedTargets = targets.filter(t => t.status === "completed");
 
   return (
     <div className="space-y-6">
@@ -119,7 +155,7 @@ export default function IntelFeed() {
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
         <Card className="bg-card border-border">
           <CardContent className="p-4 text-center">
             <p className="text-2xl font-bold text-foreground">{feeds.length}</p>
@@ -144,6 +180,12 @@ export default function IntelFeed() {
             <p className="text-xs text-muted-foreground">Unread Alerts</p>
           </CardContent>
         </Card>
+        <Card className="bg-card border-border">
+          <CardContent className="p-4 text-center">
+            <p className="text-2xl font-bold text-foreground">{completedTargets.length}</p>
+            <p className="text-xs text-muted-foreground">Scannable Targets</p>
+          </CardContent>
+        </Card>
       </div>
 
       <Tabs defaultValue="feeds" className="space-y-4">
@@ -156,8 +198,13 @@ export default function IntelFeed() {
         {/* Feeds Tab */}
         <TabsContent value="feeds">
           <Card className="bg-card border-border">
-            <CardHeader className="pb-2">
+            <CardHeader className="pb-2 flex flex-row items-center justify-between">
               <CardTitle className="text-sm text-muted-foreground">Ingested Security Disclosures</CardTitle>
+              {feeds.length > 0 && (
+                <Button variant="outline" size="sm" onClick={handleClearAllFeeds} className="text-destructive border-destructive/30 hover:bg-destructive/10 text-xs">
+                  <Trash2 className="h-3 w-3 mr-1" /> Clear All
+                </Button>
+              )}
             </CardHeader>
             <CardContent>
               <ScrollArea className="h-[500px]">
@@ -175,7 +222,7 @@ export default function IntelFeed() {
                         <TableHead>Vuln Class</TableHead>
                         <TableHead>Signal</TableHead>
                         <TableHead>Severity</TableHead>
-                        <TableHead>Rescan</TableHead>
+                        <TableHead>Matched</TableHead>
                         <TableHead>Actions</TableHead>
                       </TableRow>
                     </TableHeader>
@@ -185,27 +232,51 @@ export default function IntelFeed() {
                           <TableCell>
                             <Badge variant="outline" className="text-xs">{feed.source}</Badge>
                           </TableCell>
-                          <TableCell className="max-w-[300px] truncate text-foreground">{feed.title}</TableCell>
+                          <TableCell className="max-w-[250px] truncate text-foreground">{feed.title}</TableCell>
                           <TableCell>
                             <Badge variant="secondary" className="text-xs">{feed.vulnerability_class || "unknown"}</Badge>
                           </TableCell>
                           <TableCell>{signalBadge(feed.signal_strength)}</TableCell>
                           <TableCell>{sevBadge(feed.severity)}</TableCell>
                           <TableCell>
-                            {feed.rescan_triggered ? (
-                              <CheckCircle2 className="h-4 w-4 text-primary" />
+                            {feed.matched_targets?.length > 0 ? (
+                              <Badge className="bg-primary/20 text-primary border-primary/30 text-xs">{feed.matched_targets.length} target(s)</Badge>
                             ) : (
                               <span className="text-muted-foreground text-xs">—</span>
                             )}
                           </TableCell>
                           <TableCell>
-                            <div className="flex gap-1">
+                            <div className="flex gap-1" onClick={(e) => e.stopPropagation()}>
+                              {/* Rescan button for matched targets */}
+                              {feed.matched_targets?.length > 0 && feed.matched_targets.map((mt: any) => (
+                                <Button
+                                  key={mt.id} variant="outline" size="sm"
+                                  className="text-primary border-primary/30 hover:bg-primary/10 text-[9px] gap-0.5"
+                                  disabled={rescanning === `${feed.id}-${mt.id}`}
+                                  onClick={() => handleRescan(feed.id, mt.id, feed.vulnerability_class)}
+                                  title={`Rescan ${mt.name}`}
+                                >
+                                  <Crosshair className="h-3 w-3" />
+                                  {rescanning === `${feed.id}-${mt.id}` ? "..." : mt.name?.slice(0, 10)}
+                                </Button>
+                              ))}
+                              {/* Scan any target button */}
+                              {completedTargets.length > 0 && !feed.matched_targets?.length && (
+                                <Button
+                                  variant="outline" size="sm"
+                                  className="text-primary border-primary/30 hover:bg-primary/10 text-[9px] gap-0.5"
+                                  onClick={() => setSelectedFeed(feed)}
+                                  title="Select target to scan"
+                                >
+                                  <Play className="h-3 w-3" /> Test
+                                </Button>
+                              )}
                               {feed.source_url && (
-                                <Button variant="ghost" size="sm" onClick={(e) => { e.stopPropagation(); window.open(feed.source_url, "_blank"); }}>
+                                <Button variant="ghost" size="sm" onClick={() => window.open(feed.source_url, "_blank")}>
                                   <ExternalLink className="h-3 w-3" />
                                 </Button>
                               )}
-                              <Button variant="ghost" size="sm" onClick={(e) => { e.stopPropagation(); handleDeleteFeed(feed.id); }}>
+                              <Button variant="ghost" size="sm" onClick={() => handleDeleteFeed(feed.id)}>
                                 <Trash2 className="h-3 w-3 text-destructive" />
                               </Button>
                             </div>
@@ -233,6 +304,28 @@ export default function IntelFeed() {
                   <div><span className="text-muted-foreground">Signal:</span> {signalBadge(selectedFeed.signal_strength)}</div>
                   <div><span className="text-muted-foreground">Severity:</span> {sevBadge(selectedFeed.severity)}</div>
                 </div>
+
+                {/* Rescan Actions */}
+                {completedTargets.length > 0 && (
+                  <div className="border border-primary/20 rounded-lg p-3 bg-primary/5">
+                    <p className="text-xs text-muted-foreground mb-2 flex items-center gap-1">
+                      <Crosshair className="h-3 w-3 text-primary" /> Test this intel against targets:
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      {completedTargets.map((t) => (
+                        <Button
+                          key={t.id} size="sm" variant="outline"
+                          className="text-xs gap-1 border-primary/30 text-primary hover:bg-primary/10"
+                          disabled={rescanning === `${selectedFeed.id}-${t.id}`}
+                          onClick={() => handleRescan(selectedFeed.id, t.id, selectedFeed.vulnerability_class)}
+                        >
+                          <Crosshair className="h-3 w-3" />
+                          {rescanning === `${selectedFeed.id}-${t.id}` ? "Scanning..." : `Scan ${t.name}`}
+                        </Button>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
                 {selectedFeed.raw_summary && (
                   <div>
@@ -275,9 +368,20 @@ export default function IntelFeed() {
                 {selectedFeed.matched_targets?.length > 0 && (
                   <div>
                     <p className="text-muted-foreground mb-1">Matched Targets:</p>
-                    <div className="flex flex-wrap gap-1">
+                    <div className="flex flex-wrap gap-2">
                       {selectedFeed.matched_targets.map((t: any, i: number) => (
-                        <Badge key={i} className="bg-primary/20 text-primary border-primary/30">{t.name || t.id}</Badge>
+                        <div key={i} className="flex items-center gap-1">
+                          <Badge className="bg-primary/20 text-primary border-primary/30">{t.name || t.id}</Badge>
+                          <Button
+                            size="sm" variant="outline"
+                            className="text-[9px] gap-0.5 h-6 border-primary/30 text-primary"
+                            disabled={rescanning === `${selectedFeed.id}-${t.id}`}
+                            onClick={() => handleRescan(selectedFeed.id, t.id, selectedFeed.vulnerability_class)}
+                          >
+                            <Crosshair className="h-2.5 w-2.5" />
+                            {rescanning === `${selectedFeed.id}-${t.id}` ? "..." : "Rescan"}
+                          </Button>
+                        </div>
                       ))}
                     </div>
                   </div>
@@ -314,15 +418,26 @@ export default function IntelFeed() {
                             <p className="text-sm font-medium text-foreground">{n.title}</p>
                             <p className="text-xs text-muted-foreground mt-1">{n.message}</p>
                           </div>
-                          {n.actionUrl && (
-                            <Button variant="ghost" size="sm" onClick={() => window.open(n.actionUrl, "_blank")}>
-                              <ExternalLink className="h-3 w-3" />
-                            </Button>
-                          )}
+                          <div className="flex gap-1">
+                            {n.target_id && (
+                              <Button variant="outline" size="sm" className="text-[9px] gap-0.5 text-primary border-primary/30"
+                                onClick={() => handleRescan(n.intel_feed_id, n.target_id)}
+                                disabled={rescanning === `${n.intel_feed_id}-${n.target_id}`}
+                              >
+                                <Crosshair className="h-3 w-3" />
+                                {rescanning === `${n.intel_feed_id}-${n.target_id}` ? "..." : "Rescan"}
+                              </Button>
+                            )}
+                            {n.action_url && (
+                              <Button variant="ghost" size="sm" onClick={() => window.open(n.action_url, "_blank")}>
+                                <ExternalLink className="h-3 w-3" />
+                              </Button>
+                            )}
+                          </div>
                         </div>
                         <p className="text-xs text-muted-foreground mt-2">
                           <Clock className="h-3 w-3 inline mr-1" />
-                          {new Date(n.createdAt).toLocaleString()}
+                          {new Date(n.created_at).toLocaleString()}
                         </p>
                       </div>
                     ))}
@@ -372,10 +487,10 @@ export default function IntelFeed() {
                               {run.status}
                             </Badge>
                           </TableCell>
-                          <TableCell>{run.reportsFetched}</TableCell>
-                          <TableCell>{run.reportsProcessed}</TableCell>
-                          <TableCell>{run.templatesGenerated}</TableCell>
-                          <TableCell>{run.rescansTriggered}</TableCell>
+                          <TableCell className="text-xs">{run.reportsFetched}</TableCell>
+                          <TableCell className="text-xs">{run.reportsProcessed}</TableCell>
+                          <TableCell className="text-xs">{run.templatesGenerated}</TableCell>
+                          <TableCell className="text-xs">{run.rescansTriggered}</TableCell>
                         </TableRow>
                       ))}
                     </TableBody>
