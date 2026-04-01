@@ -1439,9 +1439,6 @@ serve(async (req) => {
       `✅ Scan complete — ${approvalCount} HIGH/CRITICAL → approval queue | ${autoAcceptedCount} LOW/MEDIUM/INFO → auto-accepted | Gauntlet: ${gauntletProven} proven | Peer: ${peerUpheld} upheld`
     );
 
-    await log(db, targetId, taskId, "info",
-      `✅ Scan complete — ${approvalCount} findings queued | Gauntlet: ${gauntletProven} proven | Peer Review: ${peerUpheld} upheld, ${peerDisputed} disputed`
-    );
 
     const owaspCoverage = [...new Set([
       ...passiveResults.map((p) => p.owaspCategory),
@@ -1461,15 +1458,14 @@ serve(async (req) => {
         ai_verified: verifiedCount,
         false_positives_flagged: falsePositiveCount,
         approvals_queued: approvalCount,
+        auto_accepted: autoAcceptedCount,
         owasp_categories_covered: owaspCoverage,
         adaptive_mutations_used: vulnFindings.filter((v) => v.adaptationUsed).length,
         intruder_tests_run: vulnFindings.reduce((sum, v) => sum + (v.intruderResults?.length || 0), 0),
-        // Phase 8 metrics
         experiences_recorded: experienceRecords.length,
         strategy_classes_disabled: disabledClasses.size,
         method_discoveries: methodDiscoveryCount,
         evolutionary_mutations: experienceRecords.filter(e => (e.metadata as any)?.mutation).length,
-        // Phase 9 metrics
         gauntlet_proven: gauntletProven,
         gauntlet_failed: gauntletFailed,
         peer_upheld: peerUpheld,
@@ -1491,8 +1487,8 @@ serve(async (req) => {
         aiVerified: verifiedCount,
         falsePositivesFlagged: falsePositiveCount,
         approvalsQueued: approvalCount,
+        autoAccepted: autoAcceptedCount,
         owaspCoverage,
-        // Phase 8 stats
         experiencesRecorded: experienceRecords.length,
         strategyClassesDisabled: disabledClasses.size,
         methodDiscoveries: methodDiscoveryCount,
