@@ -16,36 +16,44 @@ function supabaseAdmin() {
 
 // ─── Source Fetchers ────────────────────────────────────
 
-async function fetchGitHubAdvisories(limit = 15) {
+async function fetchGitHubAdvisories(limit = 50) {
   const reports: any[] = [];
   try {
-    const resp = await fetch(
-      `https://api.github.com/advisories?type=reviewed&per_page=${limit}`,
-      {
-        headers: {
-          Accept: "application/vnd.github+json",
-          "User-Agent": "CyberScope-Scanner/1.0",
-          "X-GitHub-Api-Version": "2022-11-28",
-        },
-      }
-    );
-    if (resp.ok) {
-      const advisories = await resp.json();
-      for (const adv of advisories) {
-        const techStack = (adv.vulnerabilities || [])
-          .map((v: any) => v.package?.name)
-          .filter(Boolean);
-        reports.push({
-          source: "github-advisory",
-          report_id: adv.ghsa_id || adv.cve_id || `gh-${Date.now()}`,
-          title: adv.summary || "Untitled",
-          raw_summary: (adv.description || "").slice(0, 1000),
-          severity: adv.severity || "medium",
-          source_url: adv.html_url || "",
-          affected_tech_stack: techStack,
-          vulnerability_class: adv.cwe_ids?.[0] || null,
-        });
-      }
+    // Fetch multiple pages for more results
+    for (let page = 1; page <= Math.ceil(limit / 100); page++) {
+      const perPage = Math.min(limit - reports.length, 100);
+      if (perPage <= 0) break;
+      const resp = await fetch(
+        `https://api.github.com/advisories?type=reviewed&per_page=${perPage}&page=${page}`,
+        {
+          headers: {
+            Accept: "application/vnd.github+json",
+            "User-Agent": "CyberScope-Scanner/1.0",
+            "X-GitHub-Api-Version": "2022-11-28",
+          },
+        }
+      );
+      if (resp.ok) {
+        const advisories = await resp.json();
+        if (advisories.length === 0) break;
+        for (const adv of advisories) {
+          const techStack = (adv.vulnerabilities || [])
+            .map((v: any) => v.package?.name)
+            .filter(Boolean);
+          reports.push({
+            source: "github-advisory",
+            report_id: adv.ghsa_id || adv.cve_id || `gh-${Date.now()}-${reports.length}`,
+            title: adv.summary || "Untitled",
+            raw_summary: (adv.description || "").slice(0, 1000),
+            severity: adv.severity || "medium",
+            source_url: adv.html_url || "",
+            affected_tech_stack: techStack,
+            vulnerability_class: adv.cwe_ids?.[0] || null,
+            cve_ids: adv.cve_id ? [adv.cve_id] : [],
+          });
+        }
+      } else break;
+      await new Promise((r) => setTimeout(r, 300));
     }
   } catch (e) {
     console.error("GitHub Advisory error:", e);
@@ -53,7 +61,7 @@ async function fetchGitHubAdvisories(limit = 15) {
   return reports;
 }
 
-async function fetchExploitDB(limit = 10) {
+async function fetchExploitDB(limit = 50) {
   const reports: any[] = [];
   try {
     const resp = await fetch("https://www.exploit-db.com/rss.xml", {
@@ -68,7 +76,7 @@ async function fetchExploitDB(limit = 10) {
         const desc = item.match(/<description>(.*?)<\/description>/)?.[1] || "";
         reports.push({
           source: "exploit-db",
-          report_id: `edb-${link.split("/").pop() || Date.now()}`,
+          report_id: `edb-${link.split("/").pop() || Date.now()}-${reports.length}`,
           title: decodeXml(title),
           raw_summary: decodeXml(desc).slice(0, 1000),
           severity: "high",
@@ -101,7 +109,7 @@ async function aiInterpretReport(report: any): Promise<any> {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "google/gemini-3-flash-preview",
+        model: "google/gemini-2.5-flash-lite",
         messages: [
           {
             role: "system",
@@ -109,7 +117,7 @@ async function aiInterpretReport(report: any): Promise<any> {
           },
           {
             role: "user",
-            content: `Analyze this disclosed security report:\n\nTitle: ${report.title}\nSummary: ${report.raw_summary}\nSeverity: ${report.severity}\n\nExtract: vulnerability class, specific payloads, affected tech stack, WAF bypass logic, bypass techniques, signal strength (high/medium/low), and OWASP category.`,
+            content: `Analyze this disclosed security report:\n\nTitle: ${report.title}\nSummary: ${(report.raw_summary || "").slice(0, 500)}\nSeverity: ${report.severity}\n\nExtract: vulnerability class, specific payloads, affected tech stack, WAF bypass logic, bypass techniques, signal strength (high/medium/low), and OWASP category.`,
           },
         ],
         tools: [
@@ -139,6 +147,11 @@ async function aiInterpretReport(report: any): Promise<any> {
       }),
     });
 
+    if (resp.status === 429 || resp.status === 402) {
+      console.warn(`AI rate limited (${resp.status}), falling back to heuristic`);
+      return heuristicInterpret(report);
+    }
+
     if (resp.ok) {
       const data = await resp.json();
       const toolCall = data.choices?.[0]?.message?.tool_calls?.[0];
@@ -158,14 +171,16 @@ function heuristicInterpret(report: any) {
     ssrf: ["ssrf", "server-side request"], cmdi: ["command injection", "rce", "remote code"],
     ssti: ["ssti", "template injection"], idor: ["idor", "insecure direct object"],
     "path-traversal": ["path traversal", "directory traversal", "lfi"],
+    xxe: ["xxe", "xml external"], "auth-bypass": ["authentication bypass", "auth bypass"],
+    deserialization: ["deserialization", "insecure deserialization"],
   };
   let vulnClass = "unknown";
   for (const [cls, kw] of Object.entries(vulnMap)) {
     if (kw.some((k) => text.includes(k))) { vulnClass = cls; break; }
   }
-  const techKw = ["nginx", "apache", "node.js", "django", "flask", "spring", "laravel", "wordpress", "php", "python", "java", "jenkins"];
+  const techKw = ["nginx", "apache", "node.js", "django", "flask", "spring", "laravel", "wordpress", "php", "python", "java", "jenkins", "docker", "kubernetes", "express", "rails", "ruby"];
   const stack = techKw.filter((t) => text.includes(t));
-  const bypassKw = ["bypass", "waf bypass", "filter bypass", "encoding bypass", "double encoding"];
+  const bypassKw = ["bypass", "waf bypass", "filter bypass", "encoding bypass", "double encoding", "null byte", "unicode"];
   const bypasses = bypassKw.filter((b) => text.includes(b));
   return {
     vulnerabilityClass: vulnClass,
@@ -253,17 +268,60 @@ serve(async (req) => {
       });
     }
 
-    // ── Full Sync Pipeline ──
-    const { data: syncRun } = await db.from("intel_sync_runs").insert({
-      status: "running",
-    }).select().single();
+    // ── Trigger rescan on a specific target from intel feed ──
+    if (action === "trigger-rescan") {
+      const { targetId, vulnClass, intelFeedId } = body;
+      if (!targetId) {
+        return new Response(JSON.stringify({ error: "targetId required" }), {
+          status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
 
+      // Check endpoints exist
+      const { data: eps } = await db.from("discovered_endpoints").select("id").eq("target_id", targetId).limit(1);
+      if (!eps || eps.length === 0) {
+        return new Response(JSON.stringify({ error: "No endpoints — run recon first", triggered: false }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      // Create delta scan task
+      await db.from("agent_tasks").insert({
+        target_id: targetId,
+        task_type: "intel-delta-scan",
+        status: "pending",
+        thought_log: [{ type: "info", message: `Intel-driven delta scan for ${vulnClass || "all"}`, intelFeedId, timestamp: new Date().toISOString() }],
+      });
+
+      await db.from("scan_logs").insert({
+        target_id: targetId,
+        log_type: "info",
+        message: `🔄 Intel-driven rescan triggered for ${vulnClass || "all"} (from feed ${intelFeedId || "manual"})`,
+        metadata: { intelFeedId, vulnClass },
+      });
+
+      // Trigger vuln-scanner
+      const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+      const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+      fetch(`${supabaseUrl}/functions/v1/vuln-scanner`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${serviceKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ targetId }),
+      }).catch(e => console.error("Rescan trigger error:", e));
+
+      return new Response(JSON.stringify({ triggered: true, message: `Rescan triggered for target ${targetId}` }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    // ── Full Sync Pipeline ──
+    const { data: syncRun } = await db.from("intel_sync_runs").insert({ status: "running" }).select().single();
     const syncRunId = syncRun?.id;
 
-    // Step 1: Fetch from all sources
+    // Step 1: Fetch from all sources (increased limits)
     const [ghReports, edbReports] = await Promise.all([
-      fetchGitHubAdvisories(15),
-      fetchExploitDB(10),
+      fetchGitHubAdvisories(50),
+      fetchExploitDB(50),
     ]);
     const allReports = [...ghReports, ...edbReports];
     const reportsFetched = allReports.length;
@@ -277,13 +335,10 @@ serve(async (req) => {
     let templatesGenerated = 0;
     let rescansTriggered = 0;
 
-    // Step 3: Process each new report
-    for (const report of newReports.slice(0, 20)) {
+    // Step 3: Process ALL new reports (no arbitrary cap)
+    for (const report of newReports) {
       try {
-        // AI interpretation
         const intel = await aiInterpretReport(report);
-
-        // Generate template
         const template = generateTemplate(
           intel.vulnerabilityClass,
           intel.specificPayloads || [],
@@ -291,7 +346,6 @@ serve(async (req) => {
         );
         const script = templateToScript(template);
 
-        // Store in intel_feeds
         const { data: feed } = await db.from("intel_feeds").insert({
           source: report.source,
           source_url: report.source_url,
@@ -321,20 +375,18 @@ serve(async (req) => {
           const matches = await findMatchingTargets(db, techStack);
 
           if (matches.length > 0) {
-            // Update feed with matched targets
             await db.from("intel_feeds").update({
-              matched_targets: matches.map((m: any) => ({ id: m.id, name: m.name })),
+              matched_targets: matches.map((m: any) => ({ id: m.id, name: m.name, domain: m.domain })),
               rescan_triggered: true,
             }).eq("id", feed.id);
 
-            // Create notifications
-            for (const match of matches.slice(0, 3)) {
+            for (const match of matches.slice(0, 5)) {
               await db.from("intel_notifications").insert({
                 intel_feed_id: feed.id,
                 target_id: match.id,
                 notification_type: "match_found",
                 title: `🔴 New ${intel.vulnerabilityClass} disclosure matches ${match.name}`,
-                message: `"${report.title}" may affect ${match.name} (matched: ${match.matchedTech.join(", ")}). Re-verification initiated.`,
+                message: `"${report.title}" may affect ${match.name} (matched: ${match.matchedTech.join(", ")}). Click "Rescan" to test.`,
                 action_url: report.source_url,
               });
               rescansTriggered++;
@@ -342,9 +394,9 @@ serve(async (req) => {
           }
         }
 
-        // Store in experience vault (Phase 8 integration)
+        // Store payloads in experience vault
         if (intel.specificPayloads?.length > 0) {
-          for (const payload of intel.specificPayloads.slice(0, 3)) {
+          for (const payload of intel.specificPayloads.slice(0, 5)) {
             await db.from("experience_vault").insert({
               vuln_class: intel.vulnerabilityClass,
               payload_used: payload,
@@ -357,13 +409,12 @@ serve(async (req) => {
           }
         }
 
-        await new Promise((r) => setTimeout(r, 200));
+        await new Promise((r) => setTimeout(r, 150));
       } catch (e) {
         console.error("Error processing report:", report.report_id, e);
       }
     }
 
-    // Update sync run
     if (syncRunId) {
       await db.from("intel_sync_runs").update({
         completed_at: new Date().toISOString(),
