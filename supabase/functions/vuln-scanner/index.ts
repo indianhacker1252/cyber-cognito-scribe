@@ -1193,28 +1193,51 @@ serve(async (req) => {
       `AI verification: ${verifiedCount} confirmed, ${falsePositiveCount} marked as likely false positives`
     );
 
-    // ── Step 6: Push to HITL Approval Queue (with confidence & verification) ──
-    await log(db, targetId, taskId, "thought", "Routing verified findings to HITL approval queue");
+    // ── Step 6: Route findings — HIGH/CRITICAL → Approvals, LOW/MEDIUM/INFO → Auto-accepted ──
+    await log(db, targetId, taskId, "thought", "Routing findings: high/critical → approval queue, low/medium/info → auto-accepted findings");
     let approvalCount = 0;
+    let autoAcceptedCount = 0;
 
     // ── Check suppression vectors ──
     const { data: suppressionVectors } = await db.from("suppression_vectors").select("*");
     const suppressedTypes = new Set((suppressionVectors || []).map((v: any) => `${v.finding_type}:${v.vuln_class || ""}`));
 
-    // Passive findings
+    // Helper: auto-accept low-severity findings directly to vulnerability_findings
+    async function autoAcceptFinding(finding: {
+      target_id: string; endpoint_id?: string | null; title: string; severity: string;
+      description?: string; payload?: string; confidence_score?: number;
+      confidence_level?: string; ai_verified?: boolean; triage_reasoning?: string;
+      cvss_score?: number; reachability_status?: string;
+    }) {
+      await db.from("vulnerability_findings").insert({
+        target_id: finding.target_id,
+        endpoint_id: finding.endpoint_id || null,
+        title: finding.title,
+        severity: finding.severity as any,
+        description: finding.description || null,
+        payload: finding.payload || null,
+        confidence_score: finding.confidence_score || 0,
+        confidence_level: finding.confidence_level || "medium",
+        ai_verified: finding.ai_verified || false,
+        triage_reasoning: finding.triage_reasoning || "Auto-accepted (low/medium/info severity)",
+        cvss_score: finding.cvss_score || null,
+        reachability_status: finding.reachability_status || "unknown",
+        validation_status: "auto-accepted",
+      });
+      autoAcceptedCount++;
+    }
+
+    // Passive findings → auto-accept (all are low/medium/info)
     for (const passive of passiveResults) {
-      await db.from("pending_approvals").insert({
+      await autoAcceptFinding({
         target_id: targetId,
-        finding_type: `passive-${passive.vulnClass}`,
-        severity: passive.severity,
         title: passive.title,
+        severity: passive.severity,
         description: `${passive.description}\n\n**Remediation:** ${passive.remediation}`,
-        evidence: { check: passive.check, owaspCategory: passive.owaspCategory },
         confidence_level: passive.severity === "info" ? "low" : "medium",
         ai_verified: true,
-        ai_verification_notes: "Passive check — deterministic detection",
+        triage_reasoning: `Passive check — deterministic detection. OWASP: ${passive.owaspCategory}`,
       });
-      approvalCount++;
     }
 
     // Active differential findings with Phase 9 proof & peer review data
@@ -1240,50 +1263,63 @@ serve(async (req) => {
       const effectiveConfidence = peer?.finalConfidence ?? diff.confidenceScore;
       const confidenceLabel = effectiveConfidence >= 80 ? "high" : effectiveConfidence >= 50 ? "medium" : "low";
 
-      // Severity downgrade: if no 1-click repro proof, cannot be critical
       let effectiveSeverity = severityMap[diff.confidence] || "medium";
       if (effectiveSeverity === "critical" && !proof?.proven) effectiveSeverity = "high";
 
       const proofNote = proof?.proven ? `\n\n🛡️ **Gauntlet Proof**: ${proof.proofType} — ${proof.mathematicalBasis}` : "\n\n⚠️ No deterministic proof — requires manual verification";
       const peerNote = peer ? `\n\n🤔 **Peer Review**: ${peer.verdict.toUpperCase()} (skeptic score: ${peer.skepticScore}) — ${peer.reasoning}` : "";
+      const fullDescription = `Parameter "${matchingCheck?.paramName}" showed differential response behavior indicating possible ${diff.vulnClass}.${diff.adaptationUsed ? `\n\nAdaptive mutation "${diff.adaptationUsed}" was used.` : ""}${diff.intruderResults ? `\n\n**Intruder Results:** ${diff.intruderResults.length} payloads tested, ${diff.intruderResults.filter(i => i.status === 200).length} returned 200 OK.` : ""}${proofNote}${peerNote}`;
+      const triageNote = `Gauntlet: ${proof?.proven ? "PROVEN" : "UNPROVEN"} (${proof?.proofType || "N/A"}). Peer: ${peer?.verdict || "N/A"} (skeptic: ${peer?.skepticScore || 0})`;
 
-      await db.from("pending_approvals").insert({
-        target_id: targetId,
-        endpoint_id: matchingCheck?.endpointId || null,
-        finding_type: `active-${diff.vulnClass}`,
-        severity: effectiveSeverity,
-        title: `${proof?.proven ? "✅" : "⚠️"} ${diff.vulnClass.toUpperCase()} [${diff.owaspCategory}]`,
-        description: `Parameter "${matchingCheck?.paramName}" showed differential response behavior indicating possible ${diff.vulnClass}.${diff.adaptationUsed ? `\n\nAdaptive mutation "${diff.adaptationUsed}" was used.` : ""}${diff.intruderResults ? `\n\n**Intruder Results:** ${diff.intruderResults.length} payloads tested, ${diff.intruderResults.filter(i => i.status === 200).length} returned 200 OK.` : ""}${proofNote}${peerNote}`,
-        parameter: matchingCheck?.paramName,
-        payload_used: diff.truePayload,
-        baseline_response: diff.baseline,
-        mutated_response: diff.mutated,
-        request_data: diff.requestData,
-        response_data: diff.responseData,
-        confidence_level: confidenceLabel,
-        confidence_score: Math.round(effectiveConfidence),
-        ai_verified: proof?.proven || false,
-        ai_verification_notes: proof?.proven
-          ? `Deterministic proof: ${proof.proofType}. ${proof.mathematicalBasis}. Peer review: ${peer?.verdict || "pending"}`
-          : `Unproven — awaiting manual verification. Peer review: ${peer?.verdict || "pending"}`,
-        triage_reasoning: `Gauntlet: ${proof?.proven ? "PROVEN" : "UNPROVEN"} (${proof?.proofType || "N/A"}). Peer: ${peer?.verdict || "N/A"} (skeptic: ${peer?.skepticScore || 0})`,
-        evidence: {
-          vulnClass: diff.vulnClass,
-          confidence: diff.confidence,
-          confidenceScore: effectiveConfidence,
-          url: matchingCheck?.url,
-          owaspCategory: diff.owaspCategory,
-          adaptationUsed: diff.adaptationUsed || null,
-          intruderResults: diff.intruderResults || null,
-          gauntletProof: proof || null,
-          peerReview: peer || null,
-        },
-      });
-      approvalCount++;
+      // Route by severity: high/critical → approvals, others → auto-accept
+      if (effectiveSeverity === "high" || effectiveSeverity === "critical") {
+        await db.from("pending_approvals").insert({
+          target_id: targetId,
+          endpoint_id: matchingCheck?.endpointId || null,
+          finding_type: `active-${diff.vulnClass}`,
+          severity: effectiveSeverity,
+          title: `${proof?.proven ? "✅" : "⚠️"} ${diff.vulnClass.toUpperCase()} [${diff.owaspCategory}]`,
+          description: fullDescription,
+          parameter: matchingCheck?.paramName,
+          payload_used: diff.truePayload,
+          baseline_response: diff.baseline,
+          mutated_response: diff.mutated,
+          request_data: diff.requestData,
+          response_data: diff.responseData,
+          confidence_level: confidenceLabel,
+          confidence_score: Math.round(effectiveConfidence),
+          ai_verified: proof?.proven || false,
+          ai_verification_notes: proof?.proven
+            ? `Deterministic proof: ${proof.proofType}. ${proof.mathematicalBasis}. Peer review: ${peer?.verdict || "pending"}`
+            : `Unproven — awaiting manual verification. Peer review: ${peer?.verdict || "pending"}`,
+          triage_reasoning: triageNote,
+          evidence: {
+            vulnClass: diff.vulnClass, confidence: diff.confidence, confidenceScore: effectiveConfidence,
+            url: matchingCheck?.url, owaspCategory: diff.owaspCategory,
+            adaptationUsed: diff.adaptationUsed || null, intruderResults: diff.intruderResults || null,
+            gauntletProof: proof || null, peerReview: peer || null,
+          },
+        });
+        approvalCount++;
+      } else {
+        await autoAcceptFinding({
+          target_id: targetId,
+          endpoint_id: matchingCheck?.endpointId || null,
+          title: `${diff.vulnClass.toUpperCase()} [${diff.owaspCategory}]`,
+          severity: effectiveSeverity,
+          description: fullDescription,
+          payload: diff.truePayload,
+          confidence_score: Math.round(effectiveConfidence),
+          confidence_level: confidenceLabel,
+          ai_verified: proof?.proven || false,
+          triage_reasoning: triageNote,
+        });
+      }
     }
 
-    // CVE findings with version sanity check
+    // CVE findings — AI reverification before adding
     const serverHeader = techStack.server || "";
+    const LOVABLE_API_KEY_CVE = Deno.env.get("LOVABLE_API_KEY");
     for (const cve of cveResults.slice(0, 10)) {
       const versionCheck = checkVersionSanity(cve.cveId, serverHeader);
       if (versionCheck.shouldSuppress) {
@@ -1291,47 +1327,117 @@ serve(async (req) => {
         continue;
       }
 
-      const severityMap: Record<string, string> = { CRITICAL: "critical", HIGH: "high", MEDIUM: "medium", LOW: "low" };
-      await db.from("pending_approvals").insert({
-        target_id: targetId,
-        finding_type: "cve-correlation",
-        severity: severityMap[cve.severity] || "medium",
-        title: `${cve.cveId} — ${cve.description.slice(0, 80)}`,
-        description: cve.description,
-        cve_ids: [cve.cveId],
-        cvss_score: cve.cvssScore,
-        confidence_level: "medium",
-        ai_verified: false,
-        ai_verification_notes: "CVE correlation — requires manual version confirmation",
-        evidence: { techStack, cveId: cve.cveId, severity: cve.severity, owaspCategory: "A06:2021 Vulnerable and Outdated Components" },
-      });
-      approvalCount++;
+      // AI reverification of CVE applicability
+      let cveVerified = false;
+      let cveVerifyNotes = "CVE correlation — not AI verified";
+      if (LOVABLE_API_KEY_CVE) {
+        try {
+          const verifyResp = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+            method: "POST",
+            headers: { Authorization: `Bearer ${LOVABLE_API_KEY_CVE}`, "Content-Type": "application/json" },
+            body: JSON.stringify({
+              model: "google/gemini-2.5-flash-lite",
+              messages: [
+                { role: "system", content: "You verify CVE applicability. Return JSON via tool." },
+                { role: "user", content: `Does ${cve.cveId} (${cve.description.slice(0, 300)}) apply to a server with: ${JSON.stringify(techStack)}? Consider version, technology match, and whether the vulnerability is patched.` },
+              ],
+              tools: [{ type: "function", function: {
+                name: "cve_verdict", description: "CVE applicability verdict",
+                parameters: { type: "object", properties: {
+                  applicable: { type: "boolean" }, confidence: { type: "number" }, reasoning: { type: "string" },
+                }, required: ["applicable", "confidence", "reasoning"], additionalProperties: false },
+              }}],
+              tool_choice: { type: "function", function: { name: "cve_verdict" } },
+            }),
+          });
+          if (verifyResp.ok) {
+            const vData = await verifyResp.json();
+            const tc = vData.choices?.[0]?.message?.tool_calls?.[0];
+            if (tc) {
+              const verdict = JSON.parse(tc.function.arguments);
+              cveVerified = verdict.applicable;
+              cveVerifyNotes = `AI Verified: ${verdict.applicable ? "APPLICABLE" : "NOT APPLICABLE"} (${verdict.confidence}%) — ${verdict.reasoning}`;
+              if (!verdict.applicable && verdict.confidence >= 70) {
+                await log(db, targetId, taskId, "info", `⛔ AI dismissed ${cve.cveId} — ${verdict.reasoning}`);
+                continue;
+              }
+            }
+          }
+          await new Promise((r) => setTimeout(r, 200));
+        } catch { /* fallback to unverified */ }
+      }
+
+      const cveSeverityMap: Record<string, string> = { CRITICAL: "critical", HIGH: "high", MEDIUM: "medium", LOW: "low" };
+      const cveSev = cveSeverityMap[cve.severity] || "medium";
+
+      if (cveSev === "high" || cveSev === "critical") {
+        await db.from("pending_approvals").insert({
+          target_id: targetId,
+          finding_type: "cve-correlation",
+          severity: cveSev,
+          title: `${cve.cveId} — ${cve.description.slice(0, 80)}`,
+          description: cve.description,
+          cve_ids: [cve.cveId],
+          cvss_score: cve.cvssScore,
+          confidence_level: cveVerified ? "high" : "medium",
+          ai_verified: cveVerified,
+          ai_verification_notes: cveVerifyNotes,
+          evidence: { techStack, cveId: cve.cveId, severity: cve.severity, owaspCategory: "A06:2021 Vulnerable and Outdated Components" },
+        });
+        approvalCount++;
+      } else {
+        await autoAcceptFinding({
+          target_id: targetId,
+          title: `${cve.cveId} — ${cve.description.slice(0, 80)}`,
+          severity: cveSev,
+          description: cve.description,
+          cvss_score: cve.cvssScore,
+          confidence_level: cveVerified ? "high" : "medium",
+          ai_verified: cveVerified,
+          triage_reasoning: cveVerifyNotes,
+        });
+      }
     }
 
     // AI-verified assessments
     for (const assessment of aiAssessments.assessments) {
       const confidenceLabel = assessment.confidenceScore >= 80 ? "high" : assessment.confidenceScore >= 50 ? "medium" : "low";
-      await db.from("pending_approvals").insert({
-        target_id: targetId,
-        finding_type: "ai-deep-assessment",
-        severity: assessment.severity,
-        title: `${assessment.title} [${assessment.owaspCategory}]`,
-        description: `${assessment.description}\n\n**Remediation:** ${assessment.remediation}`,
-        cvss_score: assessment.cvssScore,
-        confidence_level: confidenceLabel,
-        ai_verified: assessment.isVerified,
-        ai_verification_notes: assessment.verificationNotes,
-        evidence: {
-          source: "ai-deep-analysis",
-          owaspCategory: assessment.owaspCategory,
-          remediation: assessment.remediation,
-          cvssScore: assessment.cvssScore,
-          confidenceScore: assessment.confidenceScore,
-          isVerified: assessment.isVerified,
-        },
-      });
-      approvalCount++;
+
+      if (assessment.severity === "high" || assessment.severity === "critical") {
+        await db.from("pending_approvals").insert({
+          target_id: targetId,
+          finding_type: "ai-deep-assessment",
+          severity: assessment.severity,
+          title: `${assessment.title} [${assessment.owaspCategory}]`,
+          description: `${assessment.description}\n\n**Remediation:** ${assessment.remediation}`,
+          cvss_score: assessment.cvssScore,
+          confidence_level: confidenceLabel,
+          ai_verified: assessment.isVerified,
+          ai_verification_notes: assessment.verificationNotes,
+          evidence: {
+            source: "ai-deep-analysis", owaspCategory: assessment.owaspCategory,
+            remediation: assessment.remediation, cvssScore: assessment.cvssScore,
+            confidenceScore: assessment.confidenceScore, isVerified: assessment.isVerified,
+          },
+        });
+        approvalCount++;
+      } else {
+        await autoAcceptFinding({
+          target_id: targetId,
+          title: `${assessment.title} [${assessment.owaspCategory}]`,
+          severity: assessment.severity,
+          description: `${assessment.description}\n\n**Remediation:** ${assessment.remediation}`,
+          cvss_score: assessment.cvssScore,
+          confidence_level: confidenceLabel,
+          ai_verified: assessment.isVerified,
+          triage_reasoning: assessment.verificationNotes,
+        });
+      }
     }
+
+    await log(db, targetId, taskId, "info",
+      `✅ Scan complete — ${approvalCount} HIGH/CRITICAL → approval queue | ${autoAcceptedCount} LOW/MEDIUM/INFO → auto-accepted | Gauntlet: ${gauntletProven} proven | Peer: ${peerUpheld} upheld`
+    );
 
     await log(db, targetId, taskId, "info",
       `✅ Scan complete — ${approvalCount} findings queued | Gauntlet: ${gauntletProven} proven | Peer Review: ${peerUpheld} upheld, ${peerDisputed} disputed`
