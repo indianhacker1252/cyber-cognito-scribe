@@ -1430,7 +1430,7 @@ serve(async (req) => {
       let cveVerifyNotes = "CVE correlation — not AI verified";
       if (LOVABLE_API_KEY_CVE) {
         try {
-          const verifyResp = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+          const verifyResp = await safeFetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
             method: "POST",
             headers: { Authorization: `Bearer ${LOVABLE_API_KEY_CVE}`, "Content-Type": "application/json" },
             body: JSON.stringify({
