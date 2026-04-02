@@ -1268,19 +1268,28 @@ serve(async (req) => {
 
     await log(db, targetId, taskId, "result", `🤔 Peer Review: ${peerUpheld} upheld, ${peerDisputed} disputed/needs-retest`);
 
-    // ── Step 4: CVE Correlation ──
-    await log(db, targetId, taskId, "thought", "Querying NVD for CVE correlation");
-    const cveResults = await queryCveDatabase(techStack);
-    await log(db, targetId, taskId, "result", `CVE correlation found ${cveResults.length} potentially relevant CVEs`);
+    // ── Step 4: CVE Correlation (skip if timed out) ──
+    let cveResults: CveResult[] = [];
+    if (!isTimedOut()) {
+      await log(db, targetId, taskId, "thought", "Querying NVD for CVE correlation");
+      cveResults = await queryCveDatabase(techStack);
+      await log(db, targetId, taskId, "result", `CVE correlation found ${cveResults.length} potentially relevant CVEs`);
+    } else {
+      await log(db, targetId, taskId, "info", "⏱️ Skipping CVE correlation — time limit");
+    }
 
-    // ── Step 5: AI Verification & Deep Assessment ──
-    await log(db, targetId, taskId, "thought", "🧠 AI verifying findings to eliminate false positives...");
-    const aiAssessments = await aiVerifyAndAnalyze(target.domain || "unknown", diffResults, cveResults, passiveResults, techStack);
-    const verifiedCount = aiAssessments.assessments.filter((a) => a.isVerified).length;
-    const falsePositiveCount = aiAssessments.assessments.filter((a) => !a.isVerified).length;
-    await log(db, targetId, taskId, "result",
-      `AI verification: ${verifiedCount} confirmed, ${falsePositiveCount} marked as likely false positives`
-    );
+    // ── Step 5: AI Verification & Deep Assessment (skip if timed out) ──
+    let aiAssessments = { assessments: [] as any[] };
+    let verifiedCount = 0;
+    let falsePositiveCount = 0;
+    if (!isTimedOut()) {
+      await log(db, targetId, taskId, "thought", "🧠 AI verifying findings to eliminate false positives...");
+      aiAssessments = await aiVerifyAndAnalyze(target.domain || "unknown", diffResults, cveResults, passiveResults, techStack);
+      verifiedCount = aiAssessments.assessments.filter((a: any) => a.isVerified).length;
+      falsePositiveCount = aiAssessments.assessments.filter((a: any) => !a.isVerified).length;
+    } else {
+      await log(db, targetId, taskId, "info", "⏱️ Skipping AI verification — time limit");
+    }
 
     // ── Step 6: Route findings — HIGH/CRITICAL → Approvals, LOW/MEDIUM/INFO → Auto-accepted ──
     await log(db, targetId, taskId, "thought", "Routing findings: high/critical → approval queue, low/medium/info → auto-accepted findings");
