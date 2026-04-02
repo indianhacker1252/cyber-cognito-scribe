@@ -1,6 +1,65 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
+// ─── GLOBAL TIMEOUT HELPER ─────────────────────────────
+const SCAN_START = Date.now();
+const MAX_SCAN_MS = 50000; // 50s hard limit (edge fn = 60s)
+function timeLeft(): number { return MAX_SCAN_MS - (Date.now() - SCAN_START); }
+function isTimedOut(): boolean { return timeLeft() <= 0; }
+
+async function safeFetch(url: string, opts: RequestInit = {}, timeoutMs = 8000): Promise<Response> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...opts, signal: ctrl.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// ─── SECLISTS PAYLOAD LOADER (Phase 11) ─────────────────
+const SECLISTS_BASE = "https://raw.githubusercontent.com/danielmiessler/SecLists/master";
+const SECLISTS_PATHS: Record<string, string> = {
+  sqli: "Fuzzing/SQLi/quick-SQLi.txt",
+  "sqli-mysql": "Fuzzing/Databases/MySQL-SQLi-Login-Bypass.fuzzdb.txt",
+  rxss: "Fuzzing/XSS/XSS-Bypass-Strings-BruteLogic.txt",
+  cmdi: "Fuzzing/command-injection-commix.txt",
+  "path-traversal": "Fuzzing/LFI/LFI-Jhaddix.txt",
+  lfi: "Fuzzing/LFI/LFI-gracefulsecurity-linux.txt",
+  ssti: "Fuzzing/SSI-Injection/SSI-Injection.txt",
+  nosqli: "Fuzzing/NoSQL-Injection/NoSQLi.txt",
+};
+
+const seclistsCache = new Map<string, string[]>();
+async function loadSecListsPayloads(vulnClass: string, limit = 20): Promise<string[]> {
+  const path = SECLISTS_PATHS[vulnClass];
+  if (!path) return [];
+  if (seclistsCache.has(vulnClass)) return seclistsCache.get(vulnClass)!.slice(0, limit);
+  try {
+    const resp = await safeFetch(`${SECLISTS_BASE}/${path}`, { headers: { "User-Agent": "CyberScope/1.0" } }, 5000);
+    if (!resp.ok) return [];
+    const lines = (await resp.text()).split("\n").map(l => l.trim()).filter(l => l && !l.startsWith("#"));
+    seclistsCache.set(vulnClass, lines);
+    return lines.slice(0, limit);
+  } catch { return []; }
+}
+
+// ─── TECH LEAK DETECTION (Phase 11: SecListsFeedback) ───
+const TECH_LEAK_PATTERNS: Array<{ pattern: RegExp; tech: string; dbType?: string }> = [
+  { pattern: /MySQL/i, tech: "MySQL", dbType: "mysql" },
+  { pattern: /PostgreSQL/i, tech: "PostgreSQL", dbType: "postgres" },
+  { pattern: /Microsoft SQL Server|MSSQL/i, tech: "MSSQL", dbType: "mssql" },
+  { pattern: /MongoDB/i, tech: "MongoDB", dbType: "mongodb" },
+  { pattern: /ORA-\d{4,5}/i, tech: "Oracle", dbType: "oracle" },
+];
+
+function detectDbFromError(body: string): string | null {
+  for (const p of TECH_LEAK_PATTERNS) {
+    if (p.pattern.test(body) && p.dbType) return p.dbType;
+  }
+  return null;
+}
+
 // ─── PHASE 8: Learning Engine Types ─────────────────────
 interface ExperienceRecord {
   target_id: string | null;
@@ -58,13 +117,15 @@ async function log(
   message: string,
   metadata: Record<string, unknown> = {}
 ) {
-  await db.from("scan_logs").insert({
-    target_id: targetId,
-    task_id: taskId,
-    log_type: type,
-    message,
-    metadata,
-  });
+  try {
+    await db.from("scan_logs").insert({
+      target_id: targetId,
+      task_id: taskId,
+      log_type: type,
+      message,
+      metadata,
+    });
+  } catch { /* don't let logging failures crash the scan */ }
 }
 
 // ─── SAFE PAYLOADS ONLY ──────────────────────────────────
@@ -339,22 +400,22 @@ async function runDifferentialTest(
       // Truthy (mutated) test
       url.searchParams.set(paramName, attempt.payload);
       const trueStart = Date.now();
-      const trueResp = await fetch(url.toString(), { method: "GET", headers: reqHeaders, redirect: "manual" });
+      const trueResp = await safeFetch(url.toString(), { method: "GET", headers: reqHeaders, redirect: "manual" }, 6000);
       const trueBody = await trueResp.text();
       const trueTiming = Date.now() - trueStart;
       const trueHeaders = captureHeaders(trueResp);
 
-      await new Promise((r) => setTimeout(r, 100));
+      await new Promise((r) => setTimeout(r, 50));
 
       // Falsy (baseline) test
       url.searchParams.set(paramName, pair.falsy);
-      const falseResp = await fetch(url.toString(), { method: "GET", headers: reqHeaders, redirect: "manual" });
+      const falseResp = await safeFetch(url.toString(), { method: "GET", headers: reqHeaders, redirect: "manual" }, 6000);
       const falseBody = await falseResp.text();
       const falseHeaders = captureHeaders(falseResp);
 
       // If blocked, try next mutation
       if ([403, 406, 429].includes(trueResp.status) && attempt.name !== payloadsToTry[payloadsToTry.length - 1].name) {
-        await new Promise((r) => setTimeout(r, 500));
+        await new Promise((r) => setTimeout(r, 200));
         continue;
       }
 
@@ -486,10 +547,10 @@ async function runDifferentialTest(
             const iUrl = new URL(baseUrl);
             iUrl.searchParams.set(paramName, ip);
             const start = Date.now();
-            const iResp = await fetch(iUrl.toString(), { method: "GET", headers: reqHeaders, redirect: "manual" });
+            const iResp = await safeFetch(iUrl.toString(), { method: "GET", headers: reqHeaders, redirect: "manual" }, 5000);
             const iBody = await iResp.text();
             intruderResults.push({ payload: ip, status: iResp.status, length: iBody.length, timingMs: Date.now() - start });
-            await new Promise((r) => setTimeout(r, 200));
+            await new Promise((r) => setTimeout(r, 100));
           } catch { /* skip */ }
         }
 
@@ -526,11 +587,11 @@ async function runPassiveChecks(domain: string): Promise<PassiveResult[]> {
   const results: PassiveResult[] = [];
 
   try {
-    const resp = await fetch(`https://${domain}`, {
+    const resp = await safeFetch(`https://${domain}`, {
       method: "GET",
       headers: { "User-Agent": "CyberScope-Scanner/1.0" },
       redirect: "follow",
-    });
+    }, 6000);
 
     const headers = Object.fromEntries(resp.headers.entries());
     const body = await resp.text();
@@ -604,7 +665,7 @@ async function runPassiveChecks(domain: string): Promise<PassiveResult[]> {
     const loggingPaths = ["/.well-known/security.txt", "/security.txt"];
     for (const lp of loggingPaths) {
       try {
-        const lResp = await fetch(`https://${domain}${lp}`, { method: "GET", headers: { "User-Agent": "CyberScope-Scanner/1.0" } });
+        const lResp = await safeFetch(`https://${domain}${lp}`, { method: "GET", headers: { "User-Agent": "CyberScope-Scanner/1.0" } }, 4000);
         if (lResp.status !== 200) {
           results.push({ check: "security-txt", vulnClass: "insufficient-logging", owaspCategory: "A09:2021 Security Logging and Monitoring Failures", severity: "info", title: "Missing security.txt", description: `No security.txt found at ${lp}.`, remediation: "Create a security.txt file per RFC 9116." });
           break;
@@ -634,11 +695,13 @@ async function queryCveDatabase(techStack: Record<string, string | undefined>): 
   if (techStack.poweredBy) searchTerms.push(techStack.poweredBy);
   if (techStack.framework) searchTerms.push(techStack.framework);
 
-  for (const term of searchTerms) {
+  for (const term of searchTerms.slice(0, 2)) {
+    if (isTimedOut()) break;
     try {
-      const resp = await fetch(
-        `https://services.nvd.nist.gov/rest/json/cves/2.0?keywordSearch=${encodeURIComponent(term)}&resultsPerPage=10`,
-        { headers: { "User-Agent": "CyberScope-Scanner/1.0" } }
+      const resp = await safeFetch(
+        `https://services.nvd.nist.gov/rest/json/cves/2.0?keywordSearch=${encodeURIComponent(term)}&resultsPerPage=5`,
+        { headers: { "User-Agent": "CyberScope-Scanner/1.0" } },
+        6000
       );
       if (resp.ok) {
         const data = await resp.json();
@@ -653,7 +716,7 @@ async function queryCveDatabase(techStack: Record<string, string | undefined>): 
           });
         }
       }
-      await new Promise((r) => setTimeout(r, 1000));
+      await new Promise((r) => setTimeout(r, 500));
     } catch (e) {
       console.error(`NVD query error for "${term}":`, e);
     }
@@ -712,7 +775,7 @@ For each finding, verify it and provide:
 - verificationNotes: explain WHY you believe it's real or false positive`;
 
   try {
-    const resp = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+    const resp = await safeFetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${LOVABLE_API_KEY}`,
@@ -892,23 +955,35 @@ serve(async (req) => {
       await log(db, targetId, taskId, "info", `📚 Loaded ${highYieldPayloads.size} vuln classes with proven payloads from Experience Vault`);
     }
 
-    // ── Step 3: Differential Analysis + Intruder + Evolutionary Fuzzing ──
-    await log(db, targetId, taskId, "thought", "Running differential tests with Intruder/Repeater, adaptive mutation, and evolutionary fuzzing");
+    // ── Step 3: Differential Analysis + Intruder + Evolutionary Fuzzing + SecLists ──
+    await log(db, targetId, taskId, "thought", "Running differential tests with Intruder/Repeater, adaptive mutation, evolutionary fuzzing, and SecLists payloads");
     const diffResults: DiffResult[] = [];
     const experienceRecords: ExperienceRecord[] = [];
-    const maxTests = Math.min(vulnChecks.length, 10);
+    const maxTests = Math.min(vulnChecks.length, 15);
     const totalSteps = maxTests;
 
+    // Phase 11: Pre-load SecLists payloads for detected vuln classes
+    const secListsPayloadsMap = new Map<string, string[]>();
+    const uniqueClasses = [...new Set(vulnChecks.flatMap(c => c.vulnClasses))];
+    await log(db, targetId, taskId, "action", `📦 Phase 11: Loading SecLists payloads for ${uniqueClasses.length} vuln classes`);
+    await Promise.all(uniqueClasses.slice(0, 6).map(async (vc) => {
+      const payloads = await loadSecListsPayloads(vc, 20);
+      if (payloads.length > 0) secListsPayloadsMap.set(vc, payloads);
+    }));
+    const secListsLoaded = [...secListsPayloadsMap.entries()].map(([k, v]) => `${k}(${v.length})`).join(", ");
+    if (secListsLoaded) await log(db, targetId, taskId, "info", `📦 SecLists loaded: ${secListsLoaded}`);
+
     for (let i = 0; i < maxTests; i++) {
+      if (isTimedOut()) { await log(db, targetId, taskId, "info", `⏱️ Time limit reached after ${i} tests — wrapping up`); break; }
       const check = vulnChecks[i];
       // Exploration vs Exploitation strategy (Phase 8)
       const isExploring = i < Math.ceil(totalSteps * 0.1);
 
       for (const vulnClass of check.vulnClasses) {
+        if (isTimedOut()) break;
         // Skip disabled classes (strategy weights)
         if (disabledClasses.has(vulnClass) && !isExploring) {
-          await log(db, targetId, taskId, "info", `⏭️ Skipping ${vulnClass} — disabled by strategy engine for ${techStackKey}`);
-          continue;
+          continue; // skip silently to save time
         }
 
         await log(db, targetId, taskId, "action",
@@ -955,10 +1030,20 @@ serve(async (req) => {
               `⚠️ POTENTIAL ${vulnClass.toUpperCase()} [${result.owaspCategory}]: ${check.paramName} (confidence: ${result.confidenceScore}%)${adaptNote}${intruderNote}`
             );
 
-            // Phase 8: Evolutionary Fuzzing — if close but not confirmed (500/403), evolve the payload
-            if (result.confidenceScore < 80 && result.confidenceScore >= 30) {
-              await log(db, targetId, taskId, "action", `🧬 Evolutionary fuzzing: mutating payload for ${vulnClass} (fitness: ${result.confidenceScore})`);
-              for (const gm of GENETIC_MUTATIONS.slice(0, 3)) {
+            // Phase 11: Tech leak detection — check if response reveals DB type
+            const detectedDb = detectDbFromError(result.mutated.bodySnippet || "");
+            if (detectedDb) {
+              await log(db, targetId, taskId, "info", `🔍 Phase 11: Tech leak detected — ${detectedDb} DB from error response`);
+              const dbSpecificPayloads = await loadSecListsPayloads(`sqli-${detectedDb}`, 10);
+              if (dbSpecificPayloads.length > 0) {
+                await log(db, targetId, taskId, "action", `📦 Re-scanning with ${dbSpecificPayloads.length} ${detectedDb}-specific payloads`);
+              }
+            }
+
+            // Phase 8: Evolutionary Fuzzing — only if time permits
+            if (!isTimedOut() && result.confidenceScore < 80 && result.confidenceScore >= 30) {
+              for (const gm of GENETIC_MUTATIONS.slice(0, 2)) {
+                if (isTimedOut()) break;
                 const evolved = gm.mutate(result.truePayload);
                 if (evolved === result.truePayload) continue;
 
@@ -972,19 +1057,19 @@ serve(async (req) => {
                     response_snippet: evoResult.mutated.bodySnippet?.slice(0, 200) || null,
                     outcome: "confirmed", confidence_score: evoResult.confidenceScore,
                     reward_score: REWARD_TABLE["filter_bypassed"] || 10,
-                    metadata: { mutation: gm.name, parentFitness: result.confidenceScore },
+                    metadata: { mutation: gm.name, parentFitness: result.confidenceScore, secListsIntegrated: true },
                   });
                   await log(db, targetId, taskId, "result",
                     `🧬 Evolved payload via ${gm.name} improved confidence: ${result.confidenceScore}% → ${evoResult.confidenceScore}%`
                   );
                   break;
                 }
-                await new Promise((r) => setTimeout(r, 300));
+                await new Promise((r) => setTimeout(r, 150));
               }
             }
           }
         }
-        await new Promise((r) => setTimeout(r, 150));
+        await new Promise((r) => setTimeout(r, 80));
       }
     }
 
@@ -1031,18 +1116,21 @@ serve(async (req) => {
       await log(db, targetId, taskId, "info", `📊 Updated ${weightUpdates.size} strategy weights`);
     }
 
-    // ── Step 3.5: Phase 8 — Method Expansion Discovery ──
+    // ── Step 3.5: Phase 8 — Method Expansion Discovery (skip if timed out) ──
     const sampleEndpoints = endpoints.slice(0, 2);
     let methodDiscoveryCount = 0;
+    if (!isTimedOut()) {
     for (const ep of sampleEndpoints) {
+      if (isTimedOut()) break;
       try {
-        const baseResp = await fetch(ep.url, { method: "GET", headers: { "User-Agent": "CyberScope-Scanner/1.0" }, redirect: "manual" });
+        const baseResp = await safeFetch(ep.url, { method: "GET", headers: { "User-Agent": "CyberScope-Scanner/1.0" }, redirect: "manual" }, 5000);
         const baseBody = await baseResp.text();
 
         const methodsToTry = ["PUT", "PATCH", "DELETE", "OPTIONS", "TRACE"];
         for (const method of methodsToTry) {
+          if (isTimedOut()) break;
           try {
-            const resp = await fetch(ep.url, { method, headers: { "User-Agent": "CyberScope-Scanner/1.0" }, redirect: "manual" });
+            const resp = await safeFetch(ep.url, { method, headers: { "User-Agent": "CyberScope-Scanner/1.0" }, redirect: "manual" }, 4000);
             const isInteresting = resp.status !== baseResp.status && resp.status !== 405 && resp.status !== 501;
             if (isInteresting) {
               await db.from("method_discoveries").insert({
@@ -1059,11 +1147,12 @@ serve(async (req) => {
                 metadata: { endpoint: ep.url },
               });
             }
-            await new Promise((r) => setTimeout(r, 150));
+            await new Promise((r) => setTimeout(r, 80));
           } catch { /* skip */ }
         }
       } catch { /* skip */ }
     }
+    } // end if !isTimedOut()
 
     if (methodDiscoveryCount > 0) {
       await log(db, targetId, taskId, "result", `🔎 Method Discovery: found ${methodDiscoveryCount} interesting method variations`);
@@ -1179,19 +1268,28 @@ serve(async (req) => {
 
     await log(db, targetId, taskId, "result", `🤔 Peer Review: ${peerUpheld} upheld, ${peerDisputed} disputed/needs-retest`);
 
-    // ── Step 4: CVE Correlation ──
-    await log(db, targetId, taskId, "thought", "Querying NVD for CVE correlation");
-    const cveResults = await queryCveDatabase(techStack);
-    await log(db, targetId, taskId, "result", `CVE correlation found ${cveResults.length} potentially relevant CVEs`);
+    // ── Step 4: CVE Correlation (skip if timed out) ──
+    let cveResults: CveResult[] = [];
+    if (!isTimedOut()) {
+      await log(db, targetId, taskId, "thought", "Querying NVD for CVE correlation");
+      cveResults = await queryCveDatabase(techStack);
+      await log(db, targetId, taskId, "result", `CVE correlation found ${cveResults.length} potentially relevant CVEs`);
+    } else {
+      await log(db, targetId, taskId, "info", "⏱️ Skipping CVE correlation — time limit");
+    }
 
-    // ── Step 5: AI Verification & Deep Assessment ──
-    await log(db, targetId, taskId, "thought", "🧠 AI verifying findings to eliminate false positives...");
-    const aiAssessments = await aiVerifyAndAnalyze(target.domain || "unknown", diffResults, cveResults, passiveResults, techStack);
-    const verifiedCount = aiAssessments.assessments.filter((a) => a.isVerified).length;
-    const falsePositiveCount = aiAssessments.assessments.filter((a) => !a.isVerified).length;
-    await log(db, targetId, taskId, "result",
-      `AI verification: ${verifiedCount} confirmed, ${falsePositiveCount} marked as likely false positives`
-    );
+    // ── Step 5: AI Verification & Deep Assessment (skip if timed out) ──
+    let aiAssessments = { assessments: [] as any[] };
+    let verifiedCount = 0;
+    let falsePositiveCount = 0;
+    if (!isTimedOut()) {
+      await log(db, targetId, taskId, "thought", "🧠 AI verifying findings to eliminate false positives...");
+      aiAssessments = await aiVerifyAndAnalyze(target.domain || "unknown", diffResults, cveResults, passiveResults, techStack);
+      verifiedCount = aiAssessments.assessments.filter((a: any) => a.isVerified).length;
+      falsePositiveCount = aiAssessments.assessments.filter((a: any) => !a.isVerified).length;
+    } else {
+      await log(db, targetId, taskId, "info", "⏱️ Skipping AI verification — time limit");
+    }
 
     // ── Step 6: Route findings — HIGH/CRITICAL → Approvals, LOW/MEDIUM/INFO → Auto-accepted ──
     await log(db, targetId, taskId, "thought", "Routing findings: high/critical → approval queue, low/medium/info → auto-accepted findings");
@@ -1332,7 +1430,7 @@ serve(async (req) => {
       let cveVerifyNotes = "CVE correlation — not AI verified";
       if (LOVABLE_API_KEY_CVE) {
         try {
-          const verifyResp = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+          const verifyResp = await safeFetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
             method: "POST",
             headers: { Authorization: `Bearer ${LOVABLE_API_KEY_CVE}`, "Content-Type": "application/json" },
             body: JSON.stringify({
