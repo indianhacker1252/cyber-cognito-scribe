@@ -665,7 +665,7 @@ async function runPassiveChecks(domain: string): Promise<PassiveResult[]> {
     const loggingPaths = ["/.well-known/security.txt", "/security.txt"];
     for (const lp of loggingPaths) {
       try {
-        const lResp = await fetch(`https://${domain}${lp}`, { method: "GET", headers: { "User-Agent": "CyberScope-Scanner/1.0" } });
+        const lResp = await safeFetch(`https://${domain}${lp}`, { method: "GET", headers: { "User-Agent": "CyberScope-Scanner/1.0" } }, 4000);
         if (lResp.status !== 200) {
           results.push({ check: "security-txt", vulnClass: "insufficient-logging", owaspCategory: "A09:2021 Security Logging and Monitoring Failures", severity: "info", title: "Missing security.txt", description: `No security.txt found at ${lp}.`, remediation: "Create a security.txt file per RFC 9116." });
           break;
