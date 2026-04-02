@@ -587,11 +587,11 @@ async function runPassiveChecks(domain: string): Promise<PassiveResult[]> {
   const results: PassiveResult[] = [];
 
   try {
-    const resp = await fetch(`https://${domain}`, {
+    const resp = await safeFetch(`https://${domain}`, {
       method: "GET",
       headers: { "User-Agent": "CyberScope-Scanner/1.0" },
       redirect: "follow",
-    });
+    }, 6000);
 
     const headers = Object.fromEntries(resp.headers.entries());
     const body = await resp.text();
