@@ -1,6 +1,65 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
+// ─── GLOBAL TIMEOUT HELPER ─────────────────────────────
+const SCAN_START = Date.now();
+const MAX_SCAN_MS = 50000; // 50s hard limit (edge fn = 60s)
+function timeLeft(): number { return MAX_SCAN_MS - (Date.now() - SCAN_START); }
+function isTimedOut(): boolean { return timeLeft() <= 0; }
+
+async function safeFetch(url: string, opts: RequestInit = {}, timeoutMs = 8000): Promise<Response> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...opts, signal: ctrl.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// ─── SECLISTS PAYLOAD LOADER (Phase 11) ─────────────────
+const SECLISTS_BASE = "https://raw.githubusercontent.com/danielmiessler/SecLists/master";
+const SECLISTS_PATHS: Record<string, string> = {
+  sqli: "Fuzzing/SQLi/quick-SQLi.txt",
+  "sqli-mysql": "Fuzzing/Databases/MySQL-SQLi-Login-Bypass.fuzzdb.txt",
+  rxss: "Fuzzing/XSS/XSS-Bypass-Strings-BruteLogic.txt",
+  cmdi: "Fuzzing/command-injection-commix.txt",
+  "path-traversal": "Fuzzing/LFI/LFI-Jhaddix.txt",
+  lfi: "Fuzzing/LFI/LFI-gracefulsecurity-linux.txt",
+  ssti: "Fuzzing/SSI-Injection/SSI-Injection.txt",
+  nosqli: "Fuzzing/NoSQL-Injection/NoSQLi.txt",
+};
+
+const seclistsCache = new Map<string, string[]>();
+async function loadSecListsPayloads(vulnClass: string, limit = 20): Promise<string[]> {
+  const path = SECLISTS_PATHS[vulnClass];
+  if (!path) return [];
+  if (seclistsCache.has(vulnClass)) return seclistsCache.get(vulnClass)!.slice(0, limit);
+  try {
+    const resp = await safeFetch(`${SECLISTS_BASE}/${path}`, { headers: { "User-Agent": "CyberScope/1.0" } }, 5000);
+    if (!resp.ok) return [];
+    const lines = (await resp.text()).split("\n").map(l => l.trim()).filter(l => l && !l.startsWith("#"));
+    seclistsCache.set(vulnClass, lines);
+    return lines.slice(0, limit);
+  } catch { return []; }
+}
+
+// ─── TECH LEAK DETECTION (Phase 11: SecListsFeedback) ───
+const TECH_LEAK_PATTERNS: Array<{ pattern: RegExp; tech: string; dbType?: string }> = [
+  { pattern: /MySQL/i, tech: "MySQL", dbType: "mysql" },
+  { pattern: /PostgreSQL/i, tech: "PostgreSQL", dbType: "postgres" },
+  { pattern: /Microsoft SQL Server|MSSQL/i, tech: "MSSQL", dbType: "mssql" },
+  { pattern: /MongoDB/i, tech: "MongoDB", dbType: "mongodb" },
+  { pattern: /ORA-\d{4,5}/i, tech: "Oracle", dbType: "oracle" },
+];
+
+function detectDbFromError(body: string): string | null {
+  for (const p of TECH_LEAK_PATTERNS) {
+    if (p.pattern.test(body) && p.dbType) return p.dbType;
+  }
+  return null;
+}
+
 // ─── PHASE 8: Learning Engine Types ─────────────────────
 interface ExperienceRecord {
   target_id: string | null;
@@ -58,13 +117,15 @@ async function log(
   message: string,
   metadata: Record<string, unknown> = {}
 ) {
-  await db.from("scan_logs").insert({
-    target_id: targetId,
-    task_id: taskId,
-    log_type: type,
-    message,
-    metadata,
-  });
+  try {
+    await db.from("scan_logs").insert({
+      target_id: targetId,
+      task_id: taskId,
+      log_type: type,
+      message,
+      metadata,
+    });
+  } catch { /* don't let logging failures crash the scan */ }
 }
 
 // ─── SAFE PAYLOADS ONLY ──────────────────────────────────
