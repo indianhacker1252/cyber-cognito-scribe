@@ -980,10 +980,10 @@ serve(async (req) => {
       const isExploring = i < Math.ceil(totalSteps * 0.1);
 
       for (const vulnClass of check.vulnClasses) {
+        if (isTimedOut()) break;
         // Skip disabled classes (strategy weights)
         if (disabledClasses.has(vulnClass) && !isExploring) {
-          await log(db, targetId, taskId, "info", `⏭️ Skipping ${vulnClass} — disabled by strategy engine for ${techStackKey}`);
-          continue;
+          continue; // skip silently to save time
         }
 
         await log(db, targetId, taskId, "action",
