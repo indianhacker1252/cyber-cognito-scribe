@@ -1147,7 +1147,7 @@ serve(async (req) => {
                 metadata: { endpoint: ep.url },
               });
             }
-            await new Promise((r) => setTimeout(r, 150));
+            await new Promise((r) => setTimeout(r, 80));
           } catch { /* skip */ }
         }
       } catch { /* skip */ }
