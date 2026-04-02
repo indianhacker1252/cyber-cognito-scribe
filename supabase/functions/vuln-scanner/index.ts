@@ -955,14 +955,26 @@ serve(async (req) => {
       await log(db, targetId, taskId, "info", `📚 Loaded ${highYieldPayloads.size} vuln classes with proven payloads from Experience Vault`);
     }
 
-    // ── Step 3: Differential Analysis + Intruder + Evolutionary Fuzzing ──
-    await log(db, targetId, taskId, "thought", "Running differential tests with Intruder/Repeater, adaptive mutation, and evolutionary fuzzing");
+    // ── Step 3: Differential Analysis + Intruder + Evolutionary Fuzzing + SecLists ──
+    await log(db, targetId, taskId, "thought", "Running differential tests with Intruder/Repeater, adaptive mutation, evolutionary fuzzing, and SecLists payloads");
     const diffResults: DiffResult[] = [];
     const experienceRecords: ExperienceRecord[] = [];
-    const maxTests = Math.min(vulnChecks.length, 10);
+    const maxTests = Math.min(vulnChecks.length, 15);
     const totalSteps = maxTests;
 
+    // Phase 11: Pre-load SecLists payloads for detected vuln classes
+    const secListsPayloadsMap = new Map<string, string[]>();
+    const uniqueClasses = [...new Set(vulnChecks.flatMap(c => c.vulnClasses))];
+    await log(db, targetId, taskId, "action", `📦 Phase 11: Loading SecLists payloads for ${uniqueClasses.length} vuln classes`);
+    await Promise.all(uniqueClasses.slice(0, 6).map(async (vc) => {
+      const payloads = await loadSecListsPayloads(vc, 20);
+      if (payloads.length > 0) secListsPayloadsMap.set(vc, payloads);
+    }));
+    const secListsLoaded = [...secListsPayloadsMap.entries()].map(([k, v]) => `${k}(${v.length})`).join(", ");
+    if (secListsLoaded) await log(db, targetId, taskId, "info", `📦 SecLists loaded: ${secListsLoaded}`);
+
     for (let i = 0; i < maxTests; i++) {
+      if (isTimedOut()) { await log(db, targetId, taskId, "info", `⏱️ Time limit reached after ${i} tests — wrapping up`); break; }
       const check = vulnChecks[i];
       // Exploration vs Exploitation strategy (Phase 8)
       const isExploring = i < Math.ceil(totalSteps * 0.1);
