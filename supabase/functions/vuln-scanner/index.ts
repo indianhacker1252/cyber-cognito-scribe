@@ -775,7 +775,7 @@ For each finding, verify it and provide:
 - verificationNotes: explain WHY you believe it's real or false positive`;
 
   try {
-    const resp = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+    const resp = await safeFetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${LOVABLE_API_KEY}`,
