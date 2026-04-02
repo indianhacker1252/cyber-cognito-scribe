@@ -400,16 +400,16 @@ async function runDifferentialTest(
       // Truthy (mutated) test
       url.searchParams.set(paramName, attempt.payload);
       const trueStart = Date.now();
-      const trueResp = await fetch(url.toString(), { method: "GET", headers: reqHeaders, redirect: "manual" });
+      const trueResp = await safeFetch(url.toString(), { method: "GET", headers: reqHeaders, redirect: "manual" }, 6000);
       const trueBody = await trueResp.text();
       const trueTiming = Date.now() - trueStart;
       const trueHeaders = captureHeaders(trueResp);
 
-      await new Promise((r) => setTimeout(r, 100));
+      await new Promise((r) => setTimeout(r, 50));
 
       // Falsy (baseline) test
       url.searchParams.set(paramName, pair.falsy);
-      const falseResp = await fetch(url.toString(), { method: "GET", headers: reqHeaders, redirect: "manual" });
+      const falseResp = await safeFetch(url.toString(), { method: "GET", headers: reqHeaders, redirect: "manual" }, 6000);
       const falseBody = await falseResp.text();
       const falseHeaders = captureHeaders(falseResp);
 
