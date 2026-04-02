@@ -695,11 +695,13 @@ async function queryCveDatabase(techStack: Record<string, string | undefined>): 
   if (techStack.poweredBy) searchTerms.push(techStack.poweredBy);
   if (techStack.framework) searchTerms.push(techStack.framework);
 
-  for (const term of searchTerms) {
+  for (const term of searchTerms.slice(0, 2)) {
+    if (isTimedOut()) break;
     try {
-      const resp = await fetch(
-        `https://services.nvd.nist.gov/rest/json/cves/2.0?keywordSearch=${encodeURIComponent(term)}&resultsPerPage=10`,
-        { headers: { "User-Agent": "CyberScope-Scanner/1.0" } }
+      const resp = await safeFetch(
+        `https://services.nvd.nist.gov/rest/json/cves/2.0?keywordSearch=${encodeURIComponent(term)}&resultsPerPage=5`,
+        { headers: { "User-Agent": "CyberScope-Scanner/1.0" } },
+        6000
       );
       if (resp.ok) {
         const data = await resp.json();
@@ -714,7 +716,7 @@ async function queryCveDatabase(techStack: Record<string, string | undefined>): 
           });
         }
       }
-      await new Promise((r) => setTimeout(r, 1000));
+      await new Promise((r) => setTimeout(r, 500));
     } catch (e) {
       console.error(`NVD query error for "${term}":`, e);
     }
