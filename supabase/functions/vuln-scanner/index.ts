@@ -1116,18 +1116,21 @@ serve(async (req) => {
       await log(db, targetId, taskId, "info", `📊 Updated ${weightUpdates.size} strategy weights`);
     }
 
-    // ── Step 3.5: Phase 8 — Method Expansion Discovery ──
+    // ── Step 3.5: Phase 8 — Method Expansion Discovery (skip if timed out) ──
     const sampleEndpoints = endpoints.slice(0, 2);
     let methodDiscoveryCount = 0;
+    if (!isTimedOut()) {
     for (const ep of sampleEndpoints) {
+      if (isTimedOut()) break;
       try {
-        const baseResp = await fetch(ep.url, { method: "GET", headers: { "User-Agent": "CyberScope-Scanner/1.0" }, redirect: "manual" });
+        const baseResp = await safeFetch(ep.url, { method: "GET", headers: { "User-Agent": "CyberScope-Scanner/1.0" }, redirect: "manual" }, 5000);
         const baseBody = await baseResp.text();
 
         const methodsToTry = ["PUT", "PATCH", "DELETE", "OPTIONS", "TRACE"];
         for (const method of methodsToTry) {
+          if (isTimedOut()) break;
           try {
-            const resp = await fetch(ep.url, { method, headers: { "User-Agent": "CyberScope-Scanner/1.0" }, redirect: "manual" });
+            const resp = await safeFetch(ep.url, { method, headers: { "User-Agent": "CyberScope-Scanner/1.0" }, redirect: "manual" }, 4000);
             const isInteresting = resp.status !== baseResp.status && resp.status !== 405 && resp.status !== 501;
             if (isInteresting) {
               await db.from("method_discoveries").insert({
