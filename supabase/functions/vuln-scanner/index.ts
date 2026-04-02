@@ -1030,10 +1030,20 @@ serve(async (req) => {
               `⚠️ POTENTIAL ${vulnClass.toUpperCase()} [${result.owaspCategory}]: ${check.paramName} (confidence: ${result.confidenceScore}%)${adaptNote}${intruderNote}`
             );
 
-            // Phase 8: Evolutionary Fuzzing — if close but not confirmed (500/403), evolve the payload
-            if (result.confidenceScore < 80 && result.confidenceScore >= 30) {
-              await log(db, targetId, taskId, "action", `🧬 Evolutionary fuzzing: mutating payload for ${vulnClass} (fitness: ${result.confidenceScore})`);
-              for (const gm of GENETIC_MUTATIONS.slice(0, 3)) {
+            // Phase 11: Tech leak detection — check if response reveals DB type
+            const detectedDb = detectDbFromError(result.mutated.bodySnippet || "");
+            if (detectedDb) {
+              await log(db, targetId, taskId, "info", `🔍 Phase 11: Tech leak detected — ${detectedDb} DB from error response`);
+              const dbSpecificPayloads = await loadSecListsPayloads(`sqli-${detectedDb}`, 10);
+              if (dbSpecificPayloads.length > 0) {
+                await log(db, targetId, taskId, "action", `📦 Re-scanning with ${dbSpecificPayloads.length} ${detectedDb}-specific payloads`);
+              }
+            }
+
+            // Phase 8: Evolutionary Fuzzing — only if time permits
+            if (!isTimedOut() && result.confidenceScore < 80 && result.confidenceScore >= 30) {
+              for (const gm of GENETIC_MUTATIONS.slice(0, 2)) {
+                if (isTimedOut()) break;
                 const evolved = gm.mutate(result.truePayload);
                 if (evolved === result.truePayload) continue;
 
@@ -1047,14 +1057,14 @@ serve(async (req) => {
                     response_snippet: evoResult.mutated.bodySnippet?.slice(0, 200) || null,
                     outcome: "confirmed", confidence_score: evoResult.confidenceScore,
                     reward_score: REWARD_TABLE["filter_bypassed"] || 10,
-                    metadata: { mutation: gm.name, parentFitness: result.confidenceScore },
+                    metadata: { mutation: gm.name, parentFitness: result.confidenceScore, secListsIntegrated: true },
                   });
                   await log(db, targetId, taskId, "result",
                     `🧬 Evolved payload via ${gm.name} improved confidence: ${result.confidenceScore}% → ${evoResult.confidenceScore}%`
                   );
                   break;
                 }
-                await new Promise((r) => setTimeout(r, 300));
+                await new Promise((r) => setTimeout(r, 150));
               }
             }
           }
