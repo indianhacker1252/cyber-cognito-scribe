@@ -1152,6 +1152,7 @@ serve(async (req) => {
         }
       } catch { /* skip */ }
     }
+    } // end if !isTimedOut()
 
     if (methodDiscoveryCount > 0) {
       await log(db, targetId, taskId, "result", `🔎 Method Discovery: found ${methodDiscoveryCount} interesting method variations`);
