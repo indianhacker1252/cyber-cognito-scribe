@@ -415,7 +415,7 @@ async function runDifferentialTest(
 
       // If blocked, try next mutation
       if ([403, 406, 429].includes(trueResp.status) && attempt.name !== payloadsToTry[payloadsToTry.length - 1].name) {
-        await new Promise((r) => setTimeout(r, 500));
+        await new Promise((r) => setTimeout(r, 200));
         continue;
       }
 
