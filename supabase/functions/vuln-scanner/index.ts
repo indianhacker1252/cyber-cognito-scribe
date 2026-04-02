@@ -547,10 +547,10 @@ async function runDifferentialTest(
             const iUrl = new URL(baseUrl);
             iUrl.searchParams.set(paramName, ip);
             const start = Date.now();
-            const iResp = await fetch(iUrl.toString(), { method: "GET", headers: reqHeaders, redirect: "manual" });
+            const iResp = await safeFetch(iUrl.toString(), { method: "GET", headers: reqHeaders, redirect: "manual" }, 5000);
             const iBody = await iResp.text();
             intruderResults.push({ payload: ip, status: iResp.status, length: iBody.length, timingMs: Date.now() - start });
-            await new Promise((r) => setTimeout(r, 200));
+            await new Promise((r) => setTimeout(r, 100));
           } catch { /* skip */ }
         }
 
