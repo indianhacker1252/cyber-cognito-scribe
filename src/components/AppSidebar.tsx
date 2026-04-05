@@ -1,4 +1,4 @@
-import { LayoutDashboard, Crosshair, Terminal, ShieldAlert, ClipboardCheck, Activity, Rss, Scan } from "lucide-react";
+import { LayoutDashboard, Crosshair, Terminal, ShieldAlert, ClipboardCheck, Activity, Rss } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
 import { useLocation } from "react-router-dom";
 import {
@@ -22,7 +22,6 @@ const navItems = [
   { title: "Approvals", url: "/approvals", icon: ClipboardCheck },
   { title: "System Health", url: "/system-health", icon: Activity },
   { title: "Intel Feed", url: "/intel-feed", icon: Rss },
-  { title: "Deep Audit", url: "/deep-audit", icon: Scan },
 ];
 
 export function AppSidebar() {
