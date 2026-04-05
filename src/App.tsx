@@ -11,6 +11,7 @@ import Findings from "./pages/Findings";
 import Approvals from "./pages/Approvals";
 import SystemHealth from "./pages/SystemHealth";
 import IntelFeed from "./pages/IntelFeed";
+import DeepAudit from "./pages/DeepAudit";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -30,6 +31,7 @@ const App = () => (
             <Route path="/approvals" element={<Approvals />} />
             <Route path="/system-health" element={<SystemHealth />} />
             <Route path="/intel-feed" element={<IntelFeed />} />
+            <Route path="/deep-audit" element={<DeepAudit />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </Layout>
