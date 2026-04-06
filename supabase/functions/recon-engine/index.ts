@@ -489,6 +489,19 @@ serve(async (req) => {
       await log(db, targetId, taskId, "info", `[AI] ${note}`);
     }
 
+    // ── Step 5.5: Spider Crawl — Deep Link & Form Discovery ──
+    await log(db, targetId, taskId, "thought", `🕷️ Spider crawling ${domain} for links, forms, and JS files`);
+    const spiderResults = await spiderCrawl(domain, 25, 3);
+    await log(db, targetId, taskId, "result",
+      `🕷️ Spider found ${spiderResults.urls.length} links, ${spiderResults.forms.length} forms, ${spiderResults.jsFiles.length} JS files`
+    );
+
+    if (spiderResults.forms.length > 0) {
+      await log(db, targetId, taskId, "info",
+        `📋 Forms discovered: ${spiderResults.forms.map(f => `${f.method} ${f.action} [${f.inputs.join(",")}]`).slice(0, 5).join(" | ")}`
+      );
+    }
+
     // ── Step 6: Normalize & Ingest ──
     await log(db, targetId, taskId, "action", "Normalizing and deduplicating discovered endpoints");
 
