@@ -602,6 +602,9 @@ serve(async (req) => {
           subdomains_found: subdomains.length,
           wayback_urls: waybackResults.length,
           otx_urls: otxResults.length,
+          spider_urls: spiderResults.urls.length,
+          spider_forms: spiderResults.forms.length,
+          spider_js_files: spiderResults.jsFiles.length,
           endpoints_ingested: insertedCount,
           tech_fingerprint: fingerprint,
           ai_analysis: aiResults,
@@ -614,7 +617,7 @@ serve(async (req) => {
       .update({ status: "completed" })
       .eq("id", targetId);
 
-    await log(db, targetId, taskId, "info", `✅ Recon pipeline completed for ${domain} — ${insertedCount} endpoints mapped`);
+    await log(db, targetId, taskId, "info", `✅ Recon pipeline completed for ${domain} — ${insertedCount} endpoints mapped (🕷️ spider: ${spiderResults.urls.length} links, ${spiderResults.forms.length} forms)`);
 
     return new Response(
       JSON.stringify({
@@ -622,6 +625,9 @@ serve(async (req) => {
         subdomains: subdomains.length,
         waybackUrls: waybackResults.length,
         otxUrls: otxResults.length,
+        spiderUrls: spiderResults.urls.length,
+        spiderForms: spiderResults.forms.length,
+        spiderJsFiles: spiderResults.jsFiles.length,
         endpointsIngested: insertedCount,
         fingerprint,
       }),
