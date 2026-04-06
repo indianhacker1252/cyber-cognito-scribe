@@ -146,7 +146,7 @@ export default function Targets() {
       if (error) toast.error(`Recon failed: ${error.message}`);
       else if (data?.error) toast.error(`Recon failed: ${data.error}`);
       else {
-        toast.success(`Recon complete: ${data.subdomains} subdomains, ${data.endpointsIngested} endpoints mapped`);
+        toast.success(`Recon complete: ${data.subdomains} subdomains, ${data.endpointsIngested} endpoints, 🕷️ ${data.spiderUrls || 0} crawled, ${data.spiderForms || 0} forms`);
         queryClient.invalidateQueries({ queryKey: ["targets"] });
         queryClient.invalidateQueries({ queryKey: ["endpoints-count"] });
         queryClient.invalidateQueries({ queryKey: ["findings"] });
