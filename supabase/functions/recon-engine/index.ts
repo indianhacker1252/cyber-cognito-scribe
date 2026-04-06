@@ -553,6 +553,28 @@ serve(async (req) => {
       }
     }
 
+    // Spider-discovered URLs
+    for (const spUrl of spiderResults.urls) {
+      try {
+        const u = new URL(spUrl);
+        const key = `${u.origin}${u.pathname}`;
+        const params: Record<string, string> = {};
+        u.searchParams.forEach((v, k) => (params[k] = v));
+        if (!allUrls.has(key)) {
+          allUrls.set(key, { method: "GET", params, source: "spider" });
+        }
+      } catch { /* skip */ }
+    }
+
+    // Spider-discovered forms (as POST endpoints with input params)
+    for (const form of spiderResults.forms) {
+      const params: Record<string, string> = {};
+      for (const input of form.inputs) { params[input] = "test"; }
+      if (!allUrls.has(form.action)) {
+        allUrls.set(form.action, { method: form.method, params, source: "spider-form" });
+      }
+    }
+
     // Batch insert endpoints (max 100 at a time)
     const endpoints = [...allUrls.entries()].map(([url, info]) => ({
       target_id: targetId,
