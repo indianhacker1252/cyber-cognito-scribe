@@ -109,6 +109,102 @@ async function harvestOTX(
   return results;
 }
 
+// ─── 3.5. Spider Crawler — Deep Link & Form Extraction ─────
+
+async function spiderCrawl(
+  domain: string,
+  maxPages = 30,
+  maxDepth = 3
+): Promise<{ urls: string[]; forms: Array<{ action: string; method: string; inputs: string[] }>; jsFiles: string[] }> {
+  const visited = new Set<string>();
+  const discovered: string[] = [];
+  const forms: Array<{ action: string; method: string; inputs: string[] }> = [];
+  const jsFiles: string[] = [];
+  const queue: Array<{ url: string; depth: number }> = [{ url: `https://${domain}`, depth: 0 }];
+
+  while (queue.length > 0 && visited.size < maxPages) {
+    const item = queue.shift();
+    if (!item || item.depth > maxDepth) continue;
+    if (visited.has(item.url)) continue;
+    visited.add(item.url);
+
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 6000);
+      const resp = await fetch(item.url, {
+        method: "GET",
+        headers: { "User-Agent": "CyberScope-Spider/1.0" },
+        redirect: "follow",
+        signal: ctrl.signal,
+      });
+      clearTimeout(timer);
+
+      if (!resp.ok) continue;
+      const contentType = resp.headers.get("content-type") || "";
+      if (!contentType.includes("text/html")) continue;
+
+      const html = await resp.text();
+
+      // Extract links
+      const linkRegex = /href\s*=\s*["']([^"'#]+)["']/gi;
+      let match;
+      while ((match = linkRegex.exec(html)) !== null) {
+        try {
+          const href = match[1];
+          let fullUrl: string;
+          if (href.startsWith("http")) fullUrl = href;
+          else if (href.startsWith("//")) fullUrl = `https:${href}`;
+          else if (href.startsWith("/")) fullUrl = `https://${domain}${href}`;
+          else fullUrl = `${item.url.replace(/\/[^/]*$/, "/")}${href}`;
+
+          const parsed = new URL(fullUrl);
+          if (parsed.hostname.endsWith(domain) && !visited.has(fullUrl)) {
+            discovered.push(fullUrl);
+            if (item.depth + 1 <= maxDepth) {
+              queue.push({ url: `${parsed.origin}${parsed.pathname}`, depth: item.depth + 1 });
+            }
+          }
+        } catch { /* skip malformed */ }
+      }
+
+      // Extract forms with inputs
+      const formRegex = /<form[^>]*>([\s\S]*?)<\/form>/gi;
+      while ((match = formRegex.exec(html)) !== null) {
+        const formTag = match[0];
+        const actionMatch = formTag.match(/action\s*=\s*["']([^"']+)["']/i);
+        const methodMatch = formTag.match(/method\s*=\s*["']([^"']+)["']/i);
+        const inputRegex = /name\s*=\s*["']([^"']+)["']/gi;
+        const inputs: string[] = [];
+        let inputMatch;
+        while ((inputMatch = inputRegex.exec(formTag)) !== null) {
+          inputs.push(inputMatch[1]);
+        }
+        if (inputs.length > 0) {
+          let action = actionMatch?.[1] || item.url;
+          if (!action.startsWith("http")) {
+            action = action.startsWith("/") ? `https://${domain}${action}` : `${item.url.replace(/\/[^/]*$/, "/")}${action}`;
+          }
+          forms.push({ action, method: (methodMatch?.[1] || "GET").toUpperCase(), inputs });
+        }
+      }
+
+      // Extract JS files
+      const jsRegex = /src\s*=\s*["']([^"']+\.js(?:\?[^"']*)?)["']/gi;
+      while ((match = jsRegex.exec(html)) !== null) {
+        let jsSrc = match[1];
+        if (!jsSrc.startsWith("http")) {
+          jsSrc = jsSrc.startsWith("/") ? `https://${domain}${jsSrc}` : `${item.url.replace(/\/[^/]*$/, "/")}${jsSrc}`;
+        }
+        jsFiles.push(jsSrc);
+      }
+
+      await new Promise((r) => setTimeout(r, 150));
+    } catch { /* skip failed pages */ }
+  }
+
+  return { urls: [...new Set(discovered)], forms, jsFiles: [...new Set(jsFiles)] };
+}
+
 // ─── 4. Technology Fingerprinting ──────────────────────────
 
 interface TechFingerprint {
