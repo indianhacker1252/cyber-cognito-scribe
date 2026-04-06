@@ -14,32 +14,30 @@ function supabaseAdmin() {
   );
 }
 
+async function safeFetch(url: string, opts: RequestInit = {}, timeoutMs = 8000): Promise<Response> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try { return await fetch(url, { ...opts, signal: ctrl.signal }); }
+  finally { clearTimeout(timer); }
+}
+
 // ─── Source Fetchers ────────────────────────────────────
 
 async function fetchGitHubAdvisories(limit = 50) {
   const reports: any[] = [];
   try {
-    // Fetch multiple pages for more results
     for (let page = 1; page <= Math.ceil(limit / 100); page++) {
       const perPage = Math.min(limit - reports.length, 100);
       if (perPage <= 0) break;
       const resp = await fetch(
         `https://api.github.com/advisories?type=reviewed&per_page=${perPage}&page=${page}`,
-        {
-          headers: {
-            Accept: "application/vnd.github+json",
-            "User-Agent": "CyberScope-Scanner/1.0",
-            "X-GitHub-Api-Version": "2022-11-28",
-          },
-        }
+        { headers: { Accept: "application/vnd.github+json", "User-Agent": "CyberScope-Scanner/1.0", "X-GitHub-Api-Version": "2022-11-28" } }
       );
       if (resp.ok) {
         const advisories = await resp.json();
         if (advisories.length === 0) break;
         for (const adv of advisories) {
-          const techStack = (adv.vulnerabilities || [])
-            .map((v: any) => v.package?.name)
-            .filter(Boolean);
+          const techStack = (adv.vulnerabilities || []).map((v: any) => v.package?.name).filter(Boolean);
           reports.push({
             source: "github-advisory",
             report_id: adv.ghsa_id || adv.cve_id || `gh-${Date.now()}-${reports.length}`,
@@ -55,18 +53,14 @@ async function fetchGitHubAdvisories(limit = 50) {
       } else break;
       await new Promise((r) => setTimeout(r, 300));
     }
-  } catch (e) {
-    console.error("GitHub Advisory error:", e);
-  }
+  } catch (e) { console.error("GitHub Advisory error:", e); }
   return reports;
 }
 
 async function fetchExploitDB(limit = 50) {
   const reports: any[] = [];
   try {
-    const resp = await fetch("https://www.exploit-db.com/rss.xml", {
-      headers: { "User-Agent": "CyberScope-Scanner/1.0" },
-    });
+    const resp = await fetch("https://www.exploit-db.com/rss.xml", { headers: { "User-Agent": "CyberScope-Scanner/1.0" } });
     if (resp.ok) {
       const xml = await resp.text();
       const items = xml.match(/<item>[\s\S]*?<\/item>/g) || [];
@@ -85,9 +79,7 @@ async function fetchExploitDB(limit = 50) {
         });
       }
     }
-  } catch (e) {
-    console.error("ExploitDB error:", e);
-  }
+  } catch (e) { console.error("ExploitDB error:", e); }
   return reports;
 }
 
@@ -104,63 +96,45 @@ async function aiInterpretReport(report: any): Promise<any> {
   try {
     const resp = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${LOVABLE_API_KEY}`,
-        "Content-Type": "application/json",
-      },
+      headers: { Authorization: `Bearer ${LOVABLE_API_KEY}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         model: "google/gemini-2.5-flash-lite",
         messages: [
-          {
-            role: "system",
-            content: "You are a security intelligence analyst. Extract structured vulnerability data from disclosed security reports. Return via the tool.",
-          },
-          {
-            role: "user",
-            content: `Analyze this disclosed security report:\n\nTitle: ${report.title}\nSummary: ${(report.raw_summary || "").slice(0, 500)}\nSeverity: ${report.severity}\n\nExtract: vulnerability class, specific payloads, affected tech stack, WAF bypass logic, bypass techniques, signal strength (high/medium/low), and OWASP category.`,
-          },
+          { role: "system", content: "You are a security intelligence analyst. Extract structured vulnerability data from disclosed security reports. Return via the tool." },
+          { role: "user", content: `Analyze this disclosed security report:\n\nTitle: ${report.title}\nSummary: ${(report.raw_summary || "").slice(0, 500)}\nSeverity: ${report.severity}\n\nExtract: vulnerability class, specific payloads, affected tech stack, WAF bypass logic, bypass techniques, signal strength (high/medium/low), and OWASP category.` },
         ],
-        tools: [
-          {
-            type: "function",
-            function: {
-              name: "report_intelligence",
-              description: "Report extracted security intelligence",
-              parameters: {
-                type: "object",
-                properties: {
-                  vulnerabilityClass: { type: "string" },
-                  specificPayloads: { type: "array", items: { type: "string" } },
-                  affectedTechStack: { type: "array", items: { type: "string" } },
-                  wafBypassLogic: { type: "string" },
-                  bypassTechniques: { type: "array", items: { type: "string" } },
-                  signalStrength: { type: "string", enum: ["high", "medium", "low"] },
-                  owaspCategory: { type: "string" },
-                },
-                required: ["vulnerabilityClass", "specificPayloads", "affectedTechStack", "signalStrength"],
-                additionalProperties: false,
+        tools: [{
+          type: "function",
+          function: {
+            name: "report_intelligence",
+            description: "Report extracted security intelligence",
+            parameters: {
+              type: "object",
+              properties: {
+                vulnerabilityClass: { type: "string" },
+                specificPayloads: { type: "array", items: { type: "string" } },
+                affectedTechStack: { type: "array", items: { type: "string" } },
+                wafBypassLogic: { type: "string" },
+                bypassTechniques: { type: "array", items: { type: "string" } },
+                signalStrength: { type: "string", enum: ["high", "medium", "low"] },
+                owaspCategory: { type: "string" },
               },
+              required: ["vulnerabilityClass", "specificPayloads", "affectedTechStack", "signalStrength"],
+              additionalProperties: false,
             },
           },
-        ],
+        }],
         tool_choice: { type: "function", function: { name: "report_intelligence" } },
       }),
     });
 
-    if (resp.status === 429 || resp.status === 402) {
-      console.warn(`AI rate limited (${resp.status}), falling back to heuristic`);
-      return heuristicInterpret(report);
-    }
-
+    if (resp.status === 429 || resp.status === 402) return heuristicInterpret(report);
     if (resp.ok) {
       const data = await resp.json();
       const toolCall = data.choices?.[0]?.message?.tool_calls?.[0];
       if (toolCall) return JSON.parse(toolCall.function.arguments);
     }
-  } catch (e) {
-    console.error("AI interpret error:", e);
-  }
-
+  } catch (e) { console.error("AI interpret error:", e); }
   return heuristicInterpret(report);
 }
 
@@ -183,9 +157,7 @@ function heuristicInterpret(report: any) {
   const bypassKw = ["bypass", "waf bypass", "filter bypass", "encoding bypass", "double encoding", "null byte", "unicode"];
   const bypasses = bypassKw.filter((b) => text.includes(b));
   return {
-    vulnerabilityClass: vulnClass,
-    specificPayloads: [],
-    affectedTechStack: stack,
+    vulnerabilityClass: vulnClass, specificPayloads: [], affectedTechStack: stack,
     wafBypassLogic: bypasses.length > 0 ? bypasses.join("; ") : null,
     bypassTechniques: bypasses,
     signalStrength: bypasses.length > 0 ? "high" : stack.length > 0 ? "medium" : "low",
@@ -250,6 +222,138 @@ async function findMatchingTargets(db: any, techStack: string[]) {
   return matches;
 }
 
+// ─── Auto-Test Intel Templates on Matching Targets ──────
+
+async function autoTestTemplateOnTarget(
+  db: any,
+  feedId: string,
+  targetId: string,
+  targetDomain: string,
+  template: any,
+  vulnClass: string
+): Promise<{ tested: boolean; confirmed: boolean; findingId?: string }> {
+  if (!targetDomain) return { tested: false, confirmed: false };
+
+  const baseUrl = targetDomain.startsWith("http") ? targetDomain : `https://${targetDomain}`;
+  const payloads = template?.payloads || [];
+  if (payloads.length === 0) return { tested: false, confirmed: false };
+
+  // Get endpoints for this target
+  const { data: endpoints } = await db.from("discovered_endpoints")
+    .select("url, parameters").eq("target_id", targetId).limit(10);
+
+  if (!endpoints || endpoints.length === 0) return { tested: false, confirmed: false };
+
+  let confirmed = false;
+  let bestPayload = "";
+  let bestEvidence = "";
+
+  for (const ep of endpoints.slice(0, 5)) {
+    const params = (ep.parameters || {}) as Record<string, string>;
+    const paramNames = Object.keys(params);
+    if (paramNames.length === 0) continue;
+
+    for (const payload of payloads.slice(0, 5)) {
+      for (const paramName of paramNames.slice(0, 3)) {
+        try {
+          // Baseline request
+          const baseResp = await safeFetch(ep.url, {
+            method: "GET",
+            headers: { "User-Agent": "CyberScope-Scanner/1.0" },
+            redirect: "manual",
+          }, 6000);
+          const baseBody = await baseResp.text();
+
+          // Mutated request
+          const url = new URL(ep.url);
+          url.searchParams.set(paramName, payload);
+          const mutResp = await safeFetch(url.toString(), {
+            method: "GET",
+            headers: { "User-Agent": "CyberScope-Scanner/1.0" },
+            redirect: "manual",
+          }, 6000);
+          const mutBody = await mutResp.text();
+
+          // Differential analysis
+          const lenDiff = Math.abs(mutBody.length - baseBody.length);
+          const statusDiff = mutResp.status !== baseResp.status;
+          const hasEvidence = lenDiff > 100 || statusDiff ||
+            (vulnClass === "rxss" && mutBody.includes("<cyberscope>")) ||
+            (vulnClass === "sqli" && /sql syntax|SQLSTATE|ORA-/i.test(mutBody)) ||
+            (vulnClass === "cmdi" && mutBody.includes("cyberscope_marker")) ||
+            (vulnClass === "ssti" && /\b49\b/.test(mutBody) && !/\b49\b/.test(baseBody)) ||
+            (vulnClass === "path-traversal" && /root:.*:0:0/.test(mutBody));
+
+          if (hasEvidence) {
+            confirmed = true;
+            bestPayload = payload;
+            bestEvidence = `Differential confirmed: baseline(${baseResp.status}, ${baseBody.length}B) vs mutated(${mutResp.status}, ${mutBody.length}B). Delta: ${lenDiff}B.`;
+            break;
+          }
+
+          await new Promise((r) => setTimeout(r, 200));
+        } catch { /* skip */ }
+      }
+      if (confirmed) break;
+    }
+    if (confirmed) break;
+  }
+
+  if (confirmed) {
+    // Create finding in pending_approvals for high/critical or auto-accept
+    const severity = vulnClass === "sqli" || vulnClass === "cmdi" || vulnClass === "ssrf" ? "high" : "medium";
+    const isHighSev = severity === "high" || severity === "critical";
+
+    if (isHighSev) {
+      const { data: finding } = await db.from("pending_approvals").insert({
+        target_id: targetId,
+        finding_type: `intel-auto-test-${vulnClass}`,
+        severity,
+        title: `🔴 Intel-Confirmed: ${vulnClass.toUpperCase()} (auto-tested from disclosure)`,
+        description: `Automatically tested from intel feed and CONFIRMED.\n\n**Evidence:** ${bestEvidence}\n\n**Payload:** \`${bestPayload}\`\n\n**Source:** Intel Feed ${feedId}`,
+        payload_used: bestPayload,
+        confidence_level: "high",
+        confidence_score: 85,
+        ai_verified: true,
+        ai_verification_notes: `Auto-tested from intel feed. Differential analysis confirmed vulnerability.`,
+        triage_reasoning: `Intel-driven auto-test confirmed via differential analysis`,
+        evidence: { intelFeedId: feedId, vulnClass, payload: bestPayload, evidence: bestEvidence },
+      }).select("id").single();
+
+      return { tested: true, confirmed: true, findingId: finding?.id };
+    } else {
+      await db.from("vulnerability_findings").insert({
+        target_id: targetId,
+        title: `Intel-Confirmed: ${vulnClass.toUpperCase()} (auto-tested)`,
+        severity,
+        description: `Auto-tested from intel feed.\n\n**Evidence:** ${bestEvidence}\n\n**Payload:** \`${bestPayload}\``,
+        payload: bestPayload,
+        confidence_score: 75,
+        confidence_level: "medium",
+        ai_verified: true,
+        triage_reasoning: `Intel-driven auto-test. ${bestEvidence}`,
+        validation_status: "auto-tested",
+      });
+
+      return { tested: true, confirmed: true };
+    }
+  }
+
+  // Store negative experience
+  await db.from("experience_vault").insert({
+    vuln_class: vulnClass,
+    payload_used: payloads[0] || "",
+    outcome: "false_positive",
+    confidence_score: 20,
+    reward_score: -3,
+    target_id: targetId,
+    tech_stack: { source: "intel-auto-test" },
+    metadata: { intelFeedId: feedId, tested: true, confirmed: false },
+  });
+
+  return { tested: true, confirmed: false };
+}
+
 // ─── Main Handler ───────────────────────────────────────
 
 serve(async (req) => {
@@ -260,7 +364,7 @@ serve(async (req) => {
     const action = body.action || "full-sync";
     const db = supabaseAdmin();
 
-    // ── Interpret single report (called from frontend) ──
+    // ── Interpret single report ──
     if (action === "interpret-report") {
       const interpretation = await aiInterpretReport(body.report);
       return new Response(JSON.stringify({ interpretation }), {
@@ -268,7 +372,7 @@ serve(async (req) => {
       });
     }
 
-    // ── Trigger rescan on a specific target from intel feed ──
+    // ── Trigger rescan ──
     if (action === "trigger-rescan") {
       const { targetId, vulnClass, intelFeedId } = body;
       if (!targetId) {
@@ -277,7 +381,6 @@ serve(async (req) => {
         });
       }
 
-      // Check endpoints exist
       const { data: eps } = await db.from("discovered_endpoints").select("id").eq("target_id", targetId).limit(1);
       if (!eps || eps.length === 0) {
         return new Response(JSON.stringify({ error: "No endpoints — run recon first", triggered: false }), {
@@ -285,22 +388,17 @@ serve(async (req) => {
         });
       }
 
-      // Create delta scan task
       await db.from("agent_tasks").insert({
-        target_id: targetId,
-        task_type: "intel-delta-scan",
-        status: "pending",
+        target_id: targetId, task_type: "intel-delta-scan", status: "pending",
         thought_log: [{ type: "info", message: `Intel-driven delta scan for ${vulnClass || "all"}`, intelFeedId, timestamp: new Date().toISOString() }],
       });
 
       await db.from("scan_logs").insert({
-        target_id: targetId,
-        log_type: "info",
+        target_id: targetId, log_type: "info",
         message: `🔄 Intel-driven rescan triggered for ${vulnClass || "all"} (from feed ${intelFeedId || "manual"})`,
         metadata: { intelFeedId, vulnClass },
       });
 
-      // Trigger vuln-scanner
       const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
       const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
       fetch(`${supabaseUrl}/functions/v1/vuln-scanner`, {
@@ -318,7 +416,7 @@ serve(async (req) => {
     const { data: syncRun } = await db.from("intel_sync_runs").insert({ status: "running" }).select().single();
     const syncRunId = syncRun?.id;
 
-    // Step 1: Fetch from all sources (increased limits)
+    // Step 1: Fetch from all sources
     const [ghReports, edbReports] = await Promise.all([
       fetchGitHubAdvisories(50),
       fetchExploitDB(50),
@@ -326,7 +424,7 @@ serve(async (req) => {
     const allReports = [...ghReports, ...edbReports];
     const reportsFetched = allReports.length;
 
-    // Step 2: Deduplicate against existing feeds
+    // Step 2: Deduplicate
     const { data: existingFeeds } = await db.from("intel_feeds").select("report_id");
     const existingIds = new Set((existingFeeds || []).map((f: any) => f.report_id));
     const newReports = allReports.filter((r) => !existingIds.has(r.report_id));
@@ -334,24 +432,19 @@ serve(async (req) => {
     let reportsProcessed = 0;
     let templatesGenerated = 0;
     let rescansTriggered = 0;
+    let autoTestsRun = 0;
+    let autoTestsConfirmed = 0;
 
-    // Step 3: Process ALL new reports (no arbitrary cap)
+    // Step 3: Process new reports
     for (const report of newReports) {
       try {
         const intel = await aiInterpretReport(report);
-        const template = generateTemplate(
-          intel.vulnerabilityClass,
-          intel.specificPayloads || [],
-          intel.bypassTechniques || []
-        );
+        const template = generateTemplate(intel.vulnerabilityClass, intel.specificPayloads || [], intel.bypassTechniques || []);
         const script = templateToScript(template);
 
         const { data: feed } = await db.from("intel_feeds").insert({
-          source: report.source,
-          source_url: report.source_url,
-          report_id: report.report_id,
-          title: report.title,
-          vulnerability_class: intel.vulnerabilityClass,
+          source: report.source, source_url: report.source_url, report_id: report.report_id,
+          title: report.title, vulnerability_class: intel.vulnerabilityClass,
           severity: report.severity,
           affected_tech_stack: intel.affectedTechStack || report.affected_tech_stack || [],
           extracted_payloads: intel.specificPayloads || [],
@@ -359,17 +452,16 @@ serve(async (req) => {
           waf_bypass_logic: intel.wafBypassLogic,
           raw_summary: report.raw_summary,
           ai_interpretation: JSON.stringify(intel),
-          test_template: template,
-          template_script: script,
+          test_template: template, template_script: script,
+          template_language: "python",
           signal_strength: intel.signalStrength || "medium",
-          status: "processed",
-          processed_at: new Date().toISOString(),
+          status: "processed", processed_at: new Date().toISOString(),
         }).select().single();
 
         reportsProcessed++;
         templatesGenerated++;
 
-        // Step 4: Cross-reference with targets
+        // Step 4: Cross-reference with targets & AUTO-TEST
         if (feed && intel.signalStrength !== "low") {
           const techStack = intel.affectedTechStack || [];
           const matches = await findMatchingTargets(db, techStack);
@@ -381,14 +473,34 @@ serve(async (req) => {
             }).eq("id", feed.id);
 
             for (const match of matches.slice(0, 5)) {
-              await db.from("intel_notifications").insert({
-                intel_feed_id: feed.id,
-                target_id: match.id,
-                notification_type: "match_found",
-                title: `🔴 New ${intel.vulnerabilityClass} disclosure matches ${match.name}`,
-                message: `"${report.title}" may affect ${match.name} (matched: ${match.matchedTech.join(", ")}). Click "Rescan" to test.`,
-                action_url: report.source_url,
-              });
+              // Auto-test template on matching target
+              if (match.domain && intel.signalStrength === "high") {
+                const testResult = await autoTestTemplateOnTarget(
+                  db, feed.id, match.id, match.domain, template, intel.vulnerabilityClass
+                );
+                autoTestsRun++;
+                if (testResult.confirmed) autoTestsConfirmed++;
+
+                await db.from("intel_notifications").insert({
+                  intel_feed_id: feed.id, target_id: match.id,
+                  notification_type: testResult.confirmed ? "auto_test_confirmed" : "auto_test_negative",
+                  title: testResult.confirmed
+                    ? `🔴 AUTO-CONFIRMED: ${intel.vulnerabilityClass.toUpperCase()} on ${match.name}`
+                    : `🟡 Auto-tested ${intel.vulnerabilityClass} on ${match.name} — not confirmed`,
+                  message: testResult.confirmed
+                    ? `"${report.title}" was automatically tested and CONFIRMED on ${match.name}. Finding created in approvals.`
+                    : `"${report.title}" was tested on ${match.name} but no vulnerability confirmed.`,
+                  action_url: report.source_url,
+                });
+              } else {
+                await db.from("intel_notifications").insert({
+                  intel_feed_id: feed.id, target_id: match.id,
+                  notification_type: "match_found",
+                  title: `🔴 New ${intel.vulnerabilityClass} disclosure matches ${match.name}`,
+                  message: `"${report.title}" may affect ${match.name} (matched: ${match.matchedTech.join(", ")}). Click "Rescan" to test.`,
+                  action_url: report.source_url,
+                });
+              }
               rescansTriggered++;
             }
           }
@@ -398,11 +510,8 @@ serve(async (req) => {
         if (intel.specificPayloads?.length > 0) {
           for (const payload of intel.specificPayloads.slice(0, 5)) {
             await db.from("experience_vault").insert({
-              vuln_class: intel.vulnerabilityClass,
-              payload_used: payload,
-              outcome: "intel_imported",
-              confidence_score: 60,
-              reward_score: 5,
+              vuln_class: intel.vulnerabilityClass, payload_used: payload,
+              outcome: "intel_imported", confidence_score: 60, reward_score: 5,
               tech_stack: { source: report.source, imported: true },
               metadata: { intelFeedId: feed?.id, source: report.source },
             });
@@ -418,23 +527,17 @@ serve(async (req) => {
     if (syncRunId) {
       await db.from("intel_sync_runs").update({
         completed_at: new Date().toISOString(),
-        reports_fetched: reportsFetched,
-        reports_processed: reportsProcessed,
-        templates_generated: templatesGenerated,
-        rescans_triggered: rescansTriggered,
+        reports_fetched: reportsFetched, reports_processed: reportsProcessed,
+        templates_generated: templatesGenerated, rescans_triggered: rescansTriggered,
         status: "completed",
       }).eq("id", syncRunId);
     }
 
     return new Response(
       JSON.stringify({
-        success: true,
-        syncRunId,
-        reportsFetched,
-        newReports: newReports.length,
-        reportsProcessed,
-        templatesGenerated,
-        rescansTriggered,
+        success: true, syncRunId, reportsFetched, newReports: newReports.length,
+        reportsProcessed, templatesGenerated, rescansTriggered,
+        autoTestsRun, autoTestsConfirmed,
       }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );

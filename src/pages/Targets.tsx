@@ -146,7 +146,7 @@ export default function Targets() {
       if (error) toast.error(`Recon failed: ${error.message}`);
       else if (data?.error) toast.error(`Recon failed: ${data.error}`);
       else {
-        toast.success(`Recon complete: ${data.subdomains} subdomains, ${data.endpointsIngested} endpoints mapped`);
+        toast.success(`Recon complete: ${data.subdomains} subdomains, ${data.endpointsIngested} endpoints, 🕷️ ${data.spiderUrls || 0} crawled, ${data.spiderForms || 0} forms`);
         queryClient.invalidateQueries({ queryKey: ["targets"] });
         queryClient.invalidateQueries({ queryKey: ["endpoints-count"] });
         queryClient.invalidateQueries({ queryKey: ["findings"] });
@@ -337,6 +337,10 @@ export default function Targets() {
                                     <TableCell>
                                       {f.verificationStatus === "verified_critical" ? (
                                         <Badge className="bg-primary/20 text-primary border border-primary/40 font-mono text-[9px] gap-1 glow-green"><CheckCircle2 className="h-2.5 w-2.5" /> Verified</Badge>
+                                      ) : f.verificationStatus === "likely_vuln" ? (
+                                        <Badge className="bg-cyber-amber/20 text-cyber-amber border border-cyber-amber/40 font-mono text-[9px] gap-1"><AlertTriangle className="h-2.5 w-2.5" /> Likely</Badge>
+                                      ) : f.verificationStatus === "needs_review" ? (
+                                        <Badge className="bg-cyber-cyan/20 text-cyber-cyan border border-cyber-cyan/40 font-mono text-[9px] gap-1"><Activity className="h-2.5 w-2.5" /> Review</Badge>
                                       ) : (
                                         <Badge variant="secondary" className="font-mono text-[9px] gap-1 bg-muted text-muted-foreground border border-border"><XCircle className="h-2.5 w-2.5" /> FP/WAF</Badge>
                                       )}

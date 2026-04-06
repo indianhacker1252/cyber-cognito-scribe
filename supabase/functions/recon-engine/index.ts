@@ -109,6 +109,102 @@ async function harvestOTX(
   return results;
 }
 
+// ─── 3.5. Spider Crawler — Deep Link & Form Extraction ─────
+
+async function spiderCrawl(
+  domain: string,
+  maxPages = 30,
+  maxDepth = 3
+): Promise<{ urls: string[]; forms: Array<{ action: string; method: string; inputs: string[] }>; jsFiles: string[] }> {
+  const visited = new Set<string>();
+  const discovered: string[] = [];
+  const forms: Array<{ action: string; method: string; inputs: string[] }> = [];
+  const jsFiles: string[] = [];
+  const queue: Array<{ url: string; depth: number }> = [{ url: `https://${domain}`, depth: 0 }];
+
+  while (queue.length > 0 && visited.size < maxPages) {
+    const item = queue.shift();
+    if (!item || item.depth > maxDepth) continue;
+    if (visited.has(item.url)) continue;
+    visited.add(item.url);
+
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 6000);
+      const resp = await fetch(item.url, {
+        method: "GET",
+        headers: { "User-Agent": "CyberScope-Spider/1.0" },
+        redirect: "follow",
+        signal: ctrl.signal,
+      });
+      clearTimeout(timer);
+
+      if (!resp.ok) continue;
+      const contentType = resp.headers.get("content-type") || "";
+      if (!contentType.includes("text/html")) continue;
+
+      const html = await resp.text();
+
+      // Extract links
+      const linkRegex = /href\s*=\s*["']([^"'#]+)["']/gi;
+      let match;
+      while ((match = linkRegex.exec(html)) !== null) {
+        try {
+          const href = match[1];
+          let fullUrl: string;
+          if (href.startsWith("http")) fullUrl = href;
+          else if (href.startsWith("//")) fullUrl = `https:${href}`;
+          else if (href.startsWith("/")) fullUrl = `https://${domain}${href}`;
+          else fullUrl = `${item.url.replace(/\/[^/]*$/, "/")}${href}`;
+
+          const parsed = new URL(fullUrl);
+          if (parsed.hostname.endsWith(domain) && !visited.has(fullUrl)) {
+            discovered.push(fullUrl);
+            if (item.depth + 1 <= maxDepth) {
+              queue.push({ url: `${parsed.origin}${parsed.pathname}`, depth: item.depth + 1 });
+            }
+          }
+        } catch { /* skip malformed */ }
+      }
+
+      // Extract forms with inputs
+      const formRegex = /<form[^>]*>([\s\S]*?)<\/form>/gi;
+      while ((match = formRegex.exec(html)) !== null) {
+        const formTag = match[0];
+        const actionMatch = formTag.match(/action\s*=\s*["']([^"']+)["']/i);
+        const methodMatch = formTag.match(/method\s*=\s*["']([^"']+)["']/i);
+        const inputRegex = /name\s*=\s*["']([^"']+)["']/gi;
+        const inputs: string[] = [];
+        let inputMatch;
+        while ((inputMatch = inputRegex.exec(formTag)) !== null) {
+          inputs.push(inputMatch[1]);
+        }
+        if (inputs.length > 0) {
+          let action = actionMatch?.[1] || item.url;
+          if (!action.startsWith("http")) {
+            action = action.startsWith("/") ? `https://${domain}${action}` : `${item.url.replace(/\/[^/]*$/, "/")}${action}`;
+          }
+          forms.push({ action, method: (methodMatch?.[1] || "GET").toUpperCase(), inputs });
+        }
+      }
+
+      // Extract JS files
+      const jsRegex = /src\s*=\s*["']([^"']+\.js(?:\?[^"']*)?)["']/gi;
+      while ((match = jsRegex.exec(html)) !== null) {
+        let jsSrc = match[1];
+        if (!jsSrc.startsWith("http")) {
+          jsSrc = jsSrc.startsWith("/") ? `https://${domain}${jsSrc}` : `${item.url.replace(/\/[^/]*$/, "/")}${jsSrc}`;
+        }
+        jsFiles.push(jsSrc);
+      }
+
+      await new Promise((r) => setTimeout(r, 150));
+    } catch { /* skip failed pages */ }
+  }
+
+  return { urls: [...new Set(discovered)], forms, jsFiles: [...new Set(jsFiles)] };
+}
+
 // ─── 4. Technology Fingerprinting ──────────────────────────
 
 interface TechFingerprint {
@@ -393,6 +489,19 @@ serve(async (req) => {
       await log(db, targetId, taskId, "info", `[AI] ${note}`);
     }
 
+    // ── Step 5.5: Spider Crawl — Deep Link & Form Discovery ──
+    await log(db, targetId, taskId, "thought", `🕷️ Spider crawling ${domain} for links, forms, and JS files`);
+    const spiderResults = await spiderCrawl(domain, 25, 3);
+    await log(db, targetId, taskId, "result",
+      `🕷️ Spider found ${spiderResults.urls.length} links, ${spiderResults.forms.length} forms, ${spiderResults.jsFiles.length} JS files`
+    );
+
+    if (spiderResults.forms.length > 0) {
+      await log(db, targetId, taskId, "info",
+        `📋 Forms discovered: ${spiderResults.forms.map(f => `${f.method} ${f.action} [${f.inputs.join(",")}]`).slice(0, 5).join(" | ")}`
+      );
+    }
+
     // ── Step 6: Normalize & Ingest ──
     await log(db, targetId, taskId, "action", "Normalizing and deduplicating discovered endpoints");
 
@@ -444,6 +553,28 @@ serve(async (req) => {
       }
     }
 
+    // Spider-discovered URLs
+    for (const spUrl of spiderResults.urls) {
+      try {
+        const u = new URL(spUrl);
+        const key = `${u.origin}${u.pathname}`;
+        const params: Record<string, string> = {};
+        u.searchParams.forEach((v, k) => (params[k] = v));
+        if (!allUrls.has(key)) {
+          allUrls.set(key, { method: "GET", params, source: "spider" });
+        }
+      } catch { /* skip */ }
+    }
+
+    // Spider-discovered forms (as POST endpoints with input params)
+    for (const form of spiderResults.forms) {
+      const params: Record<string, string> = {};
+      for (const input of form.inputs) { params[input] = "test"; }
+      if (!allUrls.has(form.action)) {
+        allUrls.set(form.action, { method: form.method, params, source: "spider-form" });
+      }
+    }
+
     // Batch insert endpoints (max 100 at a time)
     const endpoints = [...allUrls.entries()].map(([url, info]) => ({
       target_id: targetId,
@@ -471,6 +602,9 @@ serve(async (req) => {
           subdomains_found: subdomains.length,
           wayback_urls: waybackResults.length,
           otx_urls: otxResults.length,
+          spider_urls: spiderResults.urls.length,
+          spider_forms: spiderResults.forms.length,
+          spider_js_files: spiderResults.jsFiles.length,
           endpoints_ingested: insertedCount,
           tech_fingerprint: fingerprint,
           ai_analysis: aiResults,
@@ -483,7 +617,7 @@ serve(async (req) => {
       .update({ status: "completed" })
       .eq("id", targetId);
 
-    await log(db, targetId, taskId, "info", `✅ Recon pipeline completed for ${domain} — ${insertedCount} endpoints mapped`);
+    await log(db, targetId, taskId, "info", `✅ Recon pipeline completed for ${domain} — ${insertedCount} endpoints mapped (🕷️ spider: ${spiderResults.urls.length} links, ${spiderResults.forms.length} forms)`);
 
     return new Response(
       JSON.stringify({
@@ -491,6 +625,9 @@ serve(async (req) => {
         subdomains: subdomains.length,
         waybackUrls: waybackResults.length,
         otxUrls: otxResults.length,
+        spiderUrls: spiderResults.urls.length,
+        spiderForms: spiderResults.forms.length,
+        spiderJsFiles: spiderResults.jsFiles.length,
         endpointsIngested: insertedCount,
         fingerprint,
       }),
