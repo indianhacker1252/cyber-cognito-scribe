@@ -1297,7 +1297,87 @@ serve(async (req) => {
       await log(db, targetId, taskId, "info", "⏱️ Skipping CVE correlation — time limit");
     }
 
-    // ── Step 5: AI Verification & Deep Assessment (skip if timed out) ──
+    // ── Step 4.5: Intel Feed Template Cross-Reference ──
+    let intelTemplatesTested = 0;
+    let intelConfirmed = 0;
+    if (!isTimedOut()) {
+      await log(db, targetId, taskId, "thought", "🔍 Cross-referencing intel feed templates against target");
+      const { data: intelFeeds } = await db.from("intel_feeds")
+        .select("id, title, vulnerability_class, extracted_payloads, affected_tech_stack, test_template, matched_targets")
+        .eq("status", "processed").limit(30);
+
+      if (intelFeeds && intelFeeds.length > 0) {
+        const targetTech = [
+          (techStack.server || "").toLowerCase(),
+          (techStack.framework || "").toLowerCase(),
+          (techStack.poweredBy || "").toLowerCase(),
+        ].filter(Boolean);
+
+        for (const feed of intelFeeds) {
+          if (isTimedOut()) break;
+          const affectedStack = (feed.affected_tech_stack as string[]) || [];
+          const stackMatch = affectedStack.some((t: string) => targetTech.some(tt => tt.includes(t.toLowerCase())));
+          if (!stackMatch) continue;
+
+          const templatePayloads = ((feed.test_template as any)?.payloads || []) as string[];
+          const extractedPayloads = (feed.extracted_payloads as string[]) || [];
+          const allPayloads = [...new Set([...templatePayloads, ...extractedPayloads])].slice(0, 5);
+          if (allPayloads.length === 0) continue;
+
+          const vc = feed.vulnerability_class || "sqli";
+          let confirmed = false;
+
+          for (const ep of (endpoints || []).slice(0, 3)) {
+            if (isTimedOut()) break;
+            const params = (ep.parameters as Record<string, string>) || {};
+            for (const paramName of Object.keys(params).slice(0, 2)) {
+              if (isTimedOut()) break;
+              for (const payload of allPayloads.slice(0, 3)) {
+                try {
+                  const baseResp = await safeFetch(ep.url, { method: "GET", headers: { "User-Agent": "CyberScope/1.0" }, redirect: "manual" }, 5000);
+                  const baseBody = await baseResp.text();
+
+                  const url = new URL(ep.url);
+                  url.searchParams.set(paramName, payload);
+                  const mutResp = await safeFetch(url.toString(), { method: "GET", headers: { "User-Agent": "CyberScope/1.0" }, redirect: "manual" }, 5000);
+                  const mutBody = await mutResp.text();
+
+                  // Use strict execution evidence detection
+                  const execCheck = analyzeExecutionEvidence(vc, payload, mutBody, baseBody);
+                  if (execCheck.hasEvidence) {
+                    confirmed = true;
+                    intelConfirmed++;
+                    await log(db, targetId, taskId, "result", `🔴 Intel template CONFIRMED: ${vc} from "${feed.title}" — ${execCheck.details}`);
+                    break;
+                  }
+                  intelTemplatesTested++;
+                  await new Promise(r => setTimeout(r, 150));
+                } catch { /* skip */ }
+              }
+              if (confirmed) break;
+            }
+            if (confirmed) break;
+          }
+
+          // Tag the intel feed with confirmation status for this target
+          try {
+            const existingTargets = (feed.matched_targets as any[]) || [];
+            const targetEntry = {
+              id: targetId, domain: target.domain,
+              confirmed, testedAt: new Date().toISOString(),
+            };
+            const updated = existingTargets.filter((t: any) => t.id !== targetId);
+            updated.push(targetEntry);
+            await db.from("intel_feeds").update({
+              matched_targets: updated,
+              rescan_triggered: confirmed || (feed as any).rescan_triggered,
+            }).eq("id", feed.id);
+          } catch { /* skip */ }
+        }
+
+        await log(db, targetId, taskId, "result", `🔍 Intel cross-ref: ${intelTemplatesTested} tested, ${intelConfirmed} confirmed`);
+      }
+    }
     let aiAssessments = { assessments: [] as any[] };
     let verifiedCount = 0;
     let falsePositiveCount = 0;
