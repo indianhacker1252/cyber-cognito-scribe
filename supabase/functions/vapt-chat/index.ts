@@ -648,7 +648,7 @@ RULES:
 4. Always provide actionable insights with CVSS scores and remediation.
 5. Use markdown formatting for readability.`;
 
-    // ─── AI Call with Tool Calling Loop ──────────────────────
+    // ─── AI Call with Tool Calling Loop (with provider fallback) ──
     let aiMessages = [
       { role: "system", content: systemPrompt },
       ...messages,
@@ -657,35 +657,23 @@ RULES:
     let fullAssistantContent = "";
     let toolCallsMade: Array<{ name: string; input: unknown; result: string }> = [];
     let maxIterations = 5;
+    let providerUsed = "";
 
-    // We need to handle tool calls iteratively (non-streaming for tool calls)
     for (let i = 0; i < maxIterations; i++) {
-      const aiResponse = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${LOVABLE_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: "google/gemini-3-flash-preview",
-          messages: aiMessages,
-          tools: TOOLS,
-          stream: false,
-        }),
-      });
+      const { response: aiResponse, providerUsed: pUsed } = await callAIWithFallback(
+        { messages: aiMessages, tools: TOOLS, stream: false },
+        providers
+      );
+      providerUsed = pUsed;
 
       if (!aiResponse.ok) {
-        if (aiResponse.status === 429) {
-          return new Response(JSON.stringify({ error: "Rate limited — try again shortly" }), {
-            status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        const status = aiResponse.status;
+        if (status === 503) {
+          return new Response(JSON.stringify({ error: "All AI providers exhausted. Add API keys in Settings → AI Providers." }), {
+            status: 503, headers: { ...corsHeaders, "Content-Type": "application/json" },
           });
         }
-        if (aiResponse.status === 402) {
-          return new Response(JSON.stringify({ error: "Credits exhausted — add funds in Settings" }), {
-            status: 402, headers: { ...corsHeaders, "Content-Type": "application/json" },
-          });
-        }
-        throw new Error(`AI error: ${aiResponse.status}`);
+        throw new Error(`AI error: ${status} from ${providerUsed}`);
       }
 
       const aiData = await aiResponse.json();
