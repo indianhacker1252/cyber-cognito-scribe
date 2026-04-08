@@ -134,6 +134,36 @@ export type Database = {
           },
         ]
       }
+      ai_provider_config: {
+        Row: {
+          api_key: string
+          created_at: string
+          id: string
+          is_active: boolean
+          priority: number
+          provider: string
+          updated_at: string
+        }
+        Insert: {
+          api_key: string
+          created_at?: string
+          id?: string
+          is_active?: boolean
+          priority?: number
+          provider: string
+          updated_at?: string
+        }
+        Update: {
+          api_key?: string
+          created_at?: string
+          id?: string
+          is_active?: boolean
+          priority?: number
+          provider?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
       chat_messages: {
         Row: {
           content: string
