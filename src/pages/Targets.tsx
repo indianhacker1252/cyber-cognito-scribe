@@ -185,7 +185,7 @@ export default function Targets() {
     toast.info("Deep Audit initiated — Twin-Test differential analysis running");
     try {
       const { data, error } = await supabase.functions.invoke("cyberscope-deep-audit", {
-        body: { targetUrl: targetDomain.startsWith("http") ? targetDomain : `https://${targetDomain}` },
+        body: { targetUrl: targetDomain.startsWith("http") ? targetDomain : `https://${targetDomain}`, targetId },
       });
       if (error) throw error;
       setDeepAuditResults((prev) => ({ ...prev, [targetId]: data as DeepAuditResults }));
@@ -296,11 +296,12 @@ export default function Targets() {
                 {auditData && isExpanded && !isDeepAuditing && (
                   <div className="border border-t-0 border-primary/40 rounded-b-lg bg-card/80 p-4 space-y-4">
                     {/* Stats */}
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                      <StatBox label="Scan ID" value={auditData.scanId.slice(0, 8)} icon={<Activity className="h-4 w-4" />} />
-                      <StatBox label="OWASP Hits" value={String(auditData.owaspFindings.length)} icon={<Bug className="h-4 w-4" />} />
+                    <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                      <StatBox label="Verified Findings" value={String((auditData as any).verifiedFindingsCount ?? auditData.owaspFindings.length)} icon={<Bug className="h-4 w-4" />} />
                       <StatBox label="CVEs Found" value={String(auditData.cveFindings.length)} icon={<AlertTriangle className="h-4 w-4" />} />
-                      <StatBox label="Diff Tests" value={String(auditData.differentialResults.length)} icon={<GitCompare className="h-4 w-4" />} />
+                      <StatBox label="FPs Eliminated" value={String((auditData as any).falsePositivesEliminated ?? 0)} icon={<XCircle className="h-4 w-4" />} />
+                      <StatBox label="Intel Tested" value={String((auditData as any).intelTemplatesTested ?? 0)} icon={<Radar className="h-4 w-4" />} />
+                      <StatBox label="Intel Confirmed" value={String((auditData as any).intelConfirmed ?? 0)} icon={<CheckCircle2 className="h-4 w-4" />} />
                     </div>
 
                     <Tabs defaultValue="owasp" className="space-y-3">
