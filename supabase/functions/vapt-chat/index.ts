@@ -467,6 +467,95 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
   }
 }
 
+// ─── AI PROVIDER FALLBACK ───────────────────────────────────
+
+interface AIProvider {
+  name: string;
+  url: string;
+  key: string;
+  model: string;
+}
+
+async function getProviders(): Promise<AIProvider[]> {
+  const providers: AIProvider[] = [];
+
+  // Primary: Lovable AI
+  const lovableKey = Deno.env.get("LOVABLE_API_KEY");
+  if (lovableKey) {
+    providers.push({
+      name: "lovable",
+      url: "https://ai.gateway.lovable.dev/v1/chat/completions",
+      key: lovableKey,
+      model: "google/gemini-3-flash-preview",
+    });
+  }
+
+  // Fallback providers from DB
+  const supabase = db();
+  const { data: configs } = await supabase
+    .from("ai_provider_config")
+    .select("provider, api_key, is_active, priority")
+    .eq("is_active", true)
+    .order("priority");
+
+  for (const c of configs || []) {
+    if (c.provider === "gemini") {
+      providers.push({
+        name: "gemini",
+        url: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+        key: c.api_key,
+        model: "gemini-2.5-flash",
+      });
+    } else if (c.provider === "openai") {
+      providers.push({
+        name: "openai",
+        url: "https://api.openai.com/v1/chat/completions",
+        key: c.api_key,
+        model: "gpt-4o-mini",
+      });
+    }
+  }
+
+  return providers;
+}
+
+async function callAIWithFallback(
+  body: Record<string, unknown>,
+  providers: AIProvider[]
+): Promise<{ response: Response; providerUsed: string }> {
+  for (const provider of providers) {
+    const payload = { ...body, model: provider.model };
+    const resp = await fetch(provider.url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${provider.key}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (resp.ok) return { response: resp, providerUsed: provider.name };
+
+    // Only fallback on 402 (credits exhausted) or 429 (rate limit)
+    if (resp.status === 402 || resp.status === 429) {
+      console.log(`Provider ${provider.name} returned ${resp.status}, trying next...`);
+      continue;
+    }
+
+    // Other errors — don't fallback, surface the error
+    return { response: resp, providerUsed: provider.name };
+  }
+
+  // All providers exhausted
+  return {
+    response: new Response(JSON.stringify({ error: "All AI providers exhausted. Add API keys in Settings." }), {
+      status: 503,
+      headers: { "Content-Type": "application/json" },
+    }),
+    providerUsed: "none",
+  };
+}
+
 // ─── MAIN HANDLER ───────────────────────────────────────────
 
 serve(async (req) => {
@@ -474,9 +563,9 @@ serve(async (req) => {
 
   try {
     const { messages, targetId, sessionId, saveChat } = await req.json();
-    const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
-    if (!LOVABLE_API_KEY) {
-      return new Response(JSON.stringify({ error: "AI not configured" }), {
+    const providers = await getProviders();
+    if (providers.length === 0) {
+      return new Response(JSON.stringify({ error: "No AI providers configured" }), {
         status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
@@ -486,7 +575,6 @@ serve(async (req) => {
     // ─── Save user message to DB if sessionId provided ─────
     let dbSessionId: string | null = null;
     if (sessionId && saveChat !== false) {
-      // Find or create session
       const { data: existingSession } = await supabase.from("chat_sessions")
         .select("id").eq("session_id", sessionId).single();
       
@@ -560,7 +648,7 @@ RULES:
 4. Always provide actionable insights with CVSS scores and remediation.
 5. Use markdown formatting for readability.`;
 
-    // ─── AI Call with Tool Calling Loop ──────────────────────
+    // ─── AI Call with Tool Calling Loop (with provider fallback) ──
     let aiMessages = [
       { role: "system", content: systemPrompt },
       ...messages,
@@ -569,35 +657,23 @@ RULES:
     let fullAssistantContent = "";
     let toolCallsMade: Array<{ name: string; input: unknown; result: string }> = [];
     let maxIterations = 5;
+    let providerUsed = "";
 
-    // We need to handle tool calls iteratively (non-streaming for tool calls)
     for (let i = 0; i < maxIterations; i++) {
-      const aiResponse = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${LOVABLE_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: "google/gemini-3-flash-preview",
-          messages: aiMessages,
-          tools: TOOLS,
-          stream: false,
-        }),
-      });
+      const { response: aiResponse, providerUsed: pUsed } = await callAIWithFallback(
+        { messages: aiMessages, tools: TOOLS, stream: false },
+        providers
+      );
+      providerUsed = pUsed;
 
       if (!aiResponse.ok) {
-        if (aiResponse.status === 429) {
-          return new Response(JSON.stringify({ error: "Rate limited — try again shortly" }), {
-            status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        const status = aiResponse.status;
+        if (status === 503) {
+          return new Response(JSON.stringify({ error: "All AI providers exhausted. Add API keys in Settings → AI Providers." }), {
+            status: 503, headers: { ...corsHeaders, "Content-Type": "application/json" },
           });
         }
-        if (aiResponse.status === 402) {
-          return new Response(JSON.stringify({ error: "Credits exhausted — add funds in Settings" }), {
-            status: 402, headers: { ...corsHeaders, "Content-Type": "application/json" },
-          });
-        }
-        throw new Error(`AI error: ${aiResponse.status}`);
+        throw new Error(`AI error: ${status} from ${providerUsed}`);
       }
 
       const aiData = await aiResponse.json();

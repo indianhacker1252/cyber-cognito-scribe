@@ -96,13 +96,11 @@ export default function Approvals() {
 
   const updateApproval = useMutation({
     mutationFn: async ({ id, status }: { id: string; status: string }) => {
-      const update: Record<string, unknown> = {
-        status,
+      const { error } = await supabase.from("pending_approvals").update({
+        status: status as any,
         reviewed_at: new Date().toISOString(),
         reviewer_notes: notes || null,
-      };
-
-      const { error } = await supabase.from("pending_approvals").update(update).eq("id", id);
+      }).eq("id", id);
       if (error) throw error;
 
       if (status === "approved" && selected) {
