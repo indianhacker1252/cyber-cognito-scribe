@@ -12,8 +12,39 @@ serve(async (req) => {
 
   try {
     const { action, chainId, context, findingId, approvalId, targetId, payload } = await req.json();
-    const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
     const db = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
+
+    // ─── AI Provider Fallback ───
+    interface AIProvider { name: string; url: string; key: string; model: string; }
+
+    async function getProviders(): Promise<AIProvider[]> {
+      const providers: AIProvider[] = [];
+      const lovableKey = Deno.env.get("LOVABLE_API_KEY");
+      if (lovableKey) {
+        providers.push({ name: "lovable", url: "https://ai.gateway.lovable.dev/v1/chat/completions", key: lovableKey, model: "google/gemini-3-flash-preview" });
+      }
+      const { data: configs } = await db.from("ai_provider_config").select("provider, api_key, is_active, priority").eq("is_active", true).order("priority");
+      for (const c of configs || []) {
+        if (c.provider === "gemini") providers.push({ name: "gemini", url: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions", key: c.api_key, model: "gemini-2.5-flash" });
+        else if (c.provider === "openai") providers.push({ name: "openai", url: "https://api.openai.com/v1/chat/completions", key: c.api_key, model: "gpt-4o-mini" });
+      }
+      return providers;
+    }
+
+    async function callAI(body: Record<string, unknown>): Promise<Response> {
+      const providers = await getProviders();
+      for (const p of providers) {
+        const resp = await fetch(p.url, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${p.key}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ ...body, model: p.model }),
+        });
+        if (resp.ok) return resp;
+        if (resp.status === 402 || resp.status === 429) { console.log(`${p.name} returned ${resp.status}, trying next...`); continue; }
+        return resp;
+      }
+      throw new Error("All AI providers exhausted. Add API keys in Settings.");
+    }
 
     // ACTION: "analyze" — AI-powered filter analysis and adaptive simulation
     if (action === "analyze") {
