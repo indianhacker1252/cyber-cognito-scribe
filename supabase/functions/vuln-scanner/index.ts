@@ -437,43 +437,52 @@ async function runDifferentialTest(
         responseData: { status: trueResp.status, headers: trueHeaders, bodySnippet: trueBody.slice(0, 500), length: trueBody.length },
       };
 
-      // ─── Differential Analysis per vuln class ───
+      // ─── Differential Analysis per vuln class (STRICT thresholds) ───
       if (vulnClass === "sqli" || vulnClass === "auth-bypass") {
         const lengthDiff = Math.abs(trueBody.length - falseBody.length);
         const statusDiff = trueResp.status !== falseResp.status;
-        if (lengthDiff > 50 || statusDiff) {
+        // STRICT: Require BOTH length diff >200 AND status diff, OR execution evidence
+        if (executionEvidence.hasEvidence) {
           result.isVulnerable = true;
-          result.confidence = lengthDiff > 200 || statusDiff ? "high" : "medium";
-          result.confidenceScore = lengthDiff > 200 ? 85 : statusDiff ? 75 : 55;
+          result.confidence = "high";
+          result.confidenceScore = 85;
+        } else if (lengthDiff > 200 && statusDiff) {
+          result.isVulnerable = true;
+          result.confidence = "medium";
+          result.confidenceScore = 65;
+        } else if (lengthDiff > 500) {
+          // Very large diff without status change — still suspicious
+          result.isVulnerable = true;
+          result.confidence = "medium";
+          result.confidenceScore = 55;
         }
+        // Removed: lengthDiff > 50 alone was causing FPs
       } else if (vulnClass === "nosqli") {
-        if (trueResp.status !== falseResp.status || Math.abs(trueBody.length - falseBody.length) > 30) {
+        if (trueResp.status !== falseResp.status && Math.abs(trueBody.length - falseBody.length) > 100) {
           result.isVulnerable = true;
           result.confidence = "medium";
           result.confidenceScore = 60;
         }
       } else if (vulnClass === "cmdi") {
-        if (trueBody.includes("cyberscope_marker")) {
+        if (trueBody.includes("cyberscope_marker") || /uid=\d+\(/.test(trueBody)) {
           result.isVulnerable = true;
           result.confidence = "high";
           result.confidenceScore = 95;
-        } else if (trueResp.status === 500 && falseResp.status !== 500) {
-          result.isVulnerable = true;
-          result.confidence = "medium";
-          result.confidenceScore = 60;
         }
+        // Removed: status 500 alone was causing FPs — many apps return 500 for bad input
       } else if (vulnClass === "ldapi") {
-        if (trueResp.status !== falseResp.status || Math.abs(trueBody.length - falseBody.length) > 50) {
+        if (trueResp.status !== falseResp.status && Math.abs(trueBody.length - falseBody.length) > 200) {
           result.isVulnerable = true;
           result.confidence = "medium";
           result.confidenceScore = 55;
         }
       } else if (vulnClass === "rxss" || vulnClass === "stored-xss") {
-        if (trueBody.includes("<cyberscope>") || trueBody.includes("onerror=cyberscope")) {
+        if (trueBody.includes("<cyberscope>") || trueBody.includes("onerror=cyberscope") || trueBody.includes("onload=cyberscope")) {
           result.isVulnerable = true;
           result.confidence = "high";
           result.confidenceScore = 90;
         }
+        // Only count as vuln if our exact probe is reflected — no heuristic guessing
       } else if (vulnClass === "open-redirect") {
         const location = trueResp.headers.get("location") || "";
         if (trueResp.status >= 300 && trueResp.status < 400 && location.includes("safe-test.cyberscope.local")) {
@@ -482,48 +491,58 @@ async function runDifferentialTest(
           result.confidenceScore = 90;
         }
       } else if (vulnClass === "ssrf") {
-        if (trueResp.status !== falseResp.status) {
+        // STRICT: Require actual internal data in response, not just status diff
+        if (/169\.254\.169\.254|ami-id|instance-id|metadata/.test(trueBody) && !/169\.254\.169\.254/.test(falseBody)) {
           result.isVulnerable = true;
-          result.confidence = "medium";
-          result.confidenceScore = 55;
+          result.confidence = "high";
+          result.confidenceScore = 85;
+        } else if (trueResp.status !== falseResp.status && (trueResp.status === 200 || trueResp.status === 500)) {
+          result.isVulnerable = true;
+          result.confidence = "low";
+          result.confidenceScore = 35;
         }
       } else if (vulnClass === "idor" || vulnClass === "privilege-escalation") {
         if (trueResp.status === 200 && falseResp.status === 200) {
           const lengthDiff = Math.abs(trueBody.length - falseBody.length);
-          if (lengthDiff > 100) {
+          if (lengthDiff > 300) {
             result.isVulnerable = true;
             result.confidence = "medium";
-            result.confidenceScore = 60;
+            result.confidenceScore = 55;
           }
         }
       } else if (vulnClass === "ssti") {
-        if (trueBody.includes("49")) {
+        // STRICT: Only flag if "49" appears in mutated but NOT in baseline
+        if (/\b49\b/.test(trueBody) && !/\b49\b/.test(falseBody)) {
           result.isVulnerable = true;
           result.confidence = "high";
-          result.confidenceScore = 92;
+          result.confidenceScore = 88;
         }
       } else if (vulnClass === "path-traversal" || vulnClass === "lfi") {
-        if (trueBody.includes("root:") || trueBody.includes("/bin/") || trueBody.length !== falseBody.length) {
+        // STRICT: Require actual file content patterns, not just length diff
+        if (/root:.*:0:0/.test(trueBody) || /\[boot loader\]/i.test(trueBody)) {
           result.isVulnerable = true;
-          result.confidence = trueBody.includes("root:") ? "high" : "medium";
-          result.confidenceScore = trueBody.includes("root:") ? 95 : 55;
+          result.confidence = "high";
+          result.confidenceScore = 95;
+        } else if (/\/bin\/bash|\/bin\/sh|\/usr\/sbin/.test(trueBody) && !falseBody.includes("/bin/")) {
+          result.isVulnerable = true;
+          result.confidence = "high";
+          result.confidenceScore = 85;
         }
+        // Removed: length diff alone was causing massive FPs
       } else if (vulnClass === "xxe") {
         if (trueBody.includes("cyberscope") && !falseBody.includes("cyberscope")) {
           result.isVulnerable = true;
           result.confidence = "high";
           result.confidenceScore = 90;
-        } else if (trueResp.status !== falseResp.status) {
-          result.isVulnerable = true;
-          result.confidence = "medium";
-          result.confidenceScore = 55;
         }
+        // Removed: status diff alone was causing FPs
       } else if (vulnClass === "deserialization") {
-        if (trueResp.status === 500 || trueBody.includes("unserialize") || trueBody.includes("ClassNotFoundException")) {
+        if (trueBody.includes("unserialize") || trueBody.includes("ClassNotFoundException") || trueBody.includes("ObjectInputStream")) {
           result.isVulnerable = true;
-          result.confidence = trueResp.status === 500 ? "medium" : "high";
-          result.confidenceScore = trueResp.status === 500 ? 55 : 85;
+          result.confidence = "high";
+          result.confidenceScore = 85;
         }
+        // Removed: status 500 alone — too many apps return 500 for bad input
       }
 
       // ─── Apply execution evidence boost ───
