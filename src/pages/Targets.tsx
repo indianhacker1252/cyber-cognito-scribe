@@ -185,7 +185,7 @@ export default function Targets() {
     toast.info("Deep Audit initiated — Twin-Test differential analysis running");
     try {
       const { data, error } = await supabase.functions.invoke("cyberscope-deep-audit", {
-        body: { targetUrl: targetDomain.startsWith("http") ? targetDomain : `https://${targetDomain}` },
+        body: { targetUrl: targetDomain.startsWith("http") ? targetDomain : `https://${targetDomain}`, targetId },
       });
       if (error) throw error;
       setDeepAuditResults((prev) => ({ ...prev, [targetId]: data as DeepAuditResults }));
