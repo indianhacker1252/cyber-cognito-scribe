@@ -12,6 +12,7 @@ import Approvals from "./pages/Approvals";
 import SystemHealth from "./pages/SystemHealth";
 import IntelFeed from "./pages/IntelFeed";
 import Settings from "./pages/Settings";
+import FalsePositives from "./pages/FalsePositives";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -32,6 +33,7 @@ const App = () => (
             <Route path="/system-health" element={<SystemHealth />} />
             <Route path="/intel-feed" element={<IntelFeed />} />
             <Route path="/settings" element={<Settings />} />
+            <Route path="/false-positives" element={<FalsePositives />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </Layout>
