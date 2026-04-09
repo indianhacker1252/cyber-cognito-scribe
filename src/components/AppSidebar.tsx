@@ -1,4 +1,4 @@
-import { LayoutDashboard, Crosshair, Terminal, ShieldAlert, ClipboardCheck, Activity, Rss, Settings } from "lucide-react";
+import { LayoutDashboard, Crosshair, Terminal, ShieldAlert, ClipboardCheck, Activity, Rss, Settings, ShieldOff } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
 import { useLocation } from "react-router-dom";
 import {
@@ -22,6 +22,7 @@ const navItems = [
   { title: "Approvals", url: "/approvals", icon: ClipboardCheck },
   { title: "System Health", url: "/system-health", icon: Activity },
   { title: "Intel Feed", url: "/intel-feed", icon: Rss },
+  { title: "False Positives", url: "/false-positives", icon: ShieldOff },
   { title: "Settings", url: "/settings", icon: Settings },
 ];
 
