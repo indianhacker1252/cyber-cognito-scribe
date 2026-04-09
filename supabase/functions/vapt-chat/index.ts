@@ -17,7 +17,7 @@ const TOOLS = [
     type: "function",
     function: {
       name: "run_recon",
-      description: "Run reconnaissance scan on a target (subdomain enum, spider crawl, tech fingerprint). Use when user asks to discover endpoints, subdomains, or map attack surface.",
+      description: "Run elite reconnaissance on a target. Discovers ALL subdomains (crt.sh, Google Dorks, URLScan, ThreatCrowd), probes live hosts, spiders across subdomains, extracts secrets from JS files, finds hidden params from wayback/dork URLs. Use when user says 'scan', 'recon', 'find subdomains', 'map attack surface', 'enumerate'.",
       parameters: { type: "object", properties: { targetId: { type: "string" }, domain: { type: "string" } }, required: ["targetId", "domain"] },
     },
   },
@@ -25,7 +25,7 @@ const TOOLS = [
     type: "function",
     function: {
       name: "run_vuln_scan",
-      description: "Run OWASP vulnerability scan on a target. Tests for SQLi, XSS, SSRF, SSTI, LFI, etc.",
+      description: "Run OWASP Top 10 vulnerability scan with strict FP elimination. Tests SQLi, XSS, SSRF, SSTI, LFI, CMDi, IDOR, XXE with differential analysis, intruder mode, evolutionary fuzzing, and SecLists payloads. Only reports findings with EXECUTION EVIDENCE.",
       parameters: { type: "object", properties: { targetId: { type: "string" }, targetUrl: { type: "string" } }, required: ["targetId", "targetUrl"] },
     },
   },
@@ -33,15 +33,15 @@ const TOOLS = [
     type: "function",
     function: {
       name: "run_deep_audit",
-      description: "Run deep audit with triple-verification on a target URL. Includes OWASP logic, CVE checks, and differential FP elimination.",
-      parameters: { type: "object", properties: { targetUrl: { type: "string" } }, required: ["targetUrl"] },
+      description: "Run deep audit with triple-verification on a target URL. Uses EXEC_DETECTORS requiring actual proof (SQL errors, XSS reflection, cmd output). Tests intel feed templates against target. Eliminates FPs with 3-phase verification: differential, timing, consistency.",
+      parameters: { type: "object", properties: { targetUrl: { type: "string" }, targetId: { type: "string" } }, required: ["targetUrl"] },
     },
   },
   {
     type: "function",
     function: {
       name: "validate_finding",
-      description: "Validate a specific vulnerability finding by re-testing it. Generates PoC scripts.",
+      description: "Validate a specific vulnerability finding by re-testing it. Generates PoC scripts with execution evidence.",
       parameters: { type: "object", properties: { findingId: { type: "string" }, targetId: { type: "string" }, script: { type: "string" } }, required: ["targetId"] },
     },
   },
@@ -49,7 +49,7 @@ const TOOLS = [
     type: "function",
     function: {
       name: "sync_intel",
-      description: "Sync threat intelligence feeds (HackerOne, GitHub advisories). Finds new CVEs and generates test templates.",
+      description: "Sync threat intelligence feeds (HackerOne, GitHub advisories, NVD). Ingests new CVEs and generates machine-executable test templates. Auto-correlates with target tech stacks.",
       parameters: { type: "object", properties: {}, required: [] },
     },
   },
@@ -57,7 +57,7 @@ const TOOLS = [
     type: "function",
     function: {
       name: "triage_finding",
-      description: "AI-triage a finding to determine severity, confidence, and whether it's a false positive.",
+      description: "AI-triage a finding. Determines severity, confidence (0-100), false positive probability, and generates remediation advice.",
       parameters: { type: "object", properties: { findingId: { type: "string" }, approvalId: { type: "string" } }, required: [] },
     },
   },
@@ -65,7 +65,7 @@ const TOOLS = [
     type: "function",
     function: {
       name: "query_findings",
-      description: "Query vulnerability findings from the database. Filter by target, severity, or status.",
+      description: "Query vulnerability findings from database. Filter by target, severity, status. Use to check what bugs have been found.",
       parameters: { type: "object", properties: { targetId: { type: "string" }, severity: { type: "string" }, status: { type: "string" }, limit: { type: "number" } }, required: [] },
     },
   },
@@ -81,7 +81,7 @@ const TOOLS = [
     type: "function",
     function: {
       name: "query_endpoints",
-      description: "List discovered endpoints for a target.",
+      description: "List discovered endpoints for a target with params, methods, and sources.",
       parameters: { type: "object", properties: { targetId: { type: "string" } }, required: ["targetId"] },
     },
   },
@@ -89,7 +89,7 @@ const TOOLS = [
     type: "function",
     function: {
       name: "headless_dom_analysis",
-      description: "Simulate headless browser DOM analysis on a URL. Detects DOM XSS, inline event handlers, postMessage listeners, eval calls, and dynamic script injection.",
+      description: "Simulate headless browser DOM analysis. Detects DOM XSS sinks (innerHTML, eval, document.write), postMessage listeners, inline event handlers, javascript: URIs, Function constructors.",
       parameters: { type: "object", properties: { targetUrl: { type: "string" }, payload: { type: "string" } }, required: ["targetUrl"] },
     },
   },
@@ -97,7 +97,7 @@ const TOOLS = [
     type: "function",
     function: {
       name: "oob_listener",
-      description: "Check for out-of-band (OOB) interaction callbacks. Used to detect blind SSRF, blind XSS, out-of-band SQLi.",
+      description: "Generate OOB (Out-of-Band) callback payloads for blind SSRF, blind XSS, blind SQLi, XXE detection. Returns callback URLs and ready-to-use payloads.",
       parameters: { type: "object", properties: { callbackId: { type: "string" }, targetId: { type: "string" } }, required: ["targetId"] },
     },
   },
@@ -105,7 +105,7 @@ const TOOLS = [
     type: "function",
     function: {
       name: "waf_fingerprint",
-      description: "Fingerprint WAF/CDN on a target URL. Detects Cloudflare, AWS WAF, Akamai, ModSecurity, etc. and suggests bypass techniques.",
+      description: "Fingerprint WAF/CDN and suggest bypass techniques. Detects Cloudflare, AWS WAF, Akamai, ModSecurity, Sucuri, Imperva. Provides encoding/mutation bypasses.",
       parameters: { type: "object", properties: { targetUrl: { type: "string" } }, required: ["targetUrl"] },
     },
   },
@@ -113,7 +113,7 @@ const TOOLS = [
     type: "function",
     function: {
       name: "proxy_intercept",
-      description: "Intercept and analyze HTTP traffic between client and target. Captures request/response pairs for analysis.",
+      description: "Intercept HTTP traffic to analyze request/response. Captures headers, cookies, security issues (missing HSTS, CSP, HttpOnly, SameSite). Like Burp Suite Proxy.",
       parameters: { type: "object", properties: { targetUrl: { type: "string" }, method: { type: "string" }, body: { type: "string" }, headers: { type: "object" } }, required: ["targetUrl"] },
     },
   },
@@ -129,8 +129,40 @@ const TOOLS = [
     type: "function",
     function: {
       name: "reject_finding",
-      description: "Reject a pending finding as false positive.",
+      description: "Reject a pending finding as false positive and optionally create a suppression vector.",
       parameters: { type: "object", properties: { approvalId: { type: "string" }, reason: { type: "string" } }, required: ["approvalId"] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_target",
+      description: "Create a new target workspace for scanning. Use when user provides a new domain/URL to test.",
+      parameters: { type: "object", properties: { name: { type: "string" }, domain: { type: "string" } }, required: ["name", "domain"] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "full_hunt",
+      description: "Run a FULL bug bounty hunt pipeline: Recon → Vuln Scan → Deep Audit. Chains all tools automatically for maximum coverage. Use when user says 'hunt bugs', 'full scan', 'find all vulns'.",
+      parameters: { type: "object", properties: { targetId: { type: "string" }, domain: { type: "string" } }, required: ["targetId", "domain"] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "query_approvals",
+      description: "Query pending approvals queue. Shows findings awaiting review with confidence scores.",
+      parameters: { type: "object", properties: { targetId: { type: "string" }, status: { type: "string" } }, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "query_suppression_vectors",
+      description: "List false positive suppression vectors. Shows what patterns are being auto-filtered.",
+      parameters: { type: "object", properties: {}, required: [] },
     },
   },
 ];
