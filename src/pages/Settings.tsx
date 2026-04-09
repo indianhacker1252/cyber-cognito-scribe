@@ -32,6 +32,13 @@ const PROVIDERS = [
     link: "https://platform.openai.com/api-keys",
     placeholder: "sk-...",
   },
+  {
+    id: "ollama",
+    name: "Local AI (Ollama)",
+    description: "Connect to a local Ollama instance for offline VAPT analysis. Train it with your methodology.",
+    link: "https://ollama.com/download",
+    placeholder: "http://localhost:11434",
+  },
 ];
 
 export default function Settings() {
