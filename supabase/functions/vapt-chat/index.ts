@@ -464,20 +464,12 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
           .update({ status: "approved", reviewer_notes: (args.notes as string) || "Approved by AI", reviewed_at: new Date().toISOString() })
           .eq("id", args.approvalId as string);
         if (error) return JSON.stringify({ error: error.message });
-
-        // Get the approval to create a confirmed finding
         const { data: approval } = await supabase.from("pending_approvals").select("*").eq("id", args.approvalId as string).single();
         if (approval) {
           await supabase.from("vulnerability_findings").insert({
-            target_id: approval.target_id,
-            title: approval.title,
-            description: approval.description,
-            severity: approval.severity,
-            payload: approval.payload_used,
-            confidence_score: approval.confidence_score,
-            validation_status: "confirmed",
-            ai_verified: true,
-            triage_reasoning: approval.triage_reasoning,
+            target_id: approval.target_id, title: approval.title, description: approval.description,
+            severity: approval.severity, payload: approval.payload_used, confidence_score: approval.confidence_score,
+            validation_status: "confirmed", ai_verified: true, triage_reasoning: approval.triage_reasoning,
           });
         }
         return JSON.stringify({ status: "approved", id: args.approvalId });
@@ -489,6 +481,48 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
           .eq("id", args.approvalId as string);
         if (error) return JSON.stringify({ error: error.message });
         return JSON.stringify({ status: "rejected", id: args.approvalId });
+      }
+
+      case "create_target": {
+        const domain = (args.domain as string).replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+        const { data: newTarget, error } = await supabase.from("target_workspaces")
+          .insert({ name: (args.name as string) || domain, domain })
+          .select().single();
+        if (error) return JSON.stringify({ error: error.message });
+        return JSON.stringify({ status: "created", target: newTarget });
+      }
+
+      case "full_hunt": {
+        const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+        const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+        // Step 1: Recon
+        const reconResp = await safeFetch(`${supabaseUrl}/functions/v1/recon-engine`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${serviceKey}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ targetId: args.targetId }),
+        }, 55000);
+        const reconData = await reconResp.json();
+        // Step 2: Vuln Scan
+        const vulnResp = await safeFetch(`${supabaseUrl}/functions/v1/vuln-scanner`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${serviceKey}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ targetId: args.targetId, targetUrl: `https://${args.domain}` }),
+        }, 55000);
+        const vulnData = await vulnResp.json();
+        return JSON.stringify({ recon: reconData, vulnScan: vulnData });
+      }
+
+      case "query_approvals": {
+        let query = supabase.from("pending_approvals").select("id, title, severity, confidence_score, finding_type, status, ai_verified, payload_used, created_at");
+        if (args.targetId) query = query.eq("target_id", args.targetId as string);
+        if (args.status) query = query.eq("status", args.status as string);
+        const { data } = await query.order("created_at", { ascending: false }).limit(20);
+        return JSON.stringify(data || []);
+      }
+
+      case "query_suppression_vectors": {
+        const { data } = await supabase.from("suppression_vectors").select("id, finding_type, vuln_class, suppression_reason, created_at").order("created_at", { ascending: false }).limit(20);
+        return JSON.stringify(data || []);
       }
 
       default:
