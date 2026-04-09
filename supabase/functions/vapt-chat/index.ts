@@ -17,7 +17,7 @@ const TOOLS = [
     type: "function",
     function: {
       name: "run_recon",
-      description: "Run reconnaissance scan on a target (subdomain enum, spider crawl, tech fingerprint). Use when user asks to discover endpoints, subdomains, or map attack surface.",
+      description: "Run elite reconnaissance on a target. Discovers ALL subdomains (crt.sh, Google Dorks, URLScan, ThreatCrowd), probes live hosts, spiders across subdomains, extracts secrets from JS files, finds hidden params from wayback/dork URLs. Use when user says 'scan', 'recon', 'find subdomains', 'map attack surface', 'enumerate'.",
       parameters: { type: "object", properties: { targetId: { type: "string" }, domain: { type: "string" } }, required: ["targetId", "domain"] },
     },
   },
@@ -25,7 +25,7 @@ const TOOLS = [
     type: "function",
     function: {
       name: "run_vuln_scan",
-      description: "Run OWASP vulnerability scan on a target. Tests for SQLi, XSS, SSRF, SSTI, LFI, etc.",
+      description: "Run OWASP Top 10 vulnerability scan with strict FP elimination. Tests SQLi, XSS, SSRF, SSTI, LFI, CMDi, IDOR, XXE with differential analysis, intruder mode, evolutionary fuzzing, and SecLists payloads. Only reports findings with EXECUTION EVIDENCE.",
       parameters: { type: "object", properties: { targetId: { type: "string" }, targetUrl: { type: "string" } }, required: ["targetId", "targetUrl"] },
     },
   },
@@ -33,15 +33,15 @@ const TOOLS = [
     type: "function",
     function: {
       name: "run_deep_audit",
-      description: "Run deep audit with triple-verification on a target URL. Includes OWASP logic, CVE checks, and differential FP elimination.",
-      parameters: { type: "object", properties: { targetUrl: { type: "string" } }, required: ["targetUrl"] },
+      description: "Run deep audit with triple-verification on a target URL. Uses EXEC_DETECTORS requiring actual proof (SQL errors, XSS reflection, cmd output). Tests intel feed templates against target. Eliminates FPs with 3-phase verification: differential, timing, consistency.",
+      parameters: { type: "object", properties: { targetUrl: { type: "string" }, targetId: { type: "string" } }, required: ["targetUrl"] },
     },
   },
   {
     type: "function",
     function: {
       name: "validate_finding",
-      description: "Validate a specific vulnerability finding by re-testing it. Generates PoC scripts.",
+      description: "Validate a specific vulnerability finding by re-testing it. Generates PoC scripts with execution evidence.",
       parameters: { type: "object", properties: { findingId: { type: "string" }, targetId: { type: "string" }, script: { type: "string" } }, required: ["targetId"] },
     },
   },
@@ -49,7 +49,7 @@ const TOOLS = [
     type: "function",
     function: {
       name: "sync_intel",
-      description: "Sync threat intelligence feeds (HackerOne, GitHub advisories). Finds new CVEs and generates test templates.",
+      description: "Sync threat intelligence feeds (HackerOne, GitHub advisories, NVD). Ingests new CVEs and generates machine-executable test templates. Auto-correlates with target tech stacks.",
       parameters: { type: "object", properties: {}, required: [] },
     },
   },
@@ -57,7 +57,7 @@ const TOOLS = [
     type: "function",
     function: {
       name: "triage_finding",
-      description: "AI-triage a finding to determine severity, confidence, and whether it's a false positive.",
+      description: "AI-triage a finding. Determines severity, confidence (0-100), false positive probability, and generates remediation advice.",
       parameters: { type: "object", properties: { findingId: { type: "string" }, approvalId: { type: "string" } }, required: [] },
     },
   },
@@ -65,7 +65,7 @@ const TOOLS = [
     type: "function",
     function: {
       name: "query_findings",
-      description: "Query vulnerability findings from the database. Filter by target, severity, or status.",
+      description: "Query vulnerability findings from database. Filter by target, severity, status. Use to check what bugs have been found.",
       parameters: { type: "object", properties: { targetId: { type: "string" }, severity: { type: "string" }, status: { type: "string" }, limit: { type: "number" } }, required: [] },
     },
   },
@@ -81,7 +81,7 @@ const TOOLS = [
     type: "function",
     function: {
       name: "query_endpoints",
-      description: "List discovered endpoints for a target.",
+      description: "List discovered endpoints for a target with params, methods, and sources.",
       parameters: { type: "object", properties: { targetId: { type: "string" } }, required: ["targetId"] },
     },
   },
@@ -89,7 +89,7 @@ const TOOLS = [
     type: "function",
     function: {
       name: "headless_dom_analysis",
-      description: "Simulate headless browser DOM analysis on a URL. Detects DOM XSS, inline event handlers, postMessage listeners, eval calls, and dynamic script injection.",
+      description: "Simulate headless browser DOM analysis. Detects DOM XSS sinks (innerHTML, eval, document.write), postMessage listeners, inline event handlers, javascript: URIs, Function constructors.",
       parameters: { type: "object", properties: { targetUrl: { type: "string" }, payload: { type: "string" } }, required: ["targetUrl"] },
     },
   },
@@ -97,7 +97,7 @@ const TOOLS = [
     type: "function",
     function: {
       name: "oob_listener",
-      description: "Check for out-of-band (OOB) interaction callbacks. Used to detect blind SSRF, blind XSS, out-of-band SQLi.",
+      description: "Generate OOB (Out-of-Band) callback payloads for blind SSRF, blind XSS, blind SQLi, XXE detection. Returns callback URLs and ready-to-use payloads.",
       parameters: { type: "object", properties: { callbackId: { type: "string" }, targetId: { type: "string" } }, required: ["targetId"] },
     },
   },
@@ -105,7 +105,7 @@ const TOOLS = [
     type: "function",
     function: {
       name: "waf_fingerprint",
-      description: "Fingerprint WAF/CDN on a target URL. Detects Cloudflare, AWS WAF, Akamai, ModSecurity, etc. and suggests bypass techniques.",
+      description: "Fingerprint WAF/CDN and suggest bypass techniques. Detects Cloudflare, AWS WAF, Akamai, ModSecurity, Sucuri, Imperva. Provides encoding/mutation bypasses.",
       parameters: { type: "object", properties: { targetUrl: { type: "string" } }, required: ["targetUrl"] },
     },
   },
@@ -113,7 +113,7 @@ const TOOLS = [
     type: "function",
     function: {
       name: "proxy_intercept",
-      description: "Intercept and analyze HTTP traffic between client and target. Captures request/response pairs for analysis.",
+      description: "Intercept HTTP traffic to analyze request/response. Captures headers, cookies, security issues (missing HSTS, CSP, HttpOnly, SameSite). Like Burp Suite Proxy.",
       parameters: { type: "object", properties: { targetUrl: { type: "string" }, method: { type: "string" }, body: { type: "string" }, headers: { type: "object" } }, required: ["targetUrl"] },
     },
   },
@@ -129,8 +129,40 @@ const TOOLS = [
     type: "function",
     function: {
       name: "reject_finding",
-      description: "Reject a pending finding as false positive.",
+      description: "Reject a pending finding as false positive and optionally create a suppression vector.",
       parameters: { type: "object", properties: { approvalId: { type: "string" }, reason: { type: "string" } }, required: ["approvalId"] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_target",
+      description: "Create a new target workspace for scanning. Use when user provides a new domain/URL to test.",
+      parameters: { type: "object", properties: { name: { type: "string" }, domain: { type: "string" } }, required: ["name", "domain"] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "full_hunt",
+      description: "Run a FULL bug bounty hunt pipeline: Recon → Vuln Scan → Deep Audit. Chains all tools automatically for maximum coverage. Use when user says 'hunt bugs', 'full scan', 'find all vulns'.",
+      parameters: { type: "object", properties: { targetId: { type: "string" }, domain: { type: "string" } }, required: ["targetId", "domain"] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "query_approvals",
+      description: "Query pending approvals queue. Shows findings awaiting review with confidence scores.",
+      parameters: { type: "object", properties: { targetId: { type: "string" }, status: { type: "string" } }, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "query_suppression_vectors",
+      description: "List false positive suppression vectors. Shows what patterns are being auto-filtered.",
+      parameters: { type: "object", properties: {}, required: [] },
     },
   },
 ];
@@ -432,20 +464,12 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
           .update({ status: "approved", reviewer_notes: (args.notes as string) || "Approved by AI", reviewed_at: new Date().toISOString() })
           .eq("id", args.approvalId as string);
         if (error) return JSON.stringify({ error: error.message });
-
-        // Get the approval to create a confirmed finding
         const { data: approval } = await supabase.from("pending_approvals").select("*").eq("id", args.approvalId as string).single();
         if (approval) {
           await supabase.from("vulnerability_findings").insert({
-            target_id: approval.target_id,
-            title: approval.title,
-            description: approval.description,
-            severity: approval.severity,
-            payload: approval.payload_used,
-            confidence_score: approval.confidence_score,
-            validation_status: "confirmed",
-            ai_verified: true,
-            triage_reasoning: approval.triage_reasoning,
+            target_id: approval.target_id, title: approval.title, description: approval.description,
+            severity: approval.severity, payload: approval.payload_used, confidence_score: approval.confidence_score,
+            validation_status: "confirmed", ai_verified: true, triage_reasoning: approval.triage_reasoning,
           });
         }
         return JSON.stringify({ status: "approved", id: args.approvalId });
@@ -457,6 +481,48 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
           .eq("id", args.approvalId as string);
         if (error) return JSON.stringify({ error: error.message });
         return JSON.stringify({ status: "rejected", id: args.approvalId });
+      }
+
+      case "create_target": {
+        const domain = (args.domain as string).replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+        const { data: newTarget, error } = await supabase.from("target_workspaces")
+          .insert({ name: (args.name as string) || domain, domain })
+          .select().single();
+        if (error) return JSON.stringify({ error: error.message });
+        return JSON.stringify({ status: "created", target: newTarget });
+      }
+
+      case "full_hunt": {
+        const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+        const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+        // Step 1: Recon
+        const reconResp = await safeFetch(`${supabaseUrl}/functions/v1/recon-engine`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${serviceKey}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ targetId: args.targetId }),
+        }, 55000);
+        const reconData = await reconResp.json();
+        // Step 2: Vuln Scan
+        const vulnResp = await safeFetch(`${supabaseUrl}/functions/v1/vuln-scanner`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${serviceKey}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ targetId: args.targetId, targetUrl: `https://${args.domain}` }),
+        }, 55000);
+        const vulnData = await vulnResp.json();
+        return JSON.stringify({ recon: reconData, vulnScan: vulnData });
+      }
+
+      case "query_approvals": {
+        let query = supabase.from("pending_approvals").select("id, title, severity, confidence_score, finding_type, status, ai_verified, payload_used, created_at");
+        if (args.targetId) query = query.eq("target_id", args.targetId as string);
+        if (args.status) query = query.eq("status", args.status as string);
+        const { data } = await query.order("created_at", { ascending: false }).limit(20);
+        return JSON.stringify(data || []);
+      }
+
+      case "query_suppression_vectors": {
+        const { data } = await supabase.from("suppression_vectors").select("id, finding_type, vuln_class, suppression_reason, created_at").order("created_at", { ascending: false }).limit(20);
+        return JSON.stringify(data || []);
       }
 
       default:
@@ -512,6 +578,15 @@ async function getProviders(): Promise<AIProvider[]> {
         url: "https://api.openai.com/v1/chat/completions",
         key: c.api_key,
         model: "gpt-4o-mini",
+      });
+    } else if (c.provider === "ollama") {
+      // Local AI — api_key field stores the Ollama base URL
+      const ollamaUrl = c.api_key.endsWith("/") ? c.api_key.slice(0, -1) : c.api_key;
+      providers.push({
+        name: "ollama",
+        url: `${ollamaUrl}/v1/chat/completions`,
+        key: "ollama",
+        model: "llama3.1",
       });
     }
   }
@@ -621,32 +696,43 @@ ${(logsRes.data || []).slice(0, 10).map(l => `[${l.log_type}] ${l.message}`).joi
 `;
     }
 
-    const systemPrompt = `You are CyberScope AI — a Principal VAPT (Vulnerability Assessment & Penetration Testing) Analyst with FULL ADMIN ACCESS to all scanning tools.
+    const systemPrompt = `You are CyberScope AI — an ELITE Bug Bounty Hunter and Principal VAPT Analyst with FULL ADMIN ACCESS to all scanning tools. You think like a BLACK HAT HACKER to find bugs that automated scanners miss.
 
-You have TOOLS available to perform real actions. When the user asks you to scan, test, validate, or investigate — USE THE TOOLS. Do not just describe what you would do. ACTUALLY DO IT.
+YOUR MINDSET: You are NOT a generic scanner. You are an experienced attacker who:
+- Looks for LOGIC FLAWS, not just injection points
+- Chains multiple low-severity bugs into high-impact exploits
+- Tests EVERY subdomain, EVERY parameter, EVERY endpoint
+- Uses Google Dorks, Wayback Machine, JS analysis to find hidden attack surface
+- Never trusts a "clean" scan — always digs deeper
+- Eliminates FALSE POSITIVES with execution evidence (screenshots, PoC, differential proof)
 
-Your capabilities:
-- **Reconnaissance**: Enumerate subdomains, spider crawl, discover endpoints (run_recon)
-- **Vulnerability Scanning**: OWASP Top 10 automated testing (run_vuln_scan)
-- **Deep Audit**: Triple-verified scanning with FP elimination (run_deep_audit)
-- **Finding Validation**: Re-test and generate PoC (validate_finding)
-- **Threat Intel**: Sync CVE feeds and generate templates (sync_intel)
-- **AI Triage**: Score and classify findings (triage_finding)
-- **Database Queries**: Query findings, targets, endpoints (query_findings, query_targets, query_endpoints)
-- **DOM Analysis**: Headless browser simulation for DOM XSS detection (headless_dom_analysis)
-- **OOB Listener**: Out-of-band callback detection for blind vulns (oob_listener)
-- **WAF Fingerprinting**: Detect and suggest WAF bypasses (waf_fingerprint)
-- **Proxy Intercept**: Capture and analyze HTTP traffic (proxy_intercept)
-- **Approval Management**: Approve or reject findings (approve_finding, reject_finding)
+YOUR TOOLS (use them aggressively):
+- **run_recon**: Elite recon — subdomains (crt.sh + Google Dorks + URLScan + ThreatCrowd), spider crawl across ALL subdomains, JS secret extraction, hidden param discovery
+- **run_vuln_scan**: OWASP Top 10 with strict FP elimination — only reports bugs with EXECUTION EVIDENCE
+- **run_deep_audit**: Triple-verified deep audit with differential + timing + consistency checks
+- **full_hunt**: Chain recon → vuln scan automatically for maximum coverage
+- **validate_finding**: Re-test and generate PoC scripts
+- **sync_intel**: Sync CVE/HackerOne feeds, generate test templates
+- **triage_finding**: AI-score findings, eliminate FPs
+- **headless_dom_analysis**: DOM XSS detection (innerHTML, eval, postMessage sinks)
+- **oob_listener**: Blind SSRF/XSS/SQLi via OOB callbacks
+- **waf_fingerprint**: Detect WAF + suggest bypass mutations
+- **proxy_intercept**: Burp-style traffic interception
+- **create_target**: Create new target workspace
+- **query_findings/query_targets/query_endpoints/query_approvals**: Database queries
+- **approve_finding/reject_finding**: Manage approval queue
 
 ${contextBlock}
 
 RULES:
-1. When asked to scan a target, call the appropriate tool immediately.
-2. After getting tool results, analyze and explain findings clearly.
-3. For complex tasks, chain multiple tools (e.g., recon → vuln scan → deep audit).
-4. Always provide actionable insights with CVSS scores and remediation.
-5. Use markdown formatting for readability.`;
+1. When asked to scan — CALL THE TOOLS IMMEDIATELY. Don't just describe what you'd do.
+2. For a new domain: create_target → run_recon → run_vuln_scan → analyze results
+3. After scans, EXPLAIN findings like a senior pentester writing a report
+4. Always provide: CVSS score, OWASP category, PoC steps, remediation
+5. If findings look like FPs, REJECT them and explain why
+6. Chain tools for complex tasks (recon → scan → deep audit → validate)
+7. Use markdown with clear severity badges: 🔴 CRITICAL, 🟠 HIGH, 🟡 MEDIUM, 🔵 LOW
+8. When user says "hunt" or "find bugs" — go FULL AGGRESSIVE mode with full_hunt`;
 
     // ─── AI Call with Tool Calling Loop (with provider fallback) ──
     let aiMessages = [
