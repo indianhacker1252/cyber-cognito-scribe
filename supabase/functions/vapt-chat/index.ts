@@ -579,6 +579,15 @@ async function getProviders(): Promise<AIProvider[]> {
         key: c.api_key,
         model: "gpt-4o-mini",
       });
+    } else if (c.provider === "ollama") {
+      // Local AI — api_key field stores the Ollama base URL
+      const ollamaUrl = c.api_key.endsWith("/") ? c.api_key.slice(0, -1) : c.api_key;
+      providers.push({
+        name: "ollama",
+        url: `${ollamaUrl}/v1/chat/completions`,
+        key: "ollama",
+        model: "llama3.1",
+      });
     }
   }
 
