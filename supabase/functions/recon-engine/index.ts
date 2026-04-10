@@ -67,28 +67,76 @@ async function enumerateSubdomains(domain: string): Promise<string[]> {
 
 // ─── 1b. Google Dorking for Subdomain & Param Discovery ───
 
+const DORK_CATEGORIES = {
+  subdomains: (d: string) => [
+    `site:*.${d}`,
+    `site:*.*.${d}`,
+  ],
+  sensitiveFiles: (d: string) => [
+    `site:${d} ext:xml | ext:json | ext:conf | ext:env | ext:yml`,
+    `site:${d} ext:sql | ext:bak | ext:log | ext:old | ext:swp`,
+    `site:${d} ext:php.bak | ext:asp.bak | ext:jsp.bak`,
+    `site:${d} intitle:"index of" | intitle:"directory listing"`,
+    `site:${d} filetype:pdf | filetype:xlsx | filetype:doc confidential`,
+  ],
+  authEndpoints: (d: string) => [
+    `site:${d} inurl:login | inurl:signin | inurl:auth`,
+    `site:${d} inurl:admin | inurl:panel | inurl:dashboard | inurl:cms`,
+    `site:${d} inurl:register | inurl:signup | inurl:forgot`,
+    `site:${d} inurl:oauth | inurl:sso | inurl:callback`,
+    `site:${d} inurl:token | inurl:jwt | inurl:session`,
+  ],
+  apiDiscovery: (d: string) => [
+    `site:${d} inurl:api | inurl:v1 | inurl:v2 | inurl:v3`,
+    `site:${d} inurl:graphql | inurl:graphiql`,
+    `site:${d} inurl:swagger | inurl:openapi | inurl:api-docs`,
+    `site:${d} inurl:rest | inurl:endpoint | inurl:webhook`,
+    `site:${d} inurl:ws:// | inurl:wss://`,
+  ],
+  injectableParams: (d: string) => [
+    `site:${d} inurl:php? | inurl:asp? | inurl:aspx? | inurl:jsp?`,
+    `site:${d} inurl:id= | inurl:uid= | inurl:pid= | inurl:nid=`,
+    `site:${d} inurl:file= | inurl:path= | inurl:page= | inurl:include=`,
+    `site:${d} inurl:redirect= | inurl:url= | inurl:next= | inurl:return=`,
+    `site:${d} inurl:q= | inurl:query= | inurl:search= | inurl:s=`,
+    `site:${d} inurl:sort= | inurl:order= | inurl:column= | inurl:dir=`,
+    `site:${d} inurl:action= | inurl:cmd= | inurl:exec= | inurl:command=`,
+    `site:${d} inurl:upload | inurl:import | inurl:export`,
+    `site:${d} inurl:debug= | inurl:test= | inurl:dev=`,
+  ],
+  infoLeak: (d: string) => [
+    `site:${d} "error" | "warning" | "stack trace" | "debug"`,
+    `site:${d} "mysql" | "syntax error" | "unexpected" | "ORA-"`,
+    `site:${d} "phpinfo()" | "server at" | "apache" | "nginx"`,
+    `site:${d} inurl:.git | inurl:.svn | inurl:.env | inurl:.htaccess`,
+    `"${d}" password | api_key | secret | token site:github.com | site:gitlab.com | site:pastebin.com`,
+  ],
+  cloudInfra: (d: string) => [
+    `site:s3.amazonaws.com "${d}"`,
+    `site:blob.core.windows.net "${d}"`,
+    `site:storage.googleapis.com "${d}"`,
+    `site:${d} inurl:aws | inurl:azure | inurl:gcp`,
+  ],
+};
+
 async function googleDorkDiscovery(domain: string): Promise<{
   subdomains: string[];
   paramUrls: Array<{ url: string; params: Record<string, string> }>;
   juicyPaths: string[];
+  dorkCategories: Record<string, number>;
 }> {
   const subdomains = new Set<string>();
   const paramUrls: Array<{ url: string; params: Record<string, string> }> = [];
   const juicyPaths: string[] = [];
+  const dorkCategories: Record<string, number> = {};
 
-  // Use multiple free search APIs/techniques
-  const dorkQueries = [
-    `site:*.${domain}`,                          // All subdomains
-    `site:${domain} inurl:php?`,                 // PHP params
-    `site:${domain} inurl:asp?`,                 // ASP params
-    `site:${domain} inurl:jsp?`,                 // JSP params
-    `site:${domain} inurl:api`,                  // API endpoints
-    `site:${domain} inurl:admin`,                // Admin panels
-    `site:${domain} inurl:login`,                // Login pages
-    `site:${domain} ext:xml | ext:json | ext:conf`, // Config files
-    `site:${domain} inurl:redirect | inurl:url= | inurl:next=`, // Open redirect params
-    `site:${domain} inurl:file= | inurl:path= | inurl:page=`,   // LFI params
-  ];
+  // Build all dork queries from all categories
+  const allDorks: string[] = [];
+  for (const [cat, fn] of Object.entries(DORK_CATEGORIES)) {
+    const queries = fn(domain);
+    dorkCategories[cat] = queries.length;
+    allDorks.push(...queries);
+  }
 
   // Use web.archive.org CDX API for param discovery (free, no API key needed)
   try {
@@ -167,6 +215,7 @@ async function googleDorkDiscovery(domain: string): Promise<{
     subdomains: [...subdomains],
     paramUrls: paramUrls.slice(0, 200),
     juicyPaths: [...new Set(juicyPaths)].slice(0, 50),
+    dorkCategories,
   };
 }
 
