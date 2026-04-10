@@ -13,6 +13,7 @@ import SystemHealth from "./pages/SystemHealth";
 import IntelFeed from "./pages/IntelFeed";
 import Settings from "./pages/Settings";
 import FalsePositives from "./pages/FalsePositives";
+import AttackVisualization from "./pages/AttackVisualization";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -34,6 +35,7 @@ const App = () => (
             <Route path="/intel-feed" element={<IntelFeed />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="/false-positives" element={<FalsePositives />} />
+            <Route path="/attack-viz" element={<AttackVisualization />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </Layout>
