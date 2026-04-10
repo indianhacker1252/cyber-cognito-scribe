@@ -605,29 +605,93 @@ async function callAIWithFallback(
   providers: AIProvider[]
 ): Promise<{ response: Response; providerUsed: string }> {
   for (const provider of providers) {
-    const payload = { ...body, model: provider.model };
-    const resp = await fetch(provider.url, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${provider.key}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(payload),
-    });
+    try {
+      let resp: Response;
 
-    if (resp.ok) return { response: resp, providerUsed: provider.name };
+      if (provider.name === "anthropic") {
+        // Anthropic uses a different API format — convert messages
+        const msgs = (body.messages as any[]) || [];
+        const systemMsg = msgs.find((m: any) => m.role === "system");
+        const nonSystemMsgs = msgs.filter((m: any) => m.role !== "system").map((m: any) => ({
+          role: m.role === "tool" ? "user" : m.role,
+          content: typeof m.content === "string" ? m.content : JSON.stringify(m.content),
+        }));
+        // Convert tools to Anthropic format
+        const tools = ((body.tools as any[]) || []).map((t: any) => ({
+          name: t.function.name,
+          description: t.function.description,
+          input_schema: t.function.parameters,
+        }));
+        resp = await fetch(provider.url, {
+          method: "POST",
+          headers: {
+            "x-api-key": provider.key,
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model: provider.model,
+            max_tokens: 4096,
+            system: systemMsg?.content || "",
+            messages: nonSystemMsgs,
+            ...(tools.length > 0 ? { tools } : {}),
+          }),
+        });
 
-    // Only fallback on 402 (credits exhausted) or 429 (rate limit)
-    if (resp.status === 402 || resp.status === 429) {
-      console.log(`Provider ${provider.name} returned ${resp.status}, trying next...`);
+        if (resp.ok) {
+          // Convert Anthropic response to OpenAI format
+          const anthropicData = await resp.json();
+          const textBlock = anthropicData.content?.find((b: any) => b.type === "text");
+          const toolBlocks = anthropicData.content?.filter((b: any) => b.type === "tool_use") || [];
+          const openAIFormat = {
+            choices: [{
+              message: {
+                role: "assistant",
+                content: textBlock?.text || "",
+                ...(toolBlocks.length > 0 ? {
+                  tool_calls: toolBlocks.map((tb: any) => ({
+                    id: tb.id,
+                    type: "function",
+                    function: { name: tb.name, arguments: JSON.stringify(tb.input) },
+                  })),
+                } : {}),
+              },
+            }],
+          };
+          return {
+            response: new Response(JSON.stringify(openAIFormat), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            }),
+            providerUsed: provider.name,
+          };
+        }
+      } else {
+        const payload = { ...body, model: provider.model };
+        resp = await fetch(provider.url, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${provider.key}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(payload),
+        });
+
+        if (resp.ok) return { response: resp, providerUsed: provider.name };
+      }
+
+      if (resp!.status === 402 || resp!.status === 429) {
+        console.log(`Provider ${provider.name} returned ${resp!.status}, trying next...`);
+        continue;
+      }
+
+      return { response: resp!, providerUsed: provider.name };
+    } catch (e) {
+      console.log(`Provider ${provider.name} failed: ${e}, trying next...`);
       continue;
     }
-
-    // Other errors — don't fallback, surface the error
-    return { response: resp, providerUsed: provider.name };
   }
 
-  // All providers exhausted
   return {
     response: new Response(JSON.stringify({ error: "All AI providers exhausted. Add API keys in Settings." }), {
       status: 503,
