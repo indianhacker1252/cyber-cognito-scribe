@@ -33,6 +33,13 @@ const PROVIDERS = [
     placeholder: "sk-...",
   },
   {
+    id: "anthropic",
+    name: "Anthropic Claude",
+    description: "Uses Claude 3.5 Sonnet. Get API key from Anthropic Console.",
+    link: "https://console.anthropic.com/settings/keys",
+    placeholder: "sk-ant-...",
+  },
+  {
     id: "ollama",
     name: "Local AI (Ollama)",
     description: "Connect to a local Ollama instance for offline VAPT analysis. Train it with your methodology.",
@@ -178,7 +185,7 @@ export default function Settings() {
       <Card className="border-border">
         <CardContent className="p-4">
           <p className="text-xs text-muted-foreground font-mono">
-            <strong>Fallback order:</strong> Lovable AI → Google Gemini → OpenAI. The system auto-switches when a 402 (credits exhausted) error is received.
+            <strong>Fallback order:</strong> Lovable AI → Google Gemini → Anthropic Claude → OpenAI → Ollama. The system auto-switches when a 402 (credits exhausted) or 429 (rate limited) error is received.
           </p>
         </CardContent>
       </Card>
