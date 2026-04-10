@@ -572,6 +572,13 @@ async function getProviders(): Promise<AIProvider[]> {
         key: c.api_key,
         model: "gemini-2.5-flash",
       });
+    } else if (c.provider === "anthropic") {
+      providers.push({
+        name: "anthropic",
+        url: "https://api.anthropic.com/v1/messages",
+        key: c.api_key,
+        model: "claude-sonnet-4-20250514",
+      });
     } else if (c.provider === "openai") {
       providers.push({
         name: "openai",
@@ -580,7 +587,6 @@ async function getProviders(): Promise<AIProvider[]> {
         model: "gpt-4o-mini",
       });
     } else if (c.provider === "ollama") {
-      // Local AI — api_key field stores the Ollama base URL
       const ollamaUrl = c.api_key.endsWith("/") ? c.api_key.slice(0, -1) : c.api_key;
       providers.push({
         name: "ollama",
