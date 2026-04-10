@@ -215,6 +215,7 @@ async function googleDorkDiscovery(domain: string): Promise<{
     subdomains: [...subdomains],
     paramUrls: paramUrls.slice(0, 200),
     juicyPaths: [...new Set(juicyPaths)].slice(0, 50),
+    dorkCategories,
   };
 }
 
