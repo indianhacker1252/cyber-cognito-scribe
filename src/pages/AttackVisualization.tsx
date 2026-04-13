@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { Card, CardContent } from "@/components/ui/card";
@@ -7,8 +7,61 @@ import { Progress } from "@/components/ui/progress";
 import {
   Shield, Crosshair, AlertTriangle, Zap, Lock, Globe, Server, Eye,
   ShieldCheck, ShieldOff, Activity, Layers, Target, Bug, Swords, Heart,
-  Flame, Skull, Crown, ArrowRight,
+  Flame, Skull, Crown, ArrowRight, Volume2, VolumeX,
 } from "lucide-react";
+
+// ── Sound FX Engine ──
+class SoundFX {
+  private ctx: AudioContext | null = null;
+  enabled = true;
+
+  private getCtx() {
+    if (!this.ctx) this.ctx = new AudioContext();
+    return this.ctx;
+  }
+
+  play(type: "hit" | "block" | "critical" | "ko" | "combo") {
+    if (!this.enabled) return;
+    try {
+      const ctx = this.getCtx();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+
+      const now = ctx.currentTime;
+      switch (type) {
+        case "hit":
+          osc.type = "sawtooth"; osc.frequency.setValueAtTime(200, now);
+          osc.frequency.exponentialRampToValueAtTime(80, now + 0.15);
+          gain.gain.setValueAtTime(0.15, now); gain.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
+          osc.start(now); osc.stop(now + 0.15); break;
+        case "block":
+          osc.type = "square"; osc.frequency.setValueAtTime(800, now);
+          osc.frequency.exponentialRampToValueAtTime(400, now + 0.1);
+          gain.gain.setValueAtTime(0.1, now); gain.gain.exponentialRampToValueAtTime(0.001, now + 0.1);
+          osc.start(now); osc.stop(now + 0.1); break;
+        case "critical":
+          osc.type = "sawtooth"; osc.frequency.setValueAtTime(150, now);
+          osc.frequency.exponentialRampToValueAtTime(50, now + 0.3);
+          gain.gain.setValueAtTime(0.2, now); gain.gain.exponentialRampToValueAtTime(0.001, now + 0.3);
+          osc.start(now); osc.stop(now + 0.3); break;
+        case "ko":
+          osc.type = "sawtooth"; osc.frequency.setValueAtTime(300, now);
+          osc.frequency.exponentialRampToValueAtTime(30, now + 0.8);
+          gain.gain.setValueAtTime(0.25, now); gain.gain.exponentialRampToValueAtTime(0.001, now + 0.8);
+          osc.start(now); osc.stop(now + 0.8); break;
+        case "combo":
+          osc.type = "triangle"; osc.frequency.setValueAtTime(400, now);
+          osc.frequency.exponentialRampToValueAtTime(800, now + 0.1);
+          gain.gain.setValueAtTime(0.12, now); gain.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
+          osc.start(now); osc.stop(now + 0.12); break;
+      }
+    } catch { /* audio blocked */ }
+  }
+}
+
+const sfx = new SoundFX();
 
 // ── Attack & Defense fighters data ──
 const ATTACKER_MOVES = [
@@ -49,6 +102,17 @@ export default function AttackVisualization() {
   const [battleLog, setBattleLog] = useState<string[]>([]);
   const [isAutoFight, setIsAutoFight] = useState(false);
   const [comboCount, setComboCount] = useState(0);
+  const [soundEnabled, setSoundEnabled] = useState(true);
+  const [shakeClass, setShakeClass] = useState("");
+  const arenaRef = useRef<HTMLDivElement>(null);
+
+  const triggerShake = useCallback((intensity: "light" | "heavy" | "ko") => {
+    const cls = intensity === "ko" ? "animate-shake-ko" : intensity === "heavy" ? "animate-shake-heavy" : "animate-shake-light";
+    setShakeClass(cls);
+    setTimeout(() => setShakeClass(""), intensity === "ko" ? 600 : 300);
+  }, []);
+
+  useEffect(() => { sfx.enabled = soundEnabled; }, [soundEnabled]);
 
   const { data: findings } = useQuery({
     queryKey: ["viz-findings"],
@@ -66,13 +130,12 @@ export default function AttackVisualization() {
     },
   });
 
-  // Kill chain auto-animation
   useEffect(() => {
     const interval = setInterval(() => setBattlePhase(p => (p + 1) % KILL_CHAIN.length), 4000);
     return () => clearInterval(interval);
   }, []);
 
-  // Auto-fight simulation
+  // Auto-fight
   useEffect(() => {
     if (!isAutoFight) return;
     const interval = setInterval(() => {
@@ -80,24 +143,38 @@ export default function AttackVisualization() {
       const countered = DEFENDER_MOVES.some(d => d.counter.includes(atk.id) && Math.random() > 0.4);
       if (countered) {
         const def = DEFENDER_MOVES.find(d => d.counter.includes(atk.id))!;
-        setAttackerHP(p => Math.max(0, p - Math.floor(def.power * 0.15)));
-        setBattleLog(l => [`🛡️ ${def.name} BLOCKED ${atk.name}! -${Math.floor(def.power * 0.15)}HP`, ...l].slice(0, 8));
+        const dmg = Math.floor(def.power * 0.15);
+        setAttackerHP(p => {
+          const next = Math.max(0, p - dmg);
+          if (next <= 0) { sfx.play("ko"); triggerShake("ko"); }
+          return next;
+        });
+        setBattleLog(l => [`🛡️ ${def.name} BLOCKED ${atk.name}! -${dmg}HP`, ...l].slice(0, 8));
         setComboCount(0);
+        sfx.play("block");
+        triggerShake("light");
       } else {
-        setDefenderHP(p => Math.max(0, p - Math.floor(atk.power * 0.12)));
-        setComboCount(c => c + 1);
-        setBattleLog(l => [`⚔️ ${atk.name} HIT! ${atk.combo} -${Math.floor(atk.power * 0.12)}HP ${comboCount > 2 ? "🔥COMBO x" + comboCount : ""}`, ...l].slice(0, 8));
+        const dmg = Math.floor(atk.power * 0.12);
+        setDefenderHP(p => {
+          const next = Math.max(0, p - dmg);
+          if (next <= 0) { sfx.play("ko"); triggerShake("ko"); }
+          return next;
+        });
+        setComboCount(c => {
+          const next = c + 1;
+          if (next > 2) sfx.play("combo");
+          return next;
+        });
+        setBattleLog(l => [`⚔️ ${atk.name} HIT! ${atk.combo} -${dmg}HP ${comboCount > 2 ? "🔥COMBO x" + comboCount : ""}`, ...l].slice(0, 8));
+        sfx.play(atk.power >= 90 ? "critical" : "hit");
+        triggerShake(atk.power >= 90 ? "heavy" : "light");
       }
     }, 1500);
     return () => clearInterval(interval);
-  }, [isAutoFight, comboCount]);
+  }, [isAutoFight, comboCount, triggerShake]);
 
-  // Reset fight
   const resetFight = useCallback(() => {
-    setAttackerHP(100);
-    setDefenderHP(100);
-    setBattleLog([]);
-    setComboCount(0);
+    setAttackerHP(100); setDefenderHP(100); setBattleLog([]); setComboCount(0);
   }, []);
 
   const executeAttack = useCallback((atkId: string) => {
@@ -107,17 +184,33 @@ export default function AttackVisualization() {
     if (countered) {
       const def = DEFENDER_MOVES.find(d => d.counter.includes(atkId))!;
       const dmg = Math.floor(def.power * 0.18);
-      setAttackerHP(p => Math.max(0, p - dmg));
+      setAttackerHP(p => {
+        const next = Math.max(0, p - dmg);
+        if (next <= 0) { sfx.play("ko"); triggerShake("ko"); }
+        return next;
+      });
       setBattleLog(l => [`🛡️ PARRIED! ${def.name} counters ${atk.name}! -${dmg}HP to attacker`, ...l].slice(0, 10));
       setComboCount(0);
+      sfx.play("block");
+      triggerShake("light");
     } else {
       const dmg = Math.floor(atk.power * 0.15);
-      setDefenderHP(p => Math.max(0, p - dmg));
-      setComboCount(c => c + 1);
+      setDefenderHP(p => {
+        const next = Math.max(0, p - dmg);
+        if (next <= 0) { sfx.play("ko"); triggerShake("ko"); }
+        return next;
+      });
+      setComboCount(c => {
+        const next = c + 1;
+        if (next > 1) sfx.play("combo");
+        return next;
+      });
       setBattleLog(l => [`⚔️ ${atk.name} LANDS! ${atk.combo} -${dmg}HP ${comboCount > 1 ? "🔥COMBO x" + (comboCount + 1) : ""}`, ...l].slice(0, 10));
+      sfx.play(atk.power >= 90 ? "critical" : "hit");
+      triggerShake(atk.power >= 90 ? "heavy" : "light");
     }
     setSelectedAttack(atkId);
-  }, [comboCount]);
+  }, [comboCount, triggerShake]);
 
   const stats = useMemo(() => {
     const confirmed = findings?.filter(f => f.validation_status === "confirmed").length || 0;
@@ -141,6 +234,13 @@ export default function AttackVisualization() {
         </div>
         <div className="flex gap-2">
           <button
+            onClick={() => { setSoundEnabled(!soundEnabled); }}
+            className="px-2 py-1.5 rounded font-mono text-[10px] border border-border text-muted-foreground hover:text-foreground transition-colors"
+            title={soundEnabled ? "Mute" : "Unmute"}
+          >
+            {soundEnabled ? <Volume2 className="h-3.5 w-3.5" /> : <VolumeX className="h-3.5 w-3.5" />}
+          </button>
+          <button
             onClick={() => { setIsAutoFight(!isAutoFight); if (!isAutoFight) resetFight(); }}
             className={`px-3 py-1.5 rounded font-mono text-[10px] font-bold border transition-all ${
               isAutoFight
@@ -157,15 +257,13 @@ export default function AttackVisualization() {
       </div>
 
       {/* ═══ BATTLE ARENA ═══ */}
-      <Card className="border-primary/30 bg-gradient-to-b from-card to-background overflow-hidden relative">
-        {/* Arena glow effects */}
+      <Card ref={arenaRef} className={`border-primary/30 bg-gradient-to-b from-card to-background overflow-hidden relative ${shakeClass}`}>
         <div className="absolute inset-0 pointer-events-none">
           <div className="absolute left-0 top-0 w-1/3 h-full bg-gradient-to-r from-destructive/5 to-transparent" />
           <div className="absolute right-0 top-0 w-1/3 h-full bg-gradient-to-l from-primary/5 to-transparent" />
         </div>
 
         <CardContent className="p-4 relative z-10">
-          {/* VS Header */}
           <div className="text-center mb-3">
             <span className="text-[9px] font-mono text-muted-foreground tracking-[0.3em]">— ROUND {battlePhase + 1} —</span>
           </div>
@@ -184,13 +282,7 @@ export default function AttackVisualization() {
                   <span className="text-destructive">{attackerHP}/100</span>
                 </div>
                 <div className="h-3 w-full rounded-full bg-muted overflow-hidden border border-destructive/30">
-                  <div
-                    className="h-full rounded-full transition-all duration-500"
-                    style={{
-                      width: `${attackerHP}%`,
-                      background: `linear-gradient(90deg, hsl(var(--destructive)), hsl(0, 100%, 70%))`,
-                    }}
-                  />
+                  <div className="h-full rounded-full transition-all duration-500" style={{ width: `${attackerHP}%`, background: `linear-gradient(90deg, hsl(var(--destructive)), hsl(0, 100%, 70%))` }} />
                 </div>
               </div>
               <div className="p-2 rounded border border-destructive/20 bg-destructive/5 min-h-[60px]">
@@ -232,13 +324,7 @@ export default function AttackVisualization() {
                   <span className="text-primary flex items-center gap-1">HP <Heart className="h-3 w-3" /></span>
                 </div>
                 <div className="h-3 w-full rounded-full bg-muted overflow-hidden border border-primary/30">
-                  <div
-                    className="h-full rounded-full transition-all duration-500"
-                    style={{
-                      width: `${defenderHP}%`,
-                      background: `linear-gradient(90deg, hsl(var(--primary)), hsl(160, 100%, 65%))`,
-                    }}
-                  />
+                  <div className="h-full rounded-full transition-all duration-500" style={{ width: `${defenderHP}%`, background: `linear-gradient(90deg, hsl(var(--primary)), hsl(160, 100%, 65%))` }} />
                 </div>
               </div>
               <div className="p-2 rounded border border-primary/20 bg-primary/5 min-h-[60px]">
@@ -269,9 +355,7 @@ export default function AttackVisualization() {
                 <Activity className="h-3 w-3" /> BATTLE LOG
               </p>
               {battleLog.map((log, i) => (
-                <p key={i} className={`text-[9px] font-mono ${i === 0 ? "text-foreground font-bold" : "text-muted-foreground"}`}>
-                  {log}
-                </p>
+                <p key={i} className={`text-[9px] font-mono ${i === 0 ? "text-foreground font-bold" : "text-muted-foreground"}`}>{log}</p>
               ))}
             </div>
           )}
@@ -314,7 +398,6 @@ export default function AttackVisualization() {
                     : "border-border bg-card hover:border-destructive/40"
                 }`}
               >
-                {/* Power bar */}
                 <div className="absolute top-0 left-0 right-0 h-0.5 rounded-t-lg overflow-hidden">
                   <div className="h-full bg-destructive/50" style={{ width: `${atk.power}%` }} />
                 </div>
@@ -335,7 +418,6 @@ export default function AttackVisualization() {
                     {count > 0 && <Badge className="bg-destructive/20 text-destructive border-destructive text-[7px] h-4">{count}</Badge>}
                   </div>
                 </div>
-                {/* Combo hint */}
                 <code className="block mt-1.5 text-[7px] font-mono text-destructive/50 truncate">{atk.combo}</code>
               </button>
             );
@@ -348,22 +430,13 @@ export default function AttackVisualization() {
         <Card className="border-accent/30 bg-gradient-to-r from-destructive/5 via-card to-primary/5 animate-fade-in">
           <CardContent className="p-4">
             <div className="grid grid-cols-[1fr_auto_1fr] gap-6">
-              {/* Attacker Detail */}
               <div>
-                <p className="text-xs font-mono font-bold text-destructive mb-2 flex items-center gap-1">
-                  <Skull className="h-3.5 w-3.5" /> ATTACK BREAKDOWN
-                </p>
+                <p className="text-xs font-mono font-bold text-destructive mb-2 flex items-center gap-1"><Skull className="h-3.5 w-3.5" /> ATTACK BREAKDOWN</p>
                 <p className="text-[10px] font-mono text-foreground/80 mb-2">{activeAttack.description}</p>
                 <div className="space-y-1.5">
-                  <div className="flex justify-between text-[9px] font-mono">
-                    <span className="text-muted-foreground">Power</span>
-                    <span className="text-destructive">{activeAttack.power}/100</span>
-                  </div>
+                  <div className="flex justify-between text-[9px] font-mono"><span className="text-muted-foreground">Power</span><span className="text-destructive">{activeAttack.power}/100</span></div>
                   <Progress value={activeAttack.power} className="h-1.5 [&>div]:bg-destructive" />
-                  <div className="flex justify-between text-[9px] font-mono">
-                    <span className="text-muted-foreground">Speed</span>
-                    <span className="text-cyber-amber">{activeAttack.speed}/100</span>
-                  </div>
+                  <div className="flex justify-between text-[9px] font-mono"><span className="text-muted-foreground">Speed</span><span className="text-cyber-amber">{activeAttack.speed}/100</span></div>
                   <Progress value={activeAttack.speed} className="h-1.5 [&>div]:bg-[hsl(var(--cyber-amber))]" />
                 </div>
                 <div className="mt-3 p-2 rounded bg-background/50 border border-destructive/20">
@@ -371,18 +444,12 @@ export default function AttackVisualization() {
                   <code className="text-[9px] font-mono text-destructive break-all">{activeAttack.combo}</code>
                 </div>
               </div>
-
-              {/* VS */}
               <div className="flex flex-col items-center justify-center">
                 <Swords className="h-6 w-6 text-accent animate-pulse" />
                 <span className="text-[8px] font-mono text-muted-foreground mt-1">MATCHUP</span>
               </div>
-
-              {/* Defender Detail */}
               <div>
-                <p className="text-xs font-mono font-bold text-primary mb-2 flex items-center gap-1">
-                  <ShieldCheck className="h-3.5 w-3.5" /> COUNTERMEASURES
-                </p>
+                <p className="text-xs font-mono font-bold text-primary mb-2 flex items-center gap-1"><ShieldCheck className="h-3.5 w-3.5" /> COUNTERMEASURES</p>
                 {activeDefenses.length > 0 ? (
                   <div className="space-y-2">
                     {activeDefenses.map(def => (
@@ -410,12 +477,10 @@ export default function AttackVisualization() {
         </Card>
       )}
 
-      {/* ═══ KILL CHAIN BATTLE FLOW ═══ */}
+      {/* ═══ KILL CHAIN ═══ */}
       <Card className="border-border bg-card overflow-hidden">
         <CardContent className="p-4">
-          <p className="text-[10px] font-mono text-primary mb-3 flex items-center gap-1">
-            <Activity className="h-3 w-3" /> CYBER KILL CHAIN — Attack Progression
-          </p>
+          <p className="text-[10px] font-mono text-primary mb-3 flex items-center gap-1"><Activity className="h-3 w-3" /> CYBER KILL CHAIN — Attack Progression</p>
           <div className="flex items-stretch gap-1 overflow-x-auto pb-2">
             {KILL_CHAIN.map((phase, idx) => {
               const isActive = idx === battlePhase;
@@ -426,10 +491,8 @@ export default function AttackVisualization() {
                   <button
                     onClick={() => setBattlePhase(idx)}
                     className={`relative rounded-lg border p-3 min-w-[160px] transition-all duration-500 text-left ${
-                      isActive
-                        ? "border-primary bg-primary/10 shadow-lg shadow-primary/20 scale-[1.03]"
-                        : isPast
-                        ? "border-primary/30 bg-primary/5 opacity-60"
+                      isActive ? "border-primary bg-primary/10 shadow-lg shadow-primary/20 scale-[1.03]"
+                        : isPast ? "border-primary/30 bg-primary/5 opacity-60"
                         : "border-border bg-card opacity-30 hover:opacity-60"
                     }`}
                   >
@@ -452,8 +515,6 @@ export default function AttackVisualization() {
               );
             })}
           </div>
-
-          {/* Phase Detail */}
           <div className="mt-3 grid grid-cols-2 gap-4 p-3 rounded-lg border border-border bg-background/50">
             <div className="space-y-1.5">
               <p className="text-[9px] font-mono font-bold text-destructive flex items-center gap-1"><Crosshair className="h-3 w-3" /> ATTACKER TECHNIQUES</p>
@@ -475,7 +536,7 @@ export default function AttackVisualization() {
         </CardContent>
       </Card>
 
-      {/* ═══ REAL DATA SCOREBOARD ═══ */}
+      {/* ═══ SCOREBOARD ═══ */}
       <div className="grid grid-cols-4 gap-2">
         {[
           { label: "Vulns Found", value: stats.total, icon: Bug, color: "destructive" },
