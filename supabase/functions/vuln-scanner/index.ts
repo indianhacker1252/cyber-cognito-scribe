@@ -496,10 +496,11 @@ async function runDifferentialTest(
           result.isVulnerable = true;
           result.confidence = "high";
           result.confidenceScore = 85;
-        } else if (trueResp.status !== falseResp.status && (trueResp.status === 200 || trueResp.status === 500)) {
+        } else if (trueResp.status !== falseResp.status && trueResp.status === 500 && Math.abs(trueBody.length - falseBody.length) > 200) {
+          // Only flag if status changed to 500 AND body significantly different — 200→200 is normal
           result.isVulnerable = true;
           result.confidence = "low";
-          result.confidenceScore = 35;
+          result.confidenceScore = 30;
         }
       } else if (vulnClass === "idor" || vulnClass === "privilege-escalation") {
         if (trueResp.status === 200 && falseResp.status === 200) {
@@ -575,7 +576,15 @@ async function runDifferentialTest(
 
         result.intruderResults = intruderResults;
 
-        const successfulIntruder = intruderResults.filter((ir) => ir.status === 200 || ir.status === 500).length;
+        // Only count intruder hits where response differs significantly from baseline
+        const successfulIntruder = intruderResults.filter((ir) => {
+          // 2xx alone is NOT evidence — most apps return 200 for any input
+          // Require significant length difference from baseline to count
+          const baseLen = result.baseline.length;
+          const lenDiff = Math.abs(ir.length - baseLen);
+          const lenRatio = lenDiff / Math.max(baseLen, 1);
+          return (ir.status === 200 && lenRatio > 0.25) || (ir.status === 500 && lenRatio > 0.1);
+        }).length;
         if (successfulIntruder >= 2) {
           result.confidenceScore = Math.min(result.confidenceScore + 15, 99);
           if (result.confidenceScore >= 80) result.confidence = "high";
