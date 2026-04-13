@@ -496,10 +496,11 @@ async function runDifferentialTest(
           result.isVulnerable = true;
           result.confidence = "high";
           result.confidenceScore = 85;
-        } else if (trueResp.status !== falseResp.status && (trueResp.status === 200 || trueResp.status === 500)) {
+        } else if (trueResp.status !== falseResp.status && trueResp.status === 500 && Math.abs(trueBody.length - falseBody.length) > 200) {
+          // Only flag if status changed to 500 AND body significantly different — 200→200 is normal
           result.isVulnerable = true;
           result.confidence = "low";
-          result.confidenceScore = 35;
+          result.confidenceScore = 30;
         }
       } else if (vulnClass === "idor" || vulnClass === "privilege-escalation") {
         if (trueResp.status === 200 && falseResp.status === 200) {
