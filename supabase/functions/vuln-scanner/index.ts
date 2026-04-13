@@ -575,7 +575,15 @@ async function runDifferentialTest(
 
         result.intruderResults = intruderResults;
 
-        const successfulIntruder = intruderResults.filter((ir) => ir.status === 200 || ir.status === 500).length;
+        // Only count intruder hits where response differs significantly from baseline
+        const successfulIntruder = intruderResults.filter((ir) => {
+          // 2xx alone is NOT evidence — most apps return 200 for any input
+          // Require significant length difference from baseline to count
+          const baseLen = result.baseline.length;
+          const lenDiff = Math.abs(ir.length - baseLen);
+          const lenRatio = lenDiff / Math.max(baseLen, 1);
+          return (ir.status === 200 && lenRatio > 0.25) || (ir.status === 500 && lenRatio > 0.1);
+        }).length;
         if (successfulIntruder >= 2) {
           result.confidenceScore = Math.min(result.confidenceScore + 15, 99);
           if (result.confidenceScore >= 80) result.confidence = "high";
