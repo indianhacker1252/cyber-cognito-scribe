@@ -50,6 +50,7 @@ export default function ValidationModal({ open, onOpenChange, finding, source }:
       const body = source === "approval" ? { approvalId: finding.id } : { findingId: finding.id };
       const { data, error } = await supabase.functions.invoke("generate-poc", { body });
       if (error) throw error;
+      if (data?.ok === false) throw new Error(data.error || "Generation failed");
       if (data?.error) throw new Error(data.error);
       setScript(data.script || "");
       toast.success("PoC script generated");
@@ -80,6 +81,7 @@ export default function ValidationModal({ open, onOpenChange, finding, source }:
         },
       });
       if (error) throw error;
+      if (data?.ok === false) throw new Error(data.error || "Validation failed");
       if (data?.error) throw new Error(data.error);
 
       setTerminalOutput(data.terminalOutput || "No output captured.");
@@ -107,6 +109,7 @@ export default function ValidationModal({ open, onOpenChange, finding, source }:
         body: { findingId: evidencePackageId, action: "report" },
       });
       if (error) throw error;
+      if (data?.ok === false) throw new Error(data.error || "Report failed");
       if (data?.error) throw new Error(data.error);
 
       setReport(data.report || "Report generation failed.");

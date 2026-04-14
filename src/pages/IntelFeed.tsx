@@ -43,7 +43,7 @@ export default function IntelFeed() {
   async function loadAll() {
     setLoading(true);
     const [feedData, notifData, histData, syncData] = await Promise.all([
-      getIntelFeeds({ limit: 200 }),
+      getIntelFeeds({ limit: 1000 }),
       fetchUnreadNotifications(50),
       getSyncHistory(20),
       getLatestSyncStatus(),

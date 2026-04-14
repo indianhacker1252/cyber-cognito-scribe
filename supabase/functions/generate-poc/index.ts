@@ -7,16 +7,20 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
+function respond(ok: boolean, payload: Record<string, unknown>): Response {
+  return new Response(JSON.stringify({ ok, ...payload }), {
+    status: 200,
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
+  });
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
   try {
     const { findingId, approvalId } = await req.json();
     if (!findingId && !approvalId) {
-      return new Response(JSON.stringify({ error: "findingId or approvalId required" }), {
-        status: 400,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+      return respond(false, { error: "findingId or approvalId required" });
     }
 
     const db = createClient(
@@ -24,7 +28,6 @@ serve(async (req) => {
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
     );
 
-    // Fetch finding details
     let finding: any = null;
     let approval: any = null;
 
@@ -40,18 +43,12 @@ serve(async (req) => {
 
     const source = approval || finding;
     if (!source) {
-      return new Response(JSON.stringify({ error: "Finding not found" }), {
-        status: 404,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+      return respond(false, { error: "Finding not found" });
     }
 
     const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
     if (!LOVABLE_API_KEY) {
-      return new Response(JSON.stringify({ error: "AI not configured" }), {
-        status: 500,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+      return respond(false, { error: "AI not configured. Add API key in Settings.", diagnostics: { error_stage: "ai_config" } });
     }
 
     const domain = source.target_workspaces?.domain || "target.example.com";
@@ -85,7 +82,7 @@ Return ONLY the Python script, no markdown fences.`;
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "google/gemini-3-flash-preview",
+        model: "google/gemini-2.5-flash",
         messages: [
           { role: "system", content: "You are a professional penetration tester writing safe, non-destructive PoC validation scripts. Return only executable Python code." },
           { role: "user", content: prompt },
@@ -96,18 +93,12 @@ Return ONLY the Python script, no markdown fences.`;
     if (!resp.ok) {
       const status = resp.status;
       if (status === 429) {
-        return new Response(JSON.stringify({ error: "Rate limited. Please try again shortly." }), {
-          status: 429,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
+        return respond(false, { error: "Rate limited. Please try again in a few seconds.", diagnostics: { error_stage: "rate_limit" } });
       }
       if (status === 402) {
-        return new Response(JSON.stringify({ error: "AI credits exhausted. Add funds in Settings." }), {
-          status: 402,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
+        return respond(false, { error: "AI credits exhausted. Please add funds in Settings → Usage.", diagnostics: { error_stage: "credits" } });
       }
-      throw new Error(`AI gateway error: ${status}`);
+      return respond(false, { error: `AI gateway error: ${status}`, diagnostics: { error_stage: "ai_gateway", status } });
     }
 
     const data = await resp.json();
@@ -116,14 +107,9 @@ Return ONLY the Python script, no markdown fences.`;
     // Clean up markdown fences if present
     script = script.replace(/^```python\n?/m, "").replace(/^```\n?/m, "").replace(/```$/m, "").trim();
 
-    return new Response(JSON.stringify({ script, language: "python", finding: source }), {
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    return respond(true, { script, language: "python", finding: source });
   } catch (e) {
     console.error("generate-poc error:", e);
-    return new Response(JSON.stringify({ error: e instanceof Error ? e.message : "Unknown error" }), {
-      status: 500,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    return respond(false, { error: e instanceof Error ? e.message : "Unknown error", diagnostics: { error_stage: "exception" } });
   }
 });

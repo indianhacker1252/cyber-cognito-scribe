@@ -114,18 +114,32 @@ export default function AttackVisualization() {
 
   useEffect(() => { sfx.enabled = soundEnabled; }, [soundEnabled]);
 
-  const { data: findings } = useQuery({
-    queryKey: ["viz-findings"],
+  const { data: targets } = useQuery({
+    queryKey: ["viz-targets"],
     queryFn: async () => {
-      const { data } = await supabase.from("vulnerability_findings").select("severity, title, confidence_score, validation_status").limit(200);
+      const { data } = await supabase.from("target_workspaces").select("id, name, domain, status").order("created_at", { ascending: false });
+      return data || [];
+    },
+  });
+
+  const [selectedTarget, setSelectedTarget] = useState<string | null>(null);
+
+  const { data: findings } = useQuery({
+    queryKey: ["viz-findings", selectedTarget],
+    queryFn: async () => {
+      let query = supabase.from("vulnerability_findings").select("severity, title, confidence_score, validation_status, target_id, created_at");
+      if (selectedTarget) query = query.eq("target_id", selectedTarget);
+      const { data } = await query.order("created_at", { ascending: false }).limit(500);
       return data || [];
     },
   });
 
   const { data: approvals } = useQuery({
-    queryKey: ["viz-approvals"],
+    queryKey: ["viz-approvals", selectedTarget],
     queryFn: async () => {
-      const { data } = await supabase.from("pending_approvals").select("severity, finding_type, confidence_score, status").limit(200);
+      let query = supabase.from("pending_approvals").select("severity, finding_type, confidence_score, status, target_id");
+      if (selectedTarget) query = query.eq("target_id", selectedTarget);
+      const { data } = await query.limit(500);
       return data || [];
     },
   });
@@ -232,7 +246,20 @@ export default function AttackVisualization() {
           </h1>
           <p className="text-[10px] font-mono text-muted-foreground">Attack vs Defense — Interactive Combat Visualization</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 items-center">
+          {/* Target Selector */}
+          {targets && targets.length > 0 && (
+            <select
+              value={selectedTarget || ""}
+              onChange={(e) => setSelectedTarget(e.target.value || null)}
+              className="bg-background border border-border rounded px-2 py-1 text-[10px] font-mono text-foreground max-w-[180px]"
+            >
+              <option value="">All Targets</option>
+              {targets.map((t: any) => (
+                <option key={t.id} value={t.id}>{t.name} {t.domain ? `(${t.domain})` : ""}</option>
+              ))}
+            </select>
+          )}
           <button
             onClick={() => { setSoundEnabled(!soundEnabled); }}
             className="px-2 py-1.5 rounded font-mono text-[10px] border border-border text-muted-foreground hover:text-foreground transition-colors"
