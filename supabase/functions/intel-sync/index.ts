@@ -418,8 +418,8 @@ serve(async (req) => {
 
     // Step 1: Fetch from all sources
     const [ghReports, edbReports] = await Promise.all([
-      fetchGitHubAdvisories(50),
-      fetchExploitDB(50),
+      fetchGitHubAdvisories(100),
+      fetchExploitDB(100),
     ]);
     const allReports = [...ghReports, ...edbReports];
     const reportsFetched = allReports.length;
