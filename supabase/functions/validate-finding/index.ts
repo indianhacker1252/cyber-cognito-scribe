@@ -7,8 +7,13 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
-// Forbidden patterns - never execute scripts containing these
-// These are narrowly scoped to avoid false positives on legitimate PoC scripts
+function respond(ok: boolean, payload: Record<string, unknown>): Response {
+  return new Response(JSON.stringify({ ok, ...payload }), {
+    status: 200,
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
+  });
+}
+
 const FORBIDDEN_PATTERNS = [
   /drop\s+table/i, /truncate\s+table/i, /delete\s+from/i, /rm\s+-rf/i,
   /shutdown/i, /xp_cmdshell/i,
@@ -36,28 +41,19 @@ serve(async (req) => {
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
     );
 
-    // Action: "validate" - simulate execution and generate report
     if (action === "validate") {
       if (!script) {
-        return new Response(JSON.stringify({ error: "Script is required" }), {
-          status: 400,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
+        return respond(false, { error: "Script is required" });
       }
 
-      // Safety check
       const safety = isScriptSafe(script);
       if (!safety.safe) {
-        return new Response(JSON.stringify({
+        return respond(false, {
           error: `Script failed safety validation: ${safety.reason}`,
           terminalOutput: `[SECURITY] Script rejected: ${safety.reason}\n[ABORT] Validation halted.`,
-        }), {
-          status: 400,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
 
-      // Simulate validation execution with AI analysis
       const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
       let terminalOutput = "";
       let validationResult = "inconclusive";
@@ -70,7 +66,7 @@ serve(async (req) => {
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
-            model: "google/gemini-3-flash-preview",
+            model: "google/gemini-2.5-flash",
             messages: [
               {
                 role: "system",
@@ -94,8 +90,6 @@ Format the output exactly like a terminal session with timestamps. Be realistic 
         if (resp.ok) {
           const data = await resp.json();
           terminalOutput = data.choices?.[0]?.message?.content || "";
-          
-          // Determine result from output
           const lower = terminalOutput.toLowerCase();
           if (lower.includes("confirmed") || lower.includes("vulnerable") || lower.includes("verified")) {
             validationResult = "confirmed";
@@ -104,13 +98,19 @@ Format the output exactly like a terminal session with timestamps. Be realistic 
           } else {
             validationResult = "inconclusive";
           }
+        } else if (resp.status === 429) {
+          return respond(false, { error: "Rate limited. Try again shortly.", diagnostics: { error_stage: "rate_limit" } });
+        } else if (resp.status === 402) {
+          return respond(false, { error: "AI credits exhausted. Add funds in Settings.", diagnostics: { error_stage: "credits" } });
+        } else {
+          terminalOutput = `[WARN] AI analysis returned ${resp.status} — manual review required`;
+          validationResult = "inconclusive";
         }
       } else {
         terminalOutput = `[INFO] Validation engine initialized\n[WARN] AI analysis unavailable - manual review required\n[INFO] Script passed safety checks\n[INFO] Validation status: requires manual verification`;
         validationResult = "inconclusive";
       }
 
-      // Store evidence package
       const { data: pkg, error: pkgError } = await db.from("evidence_packages").insert({
         finding_id: findingId || null,
         approval_id: approvalId || null,
@@ -125,46 +125,28 @@ Format the output exactly like a terminal session with timestamps. Be realistic 
 
       if (pkgError) throw pkgError;
 
-      return new Response(JSON.stringify({
-        terminalOutput,
-        validationResult,
-        evidencePackageId: pkg.id,
-      }), {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+      return respond(true, { terminalOutput, validationResult, evidencePackageId: pkg.id });
     }
 
-    // Action: "report" - generate compliance report
     if (action === "report") {
       const { data: pkg } = await db.from("evidence_packages").select("*").eq("id", findingId).single();
       if (!pkg) {
-        return new Response(JSON.stringify({ error: "Evidence package not found" }), {
-          status: 404,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
+        return respond(false, { error: "Evidence package not found" });
       }
 
       const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
       if (!LOVABLE_API_KEY) {
-        return new Response(JSON.stringify({ error: "AI not configured" }), {
-          status: 500,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
+        return respond(false, { error: "AI not configured" });
       }
 
-      // Fetch the related finding for context
       let findingContext = "";
       if (pkg.finding_id) {
         const { data: f } = await db.from("vulnerability_findings").select("*, target_workspaces(name, domain)").eq("id", pkg.finding_id).single();
-        if (f) {
-          findingContext = `Title: ${f.title}\nSeverity: ${f.severity}\nCVSS: ${f.cvss_score}\nDescription: ${f.description}\nTarget: ${f.target_workspaces?.domain}`;
-        }
+        if (f) findingContext = `Title: ${f.title}\nSeverity: ${f.severity}\nCVSS: ${f.cvss_score}\nDescription: ${f.description}\nTarget: ${f.target_workspaces?.domain}`;
       }
       if (pkg.approval_id) {
         const { data: a } = await db.from("pending_approvals").select("*, target_workspaces(name, domain)").eq("id", pkg.approval_id).single();
-        if (a) {
-          findingContext = `Title: ${a.title}\nSeverity: ${a.severity}\nCVSS: ${a.cvss_score}\nDescription: ${a.description}\nTarget: ${a.target_workspaces?.domain}`;
-        }
+        if (a) findingContext = `Title: ${a.title}\nSeverity: ${a.severity}\nCVSS: ${a.cvss_score}\nDescription: ${a.description}\nTarget: ${a.target_workspaces?.domain}`;
       }
 
       const resp = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
@@ -174,7 +156,7 @@ Format the output exactly like a terminal session with timestamps. Be realistic 
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          model: "google/gemini-3-flash-preview",
+          model: "google/gemini-2.5-flash",
           messages: [
             {
               role: "system",
@@ -182,48 +164,29 @@ Format the output exactly like a terminal session with timestamps. Be realistic 
             },
             {
               role: "user",
-              content: `Generate a professional security remediation report based on the following validated finding:
-
-${findingContext}
-
-Validation Script Used:
-${pkg.poc_script?.slice(0, 2000) || "N/A"}
-
-Terminal Output:
-${pkg.terminal_output?.slice(0, 2000) || "N/A"}
-
-Validation Result: ${pkg.validation_status}`,
+              content: `Generate a professional security remediation report based on the following validated finding:\n\n${findingContext}\n\nValidation Script Used:\n${pkg.poc_script?.slice(0, 2000) || "N/A"}\n\nTerminal Output:\n${pkg.terminal_output?.slice(0, 2000) || "N/A"}\n\nValidation Result: ${pkg.validation_status}`,
             },
           ],
         }),
       });
 
       if (!resp.ok) {
-        if (resp.status === 429) return new Response(JSON.stringify({ error: "Rate limited" }), { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-        if (resp.status === 402) return new Response(JSON.stringify({ error: "Credits exhausted" }), { status: 402, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-        throw new Error(`AI error: ${resp.status}`);
+        if (resp.status === 429) return respond(false, { error: "Rate limited" });
+        if (resp.status === 402) return respond(false, { error: "Credits exhausted" });
+        return respond(false, { error: `AI error: ${resp.status}` });
       }
 
       const data = await resp.json();
       const report = data.choices?.[0]?.message?.content || "Report generation failed.";
 
-      // Update evidence package with report
       await db.from("evidence_packages").update({ report_markdown: report }).eq("id", pkg.id);
 
-      return new Response(JSON.stringify({ report, evidencePackageId: pkg.id }), {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+      return respond(true, { report, evidencePackageId: pkg.id });
     }
 
-    return new Response(JSON.stringify({ error: "Invalid action. Use 'validate' or 'report'" }), {
-      status: 400,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    return respond(false, { error: "Invalid action. Use 'validate' or 'report'" });
   } catch (e) {
     console.error("validate-finding error:", e);
-    return new Response(JSON.stringify({ error: e instanceof Error ? e.message : "Unknown error" }), {
-      status: 500,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    return respond(false, { error: e instanceof Error ? e.message : "Unknown error" });
   }
 });
