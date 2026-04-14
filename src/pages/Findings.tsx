@@ -177,7 +177,7 @@ export default function Findings() {
       </div>
 
       {/* Target Filter Bar */}
-      {targetNames.length > 1 && (
+      {targetNames.length > 0 && (
         <div className="flex items-center gap-2 flex-wrap">
           <Filter className="h-3.5 w-3.5 text-muted-foreground" />
           <span className="text-[10px] font-mono text-muted-foreground">Filter by target:</span>
