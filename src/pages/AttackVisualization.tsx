@@ -114,18 +114,32 @@ export default function AttackVisualization() {
 
   useEffect(() => { sfx.enabled = soundEnabled; }, [soundEnabled]);
 
-  const { data: findings } = useQuery({
-    queryKey: ["viz-findings"],
+  const { data: targets } = useQuery({
+    queryKey: ["viz-targets"],
     queryFn: async () => {
-      const { data } = await supabase.from("vulnerability_findings").select("severity, title, confidence_score, validation_status").limit(200);
+      const { data } = await supabase.from("target_workspaces").select("id, name, domain, status").order("created_at", { ascending: false });
+      return data || [];
+    },
+  });
+
+  const [selectedTarget, setSelectedTarget] = useState<string | null>(null);
+
+  const { data: findings } = useQuery({
+    queryKey: ["viz-findings", selectedTarget],
+    queryFn: async () => {
+      let query = supabase.from("vulnerability_findings").select("severity, title, confidence_score, validation_status, target_id, created_at");
+      if (selectedTarget) query = query.eq("target_id", selectedTarget);
+      const { data } = await query.order("created_at", { ascending: false }).limit(500);
       return data || [];
     },
   });
 
   const { data: approvals } = useQuery({
-    queryKey: ["viz-approvals"],
+    queryKey: ["viz-approvals", selectedTarget],
     queryFn: async () => {
-      const { data } = await supabase.from("pending_approvals").select("severity, finding_type, confidence_score, status").limit(200);
+      let query = supabase.from("pending_approvals").select("severity, finding_type, confidence_score, status, target_id");
+      if (selectedTarget) query = query.eq("target_id", selectedTarget);
+      const { data } = await query.limit(500);
       return data || [];
     },
   });
