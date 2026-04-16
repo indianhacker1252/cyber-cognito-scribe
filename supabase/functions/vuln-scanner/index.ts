@@ -1101,6 +1101,123 @@ serve(async (req) => {
       }
     }
 
+    // ── Step 3.9: AI Bug Bounty Reasoning Loop ──────────────
+    // AI analyzes all results so far, identifies weak spots, and generates
+    // targeted follow-up tests — like a real bug bounty hunter would.
+    if (!isTimedOut()) {
+      const LOVABLE_KEY = Deno.env.get("LOVABLE_API_KEY");
+      if (LOVABLE_KEY && diffResults.length > 0) {
+        await log(db, targetId, taskId, "thought", "🧠 AI Reasoning Loop: Analyzing responses to chain findings & adapt payloads like a bug bounty hunter");
+
+        const interestingResponses = diffResults
+          .filter(r => r.isVulnerable || r.mutated.status === 500 || Math.abs(r.mutated.length - r.baseline.length) > 100)
+          .slice(0, 8);
+
+        if (interestingResponses.length > 0) {
+          try {
+            const reasoningResp = await safeFetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+              method: "POST",
+              headers: { Authorization: `Bearer ${LOVABLE_KEY}`, "Content-Type": "application/json" },
+              body: JSON.stringify({
+                model: "google/gemini-3-flash-preview",
+                messages: [
+                  { role: "system", content: `You are an elite bug bounty hunter analyzing scan results. Think like a black-hat hacker finding real bugs for bounties. Analyze the responses and:
+1. Identify patterns suggesting deeper vulnerabilities (error messages leaking info, status code anomalies, response size patterns)
+2. Suggest chained attacks (e.g., IDOR + info leak = account takeover)
+3. Generate 3-5 NEW targeted payloads based on what the responses reveal
+4. Identify parameters that deserve deeper fuzzing based on how the app responded
+5. Look for logic flaws that automated scanners miss
+
+Return via the tool. Each follow-up test should be a SPECIFIC payload for a SPECIFIC parameter with reasoning.` },
+                  { role: "user", content: `Target: ${target.domain}\nTech Stack: ${JSON.stringify(techStack)}\n\nScan Results (${interestingResponses.length} interesting responses):\n${interestingResponses.map((r, i) => `${i+1}. ${r.vulnClass} on param="${vulnChecks.find(c => c.url === r.requestData.url)?.paramName || "?"}" at ${r.requestData.url}\n   Status: ${r.baseline.status}→${r.mutated.status} | Size: ${r.baseline.length}→${r.mutated.length}\n   Payload: ${r.truePayload.slice(0,100)}\n   Response snippet: ${r.mutated.bodySnippet?.slice(0,150) || "N/A"}\n   Confidence: ${r.confidenceScore}%`).join("\n\n")}` },
+                ],
+                tools: [{
+                  type: "function",
+                  function: {
+                    name: "report_reasoning",
+                    description: "Report bug bounty reasoning analysis and follow-up tests",
+                    parameters: {
+                      type: "object",
+                      properties: {
+                        chainedAttacks: { type: "array", items: { type: "object", properties: { chain: { type: "string" }, impact: { type: "string" }, likelihood: { type: "string" } }, required: ["chain", "impact", "likelihood"] } },
+                        followUpTests: { type: "array", items: { type: "object", properties: { paramName: { type: "string" }, payload: { type: "string" }, vulnClass: { type: "string" }, reasoning: { type: "string" } }, required: ["paramName", "payload", "vulnClass", "reasoning"] } },
+                        logicFlaws: { type: "array", items: { type: "string" } },
+                        summary: { type: "string" },
+                      },
+                      required: ["followUpTests", "summary"],
+                    },
+                  },
+                }],
+                tool_choice: { type: "function", function: { name: "report_reasoning" } },
+              }),
+            }, 15000);
+
+            if (reasoningResp.ok) {
+              const rData = await reasoningResp.json();
+              const tc = rData.choices?.[0]?.message?.tool_calls?.[0];
+              if (tc) {
+                const reasoning = JSON.parse(tc.function.arguments);
+                await log(db, targetId, taskId, "thought", `🧠 AI Hunter Summary: ${reasoning.summary}`);
+
+                // Log chained attack opportunities
+                for (const chain of (reasoning.chainedAttacks || []).slice(0, 3)) {
+                  await log(db, targetId, taskId, "result", `🔗 Chain Attack: ${chain.chain} | Impact: ${chain.impact} | Likelihood: ${chain.likelihood}`);
+                }
+
+                // Log logic flaws
+                for (const flaw of (reasoning.logicFlaws || []).slice(0, 3)) {
+                  await log(db, targetId, taskId, "result", `🧩 Logic Flaw: ${flaw}`);
+                }
+
+                // Execute AI-generated follow-up tests
+                let followUpHits = 0;
+                for (const test of (reasoning.followUpTests || []).slice(0, 5)) {
+                  if (isTimedOut()) break;
+                  if (!isSafePayload(test.payload)) continue;
+
+                  // Find matching endpoint
+                  const matchEp = endpoints?.find(ep => {
+                    const params = (ep.parameters as Record<string, string>) || {};
+                    return Object.keys(params).some(p => p.toLowerCase() === test.paramName.toLowerCase());
+                  });
+                  if (!matchEp) continue;
+
+                  await log(db, targetId, taskId, "action", `🎯 AI Follow-up: Testing ${test.paramName} for ${test.vulnClass} — ${test.reasoning.slice(0, 80)}`);
+
+                  const followResult = await runDifferentialTest(matchEp.url, test.paramName, (matchEp.parameters as Record<string,string>)?.[test.paramName] || "", test.vulnClass);
+                  if (followResult) {
+                    diffResults.push(followResult);
+                    if (followResult.isVulnerable) {
+                      followUpHits++;
+                      await log(db, targetId, taskId, "result", `🔴 AI Follow-up HIT: ${test.vulnClass} on ${test.paramName} (${followResult.confidenceScore}%) — ${test.reasoning.slice(0,60)}`);
+                      experienceRecords.push({
+                        target_id: targetId, tech_stack: techStack, vuln_class: test.vulnClass,
+                        payload_used: test.payload, http_method: "GET",
+                        response_status: followResult.mutated.status, response_length: followResult.mutated.length,
+                        response_snippet: followResult.mutated.bodySnippet?.slice(0, 200) || null,
+                        outcome: "confirmed", confidence_score: followResult.confidenceScore,
+                        reward_score: REWARD_TABLE["true_positive_confirmed"] || 10,
+                        metadata: { source: "ai_reasoning_loop", reasoning: test.reasoning },
+                      });
+                    }
+                  }
+                  await new Promise(r => setTimeout(r, 100));
+                }
+
+                if (followUpHits > 0) {
+                  await log(db, targetId, taskId, "result", `🧠 AI Reasoning Loop: ${followUpHits} new vulnerabilities discovered from AI-directed follow-up tests`);
+                } else {
+                  await log(db, targetId, taskId, "info", `🧠 AI Reasoning Loop: No additional vulns from follow-up — target appears hardened`);
+                }
+              }
+            }
+          } catch (e) {
+            await log(db, targetId, taskId, "error", `AI Reasoning Loop error: ${e instanceof Error ? e.message : "unknown"}`);
+          }
+        }
+      }
+    }
+
     // Phase 8: Batch store all experiences
     if (experienceRecords.length > 0) {
       await db.from("experience_vault").insert(experienceRecords);
