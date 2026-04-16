@@ -1123,23 +1123,50 @@ serve(async (req) => {
                 messages: [
                   { role: "system", content: `You are an elite bug bounty hunter analyzing scan results. Think like a black-hat hacker finding real bugs for bounties. Analyze the responses and:
 1. Identify patterns suggesting deeper vulnerabilities (error messages leaking info, status code anomalies, response size patterns)
-2. Suggest chained attacks (e.g., IDOR + info leak = account takeover)
+2. Suggest chained attacks — each chain must be a CONCRETE multi-step sequence with specific payloads for each step. Example: Step 1: IDOR enumerate user IDs via /api/user?id=1..100, Step 2: For each valid ID, test privilege escalation via role=admin
 3. Generate 3-5 NEW targeted payloads based on what the responses reveal
 4. Identify parameters that deserve deeper fuzzing based on how the app responded
 5. Look for logic flaws that automated scanners miss
 
-Return via the tool. Each follow-up test should be a SPECIFIC payload for a SPECIFIC parameter with reasoning.` },
-                  { role: "user", content: `Target: ${target.domain}\nTech Stack: ${JSON.stringify(techStack)}\n\nScan Results (${interestingResponses.length} interesting responses):\n${interestingResponses.map((r, i) => `${i+1}. ${r.vulnClass} on param="${vulnChecks.find(c => c.url === r.requestData.url)?.paramName || "?"}" at ${r.requestData.url}\n   Status: ${r.baseline.status}→${r.mutated.status} | Size: ${r.baseline.length}→${r.mutated.length}\n   Payload: ${r.truePayload.slice(0,100)}\n   Response snippet: ${r.mutated.bodySnippet?.slice(0,150) || "N/A"}\n   Confidence: ${r.confidenceScore}%`).join("\n\n")}` },
+Return via the tool. Each chain step must have a specific URL path, parameter, and payload to execute.` },
+                  { role: "user", content: `Target: ${target.domain}\nTech Stack: ${JSON.stringify(techStack)}\n\nEndpoints available:\n${(endpoints || []).slice(0, 10).map(ep => `  ${ep.url} params=${JSON.stringify(ep.parameters || {})}`).join("\n")}\n\nScan Results (${interestingResponses.length} interesting responses):\n${interestingResponses.map((r, i) => `${i+1}. ${r.vulnClass} on param="${vulnChecks.find(c => c.url === r.requestData.url)?.paramName || "?"}" at ${r.requestData.url}\n   Status: ${r.baseline.status}→${r.mutated.status} | Size: ${r.baseline.length}→${r.mutated.length}\n   Payload: ${r.truePayload.slice(0,100)}\n   Response snippet: ${r.mutated.bodySnippet?.slice(0,150) || "N/A"}\n   Confidence: ${r.confidenceScore}%`).join("\n\n")}` },
                 ],
                 tools: [{
                   type: "function",
                   function: {
                     name: "report_reasoning",
-                    description: "Report bug bounty reasoning analysis and follow-up tests",
+                    description: "Report bug bounty reasoning analysis, exploit chains, and follow-up tests",
                     parameters: {
                       type: "object",
                       properties: {
-                        chainedAttacks: { type: "array", items: { type: "object", properties: { chain: { type: "string" }, impact: { type: "string" }, likelihood: { type: "string" } }, required: ["chain", "impact", "likelihood"] } },
+                        chainedAttacks: {
+                          type: "array",
+                          items: {
+                            type: "object",
+                            properties: {
+                              name: { type: "string" },
+                              impact: { type: "string" },
+                              likelihood: { type: "string", enum: ["high", "medium", "low"] },
+                              steps: {
+                                type: "array",
+                                items: {
+                                  type: "object",
+                                  properties: {
+                                    stepNumber: { type: "number" },
+                                    action: { type: "string" },
+                                    paramName: { type: "string" },
+                                    payload: { type: "string" },
+                                    vulnClass: { type: "string" },
+                                    expectedOutcome: { type: "string" },
+                                    useResponseFrom: { type: "number" },
+                                  },
+                                  required: ["stepNumber", "action", "paramName", "payload", "vulnClass"],
+                                },
+                              },
+                            },
+                            required: ["name", "impact", "likelihood", "steps"],
+                          },
+                        },
                         followUpTests: { type: "array", items: { type: "object", properties: { paramName: { type: "string" }, payload: { type: "string" }, vulnClass: { type: "string" }, reasoning: { type: "string" } }, required: ["paramName", "payload", "vulnClass", "reasoning"] } },
                         logicFlaws: { type: "array", items: { type: "string" } },
                         summary: { type: "string" },
