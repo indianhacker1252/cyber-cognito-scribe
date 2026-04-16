@@ -1123,23 +1123,50 @@ serve(async (req) => {
                 messages: [
                   { role: "system", content: `You are an elite bug bounty hunter analyzing scan results. Think like a black-hat hacker finding real bugs for bounties. Analyze the responses and:
 1. Identify patterns suggesting deeper vulnerabilities (error messages leaking info, status code anomalies, response size patterns)
-2. Suggest chained attacks (e.g., IDOR + info leak = account takeover)
+2. Suggest chained attacks — each chain must be a CONCRETE multi-step sequence with specific payloads for each step. Example: Step 1: IDOR enumerate user IDs via /api/user?id=1..100, Step 2: For each valid ID, test privilege escalation via role=admin
 3. Generate 3-5 NEW targeted payloads based on what the responses reveal
 4. Identify parameters that deserve deeper fuzzing based on how the app responded
 5. Look for logic flaws that automated scanners miss
 
-Return via the tool. Each follow-up test should be a SPECIFIC payload for a SPECIFIC parameter with reasoning.` },
-                  { role: "user", content: `Target: ${target.domain}\nTech Stack: ${JSON.stringify(techStack)}\n\nScan Results (${interestingResponses.length} interesting responses):\n${interestingResponses.map((r, i) => `${i+1}. ${r.vulnClass} on param="${vulnChecks.find(c => c.url === r.requestData.url)?.paramName || "?"}" at ${r.requestData.url}\n   Status: ${r.baseline.status}→${r.mutated.status} | Size: ${r.baseline.length}→${r.mutated.length}\n   Payload: ${r.truePayload.slice(0,100)}\n   Response snippet: ${r.mutated.bodySnippet?.slice(0,150) || "N/A"}\n   Confidence: ${r.confidenceScore}%`).join("\n\n")}` },
+Return via the tool. Each chain step must have a specific URL path, parameter, and payload to execute.` },
+                  { role: "user", content: `Target: ${target.domain}\nTech Stack: ${JSON.stringify(techStack)}\n\nEndpoints available:\n${(endpoints || []).slice(0, 10).map(ep => `  ${ep.url} params=${JSON.stringify(ep.parameters || {})}`).join("\n")}\n\nScan Results (${interestingResponses.length} interesting responses):\n${interestingResponses.map((r, i) => `${i+1}. ${r.vulnClass} on param="${vulnChecks.find(c => c.url === r.requestData.url)?.paramName || "?"}" at ${r.requestData.url}\n   Status: ${r.baseline.status}→${r.mutated.status} | Size: ${r.baseline.length}→${r.mutated.length}\n   Payload: ${r.truePayload.slice(0,100)}\n   Response snippet: ${r.mutated.bodySnippet?.slice(0,150) || "N/A"}\n   Confidence: ${r.confidenceScore}%`).join("\n\n")}` },
                 ],
                 tools: [{
                   type: "function",
                   function: {
                     name: "report_reasoning",
-                    description: "Report bug bounty reasoning analysis and follow-up tests",
+                    description: "Report bug bounty reasoning analysis, exploit chains, and follow-up tests",
                     parameters: {
                       type: "object",
                       properties: {
-                        chainedAttacks: { type: "array", items: { type: "object", properties: { chain: { type: "string" }, impact: { type: "string" }, likelihood: { type: "string" } }, required: ["chain", "impact", "likelihood"] } },
+                        chainedAttacks: {
+                          type: "array",
+                          items: {
+                            type: "object",
+                            properties: {
+                              name: { type: "string" },
+                              impact: { type: "string" },
+                              likelihood: { type: "string", enum: ["high", "medium", "low"] },
+                              steps: {
+                                type: "array",
+                                items: {
+                                  type: "object",
+                                  properties: {
+                                    stepNumber: { type: "number" },
+                                    action: { type: "string" },
+                                    paramName: { type: "string" },
+                                    payload: { type: "string" },
+                                    vulnClass: { type: "string" },
+                                    expectedOutcome: { type: "string" },
+                                    useResponseFrom: { type: "number" },
+                                  },
+                                  required: ["stepNumber", "action", "paramName", "payload", "vulnClass"],
+                                },
+                              },
+                            },
+                            required: ["name", "impact", "likelihood", "steps"],
+                          },
+                        },
                         followUpTests: { type: "array", items: { type: "object", properties: { paramName: { type: "string" }, payload: { type: "string" }, vulnClass: { type: "string" }, reasoning: { type: "string" } }, required: ["paramName", "payload", "vulnClass", "reasoning"] } },
                         logicFlaws: { type: "array", items: { type: "string" } },
                         summary: { type: "string" },
@@ -1159,9 +1186,124 @@ Return via the tool. Each follow-up test should be a SPECIFIC payload for a SPEC
                 const reasoning = JSON.parse(tc.function.arguments);
                 await log(db, targetId, taskId, "thought", `🧠 AI Hunter Summary: ${reasoning.summary}`);
 
-                // Log chained attack opportunities
-                for (const chain of (reasoning.chainedAttacks || []).slice(0, 3)) {
-                  await log(db, targetId, taskId, "result", `🔗 Chain Attack: ${chain.chain} | Impact: ${chain.impact} | Likelihood: ${chain.likelihood}`);
+                // ── EXPLOIT CHAIN EXECUTION ──
+                const chains = (reasoning.chainedAttacks || []).slice(0, 3);
+                let chainSuccessCount = 0;
+
+                for (const chain of chains) {
+                  if (isTimedOut()) break;
+                  await log(db, targetId, taskId, "action", `⛓️ Executing exploit chain: "${chain.name}" (${chain.likelihood} likelihood) — ${chain.impact}`);
+
+                  const steps = (chain.steps || []).slice(0, 5);
+                  let chainBroken = false;
+                  let prevResponse: { status: number; body: string; length: number } | null = null;
+                  const chainEvidence: Array<{ step: number; action: string; result: string; status: number; interesting: boolean }> = [];
+
+                  for (const step of steps) {
+                    if (isTimedOut() || chainBroken) break;
+
+                    // Find endpoint with this param
+                    const stepEp = endpoints?.find(ep => {
+                      const params = (ep.parameters as Record<string, string>) || {};
+                      return Object.keys(params).some(p => p.toLowerCase() === step.paramName.toLowerCase());
+                    }) || endpoints?.[0];
+                    if (!stepEp) { chainBroken = true; break; }
+
+                    let payload = step.payload;
+                    // If step says "use response from previous step", try to extract data
+                    if (step.useResponseFrom && prevResponse) {
+                      // Try to extract IDs, tokens, usernames from previous response
+                      const idMatch = prevResponse.body.match(/["']?(?:id|user_id|userId|token)["']?\s*[":]\s*["']?(\w+)["']?/i);
+                      if (idMatch) {
+                        payload = payload.replace(/\{PREV_DATA\}|\{prev\}/gi, idMatch[1]);
+                      }
+                    }
+
+                    if (!isSafePayload(payload)) {
+                      await log(db, targetId, taskId, "info", `⛓️ Step ${step.stepNumber}: Skipped unsafe payload`);
+                      chainBroken = true; break;
+                    }
+
+                    await log(db, targetId, taskId, "action", `⛓️ Step ${step.stepNumber}: ${step.action} — ${step.vulnClass} on ${step.paramName}`);
+
+                    try {
+                      const url = new URL(stepEp.url);
+                      url.searchParams.set(step.paramName, payload);
+                      const reqHeaders = { "User-Agent": "CyberScope-Scanner/1.0", "X-CyberScope-Token": "chain-audit" };
+
+                      // Get baseline
+                      const baseResp = await safeFetch(stepEp.url, { method: "GET", headers: reqHeaders, redirect: "manual" }, 5000);
+                      const baseBody = await baseResp.text();
+
+                      // Test with payload
+                      const testResp = await safeFetch(url.toString(), { method: "GET", headers: reqHeaders, redirect: "manual" }, 5000);
+                      const testBody = await testResp.text();
+
+                      prevResponse = { status: testResp.status, body: testBody, length: testBody.length };
+
+                      const execEvidence = analyzeExecutionEvidence(step.vulnClass, payload, testBody, baseBody);
+                      const lenDiff = Math.abs(testBody.length - baseBody.length);
+                      const isInteresting = execEvidence.hasEvidence || lenDiff > 200 || testResp.status !== baseResp.status;
+
+                      chainEvidence.push({
+                        step: step.stepNumber,
+                        action: step.action,
+                        result: isInteresting
+                          ? `Status ${testResp.status}, body delta ${lenDiff}${execEvidence.hasEvidence ? `, EVIDENCE: ${execEvidence.details}` : ""}`
+                          : `No significant change (status ${testResp.status})`,
+                        status: testResp.status,
+                        interesting: isInteresting,
+                      });
+
+                      if (isInteresting) {
+                        await log(db, targetId, taskId, "result", `⛓️ Step ${step.stepNumber} ✅: ${execEvidence.hasEvidence ? execEvidence.details : `Interesting response (delta: ${lenDiff})`}`);
+
+                        if (execEvidence.hasEvidence) {
+                          // Record as a confirmed chained finding
+                          diffResults.push({
+                            isVulnerable: true, vulnClass: step.vulnClass,
+                            confidence: "high", confidenceScore: Math.min(85 + execEvidence.confidenceBoost, 99),
+                            baseline: { status: baseResp.status, length: baseBody.length, headers: {}, bodySnippet: baseBody.slice(0, 500) },
+                            mutated: { status: testResp.status, length: testBody.length, headers: {}, bodySnippet: testBody.slice(0, 500) },
+                            truePayload: payload, falsePayload: (stepEp.parameters as Record<string,string>)?.[step.paramName] || "",
+                            adaptationUsed: `Chain: ${chain.name} Step ${step.stepNumber}`,
+                            owaspCategory: OWASP_MAP[step.vulnClass] || "Unknown",
+                            requestData: { method: "GET", url: url.toString(), headers: reqHeaders, param: step.paramName, payload },
+                            responseData: { status: testResp.status, headers: {}, bodySnippet: testBody.slice(0, 500), length: testBody.length },
+                          });
+
+                          experienceRecords.push({
+                            target_id: targetId, tech_stack: techStack, vuln_class: step.vulnClass,
+                            payload_used: payload, http_method: "GET",
+                            response_status: testResp.status, response_length: testBody.length,
+                            response_snippet: testBody.slice(0, 200), outcome: "confirmed",
+                            confidence_score: 85, reward_score: REWARD_TABLE["true_positive_confirmed"] || 10,
+                            metadata: { source: "exploit_chain", chainName: chain.name, step: step.stepNumber },
+                          });
+                        }
+                      } else {
+                        await log(db, targetId, taskId, "info", `⛓️ Step ${step.stepNumber}: No significant response change — chain may not apply`);
+                        if (step.stepNumber <= 2) { chainBroken = true; }
+                      }
+
+                      await new Promise(r => setTimeout(r, 120));
+                    } catch (e) {
+                      await log(db, targetId, taskId, "error", `⛓️ Step ${step.stepNumber} error: ${e instanceof Error ? e.message : "unknown"}`);
+                      chainBroken = true;
+                    }
+                  }
+
+                  const successSteps = chainEvidence.filter(e => e.interesting).length;
+                  if (successSteps > 0) {
+                    chainSuccessCount++;
+                    await log(db, targetId, taskId, "result", `⛓️ Chain "${chain.name}" completed: ${successSteps}/${chainEvidence.length} steps produced interesting results | Impact: ${chain.impact}`);
+                  } else {
+                    await log(db, targetId, taskId, "info", `⛓️ Chain "${chain.name}" unsuccessful — target defended against chain`);
+                  }
+                }
+
+                if (chainSuccessCount > 0) {
+                  await log(db, targetId, taskId, "result", `⛓️ Exploit Chaining: ${chainSuccessCount}/${chains.length} chains produced results`);
                 }
 
                 // Log logic flaws
@@ -1175,7 +1317,6 @@ Return via the tool. Each follow-up test should be a SPECIFIC payload for a SPEC
                   if (isTimedOut()) break;
                   if (!isSafePayload(test.payload)) continue;
 
-                  // Find matching endpoint
                   const matchEp = endpoints?.find(ep => {
                     const params = (ep.parameters as Record<string, string>) || {};
                     return Object.keys(params).some(p => p.toLowerCase() === test.paramName.toLowerCase());
@@ -1205,9 +1346,9 @@ Return via the tool. Each follow-up test should be a SPECIFIC payload for a SPEC
                 }
 
                 if (followUpHits > 0) {
-                  await log(db, targetId, taskId, "result", `🧠 AI Reasoning Loop: ${followUpHits} new vulnerabilities discovered from AI-directed follow-up tests`);
+                  await log(db, targetId, taskId, "result", `🧠 AI Reasoning Loop: ${followUpHits} new vulnerabilities from follow-up tests + ${chainSuccessCount} exploit chains executed`);
                 } else {
-                  await log(db, targetId, taskId, "info", `🧠 AI Reasoning Loop: No additional vulns from follow-up — target appears hardened`);
+                  await log(db, targetId, taskId, "info", `🧠 AI Reasoning Loop complete — target appears hardened against follow-ups`);
                 }
               }
             }
