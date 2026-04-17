@@ -911,6 +911,102 @@ serve(async (req) => {
 
     await log(db, targetId, taskId, "action", `Loaded ${endpoints.length} endpoints for OWASP analysis`);
 
+    // ── Step 0: Adaptive Defense — WAF/Baseline Drift Check ──
+    let driftMutations: string[] = [];
+    let driftDetected = false;
+    if (target.domain) {
+      try {
+        await log(db, targetId, taskId, "thought", "🛡️ Probing baseline + WAF state for drift detection");
+        const probeUrl = `https://${target.domain}`;
+        const probe = await safeFetch(probeUrl, { method: "GET", headers: { "User-Agent": "CyberScope-Drift/1.0" } }, 6000).catch(() => null);
+        const currentServer = probe?.headers.get("server") || "unknown";
+        const currentWaf = probe?.headers.get("cf-ray") ? "cloudflare"
+          : probe?.headers.get("x-sucuri-id") ? "sucuri"
+          : probe?.headers.get("x-amz-cf-id") ? "aws-cloudfront"
+          : probe?.headers.get("x-akamai-request-id") ? "akamai"
+          : probe?.headers.get("x-iinfo") ? "incapsula"
+          : currentServer.toLowerCase().includes("cloudflare") ? "cloudflare"
+          : "none-detected";
+
+        // Compare against last known baseline from prior scan logs
+        const { data: prevBaseline } = await db
+          .from("scan_logs")
+          .select("metadata, created_at")
+          .eq("target_id", targetId)
+          .eq("log_type", "info")
+          .like("message", "🛡️ Baseline snapshot%")
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        const prevMeta = (prevBaseline?.metadata as Record<string, string> | null) || null;
+        if (prevMeta && (prevMeta.server !== currentServer || prevMeta.waf !== currentWaf)) {
+          driftDetected = true;
+          await log(db, targetId, taskId, "result",
+            `⚠️ DRIFT DETECTED: ${prevMeta.server}/${prevMeta.waf} → ${currentServer}/${currentWaf}`,
+            { previousServer: prevMeta.server, previousWaf: prevMeta.waf, currentServer, currentWaf });
+
+          // Trigger adaptive-drift edge function to get mutation chain
+          try {
+            const driftResp = await safeFetch(
+              `${Deno.env.get("SUPABASE_URL")}/functions/v1/cyberscope-adaptive-drift`,
+              {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  "Authorization": `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}`,
+                },
+                body: JSON.stringify({ endpoint: probeUrl, payload: "<script>alert(1)</script>" }),
+              },
+              8000
+            );
+            const driftData = await driftResp.json().catch(() => null);
+            if (driftData?.ok && Array.isArray(driftData.mutationChain)) {
+              driftMutations = driftData.mutationChain
+                .filter((s: { httpStatus: number }) => s.httpStatus < 400)
+                .map((s: { technique: string }) => s.technique);
+              await log(db, targetId, taskId, "action",
+                `🧬 Adaptive mutation strategies acquired: ${driftMutations.join(", ")}`,
+                { mutationChain: driftData.mutationChain });
+            }
+          } catch (e) {
+            await log(db, targetId, taskId, "error", `drift-adaptive call failed: ${(e as Error).message}`);
+          }
+
+          // Re-mutate existing findings: bump validation_status & note for re-test
+          const { data: existing } = await db
+            .from("vulnerability_findings")
+            .select("id, payload, title")
+            .eq("target_id", targetId)
+            .limit(50);
+          if (existing && existing.length > 0) {
+            const mutated = existing.map((f) => ({
+              id: f.id,
+              originalPayload: f.payload,
+              mutatedPayload: applyDriftMutation(f.payload || "", driftMutations),
+            }));
+            for (const m of mutated) {
+              await db.from("vulnerability_findings").update({
+                validation_status: "drift_remutation_pending",
+                triage_reasoning: `WAF drift detected — payload re-mutated from "${m.originalPayload}" to "${m.mutatedPayload}" for re-verification.`,
+              }).eq("id", m.id);
+            }
+            await log(db, targetId, taskId, "result",
+              `🔁 Re-mutated ${mutated.length} existing findings for drift re-verification`,
+              { count: mutated.length, samples: mutated.slice(0, 3) });
+          }
+        } else {
+          await log(db, targetId, taskId, "result", `Baseline stable: ${currentServer} / ${currentWaf}`);
+        }
+
+        // Save current baseline snapshot for next run's comparison
+        await log(db, targetId, taskId, "info", `🛡️ Baseline snapshot recorded`,
+          { server: currentServer, waf: currentWaf });
+      } catch (e) {
+        await log(db, targetId, taskId, "error", `Drift probe failed: ${(e as Error).message}`);
+      }
+    }
+
     // ── Step 1: Passive Security Checks ──
     await log(db, targetId, taskId, "thought", "Running passive security header & misconfiguration checks");
     const passiveResults = target.domain ? await runPassiveChecks(target.domain) : [];
