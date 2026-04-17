@@ -60,17 +60,27 @@ const SECLISTS_PATHS: Record<string, string> = {
 };
 
 const seclistsCache = new Map<string, string[]>();
-async function loadSecListsPayloads(vulnClass: string, limit = 20): Promise<string[]> {
+async function loadSecListsPayloads(vulnClass: string, limit = 20, driftTechniques: string[] = []): Promise<string[]> {
   const path = SECLISTS_PATHS[vulnClass];
   if (!path) return [];
-  if (seclistsCache.has(vulnClass)) return seclistsCache.get(vulnClass)!.slice(0, limit);
-  try {
-    const resp = await safeFetch(`${SECLISTS_BASE}/${path}`, { headers: { "User-Agent": "CyberScope/1.0" } }, 5000);
-    if (!resp.ok) return [];
-    const lines = (await resp.text()).split("\n").map(l => l.trim()).filter(l => l && !l.startsWith("#"));
-    seclistsCache.set(vulnClass, lines);
-    return lines.slice(0, limit);
-  } catch { return []; }
+  let base: string[];
+  if (seclistsCache.has(vulnClass)) {
+    base = seclistsCache.get(vulnClass)!.slice(0, limit);
+  } else {
+    try {
+      const resp = await safeFetch(`${SECLISTS_BASE}/${path}`, { headers: { "User-Agent": "CyberScope/1.0" } }, 5000);
+      if (!resp.ok) return [];
+      const lines = (await resp.text()).split("\n").map(l => l.trim()).filter(l => l && !l.startsWith("#"));
+      seclistsCache.set(vulnClass, lines);
+      base = lines.slice(0, limit);
+    } catch { return []; }
+  }
+  // If drift detected, prepend obfuscated variants so mutated payloads run first
+  if (driftTechniques.length > 0) {
+    const mutated = base.map((p) => applyDriftMutation(p, driftTechniques));
+    return [...mutated, ...base].slice(0, limit);
+  }
+  return base;
 }
 
 // ─── TECH LEAK DETECTION (Phase 11: SecListsFeedback) ───
