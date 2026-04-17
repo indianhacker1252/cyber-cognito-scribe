@@ -1197,7 +1197,7 @@ serve(async (req) => {
             const detectedDb = detectDbFromError(result.mutated.bodySnippet || "");
             if (detectedDb) {
               await log(db, targetId, taskId, "info", `🔍 Phase 11: Tech leak detected — ${detectedDb} DB from error response`);
-              const dbSpecificPayloads = await loadSecListsPayloads(`sqli-${detectedDb}`, 10);
+              const dbSpecificPayloads = await loadSecListsPayloads(`sqli-${detectedDb}`, 10, driftDetected ? driftMutations : []);
               if (dbSpecificPayloads.length > 0) {
                 await log(db, targetId, taskId, "action", `📦 Re-scanning with ${dbSpecificPayloads.length} ${detectedDb}-specific payloads`);
               }
