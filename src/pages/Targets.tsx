@@ -14,6 +14,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import {
   Plus, Crosshair, Trash2, Radar, Loader2, ShieldAlert,
   Copy, CheckCircle2, XCircle, AlertTriangle, Activity, Bug, GitCompare, Scan,
+  RefreshCw, Flame,
 } from "lucide-react";
 import { toast } from "sonner";
 import { WafDriftMonitor } from "@/components/WafDriftMonitor";
@@ -97,6 +98,8 @@ export default function Targets() {
   const [deepAuditTargets, setDeepAuditTargets] = useState<Set<string>>(new Set());
   const [deepAuditResults, setDeepAuditResults] = useState<Record<string, DeepAuditResults>>({});
   const [expandedAudit, setExpandedAudit] = useState<string | null>(null);
+  const [revalTargets, setRevalTargets] = useState<Set<string>>(new Set());
+  const [fuzzTargets, setFuzzTargets] = useState<Set<string>>(new Set());
 
   const { data: targets, isLoading } = useQuery({
     queryKey: ["targets"],
@@ -199,6 +202,42 @@ export default function Targets() {
     }
   };
 
+  const startDriftReval = async (targetId: string) => {
+    setRevalTargets((prev) => new Set(prev).add(targetId));
+    toast.info("Drift revalidation started — re-testing mutated payloads");
+    try {
+      const { data, error } = await supabase.functions.invoke("drift-revalidator", { body: { targetId } });
+      if (error) throw error;
+      if (!data?.ok) throw new Error(data?.error || "revalidator failed");
+      const confirmed = data.results?.filter((r: { status: string }) => r.status === "confirmed").length || 0;
+      const regressed = data.results?.filter((r: { status: string }) => r.status === "regressed").length || 0;
+      toast.success(`Drift reval: ${confirmed} confirmed, ${regressed} regressed (${data.processed} total)`);
+      queryClient.invalidateQueries({ queryKey: ["findings"] });
+      queryClient.invalidateQueries({ queryKey: ["recent-logs"] });
+    } catch (e: any) {
+      toast.error(`Drift reval error: ${e.message}`);
+    } finally {
+      setRevalTargets((prev) => { const n = new Set(prev); n.delete(targetId); return n; });
+    }
+  };
+
+  const startProFuzz = async (targetId: string) => {
+    setFuzzTargets((prev) => new Set(prev).add(targetId));
+    toast.info("🔥 Pro-Level Fuzzer engaged — deep payload + CVE template testing");
+    try {
+      const { data, error } = await supabase.functions.invoke("advanced-fuzzer", { body: { targetId } });
+      if (error) throw error;
+      if (!data?.ok) throw new Error(data?.error || "fuzzer failed");
+      toast.success(`Pro-Fuzz: ${data.totalProbes} probes, ${data.anomalies} anomalies, ${data.cveReport?.confirmed || 0} CVE matches`);
+      queryClient.invalidateQueries({ queryKey: ["findings"] });
+      queryClient.invalidateQueries({ queryKey: ["recent-logs"] });
+    } catch (e: any) {
+      toast.error(`Pro-Fuzz error: ${e.message}`);
+    } finally {
+      setFuzzTargets((prev) => { const n = new Set(prev); n.delete(targetId); return n; });
+    }
+  };
+
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text);
     toast.success("Copied to clipboard");
@@ -280,6 +319,18 @@ export default function Targets() {
                       <Button variant="outline" size="sm" className="font-mono text-[10px] gap-1 border-primary/30 text-primary hover:bg-primary/10 glow-green" onClick={() => auditData && isExpanded ? setExpandedAudit(null) : startDeepAudit(target.id, target.domain!)} disabled={isDeepAuditing}>
                         {isDeepAuditing ? <Loader2 className="h-3 w-3 animate-spin" /> : <Scan className="h-3 w-3" />}
                         {isDeepAuditing ? "Auditing..." : auditData && isExpanded ? "Hide Audit" : "Deep Audit"}
+                      </Button>
+                    )}
+                    {target.domain && target.status === "completed" && (
+                      <Button variant="outline" size="sm" className="font-mono text-[10px] gap-1 border-cyber-amber/30 text-cyber-amber hover:bg-cyber-amber/10" onClick={() => startProFuzz(target.id)} disabled={fuzzTargets.has(target.id)}>
+                        {fuzzTargets.has(target.id) ? <Loader2 className="h-3 w-3 animate-spin" /> : <Flame className="h-3 w-3" />}
+                        {fuzzTargets.has(target.id) ? "Fuzzing..." : "Pro-Fuzz"}
+                      </Button>
+                    )}
+                    {target.domain && (
+                      <Button variant="outline" size="sm" className="font-mono text-[10px] gap-1 border-cyber-purple/30 text-cyber-purple hover:bg-cyber-purple/10" onClick={() => startDriftReval(target.id)} disabled={revalTargets.has(target.id)}>
+                        {revalTargets.has(target.id) ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+                        {revalTargets.has(target.id) ? "Revalidating..." : "Drift Reval"}
                       </Button>
                     )}
                     <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" onClick={() => deleteTarget.mutate(target.id)}>
