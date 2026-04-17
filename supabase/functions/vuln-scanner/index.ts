@@ -46,7 +46,7 @@ function applyDriftMutation(payload: string, techniques: string[]): string {
   return out;
 }
 
-
+// ─── SECLISTS PAYLOAD LOADER (Phase 11) ─────────────────
 const SECLISTS_BASE = "https://raw.githubusercontent.com/danielmiessler/SecLists/master";
 const SECLISTS_PATHS: Record<string, string> = {
   sqli: "Fuzzing/SQLi/quick-SQLi.txt",
