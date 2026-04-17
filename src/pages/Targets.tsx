@@ -202,7 +202,42 @@ export default function Targets() {
     }
   };
 
-  const copyToClipboard = (text: string) => {
+  const startDriftReval = async (targetId: string) => {
+    setRevalTargets((prev) => new Set(prev).add(targetId));
+    toast.info("Drift revalidation started — re-testing mutated payloads");
+    try {
+      const { data, error } = await supabase.functions.invoke("drift-revalidator", { body: { targetId } });
+      if (error) throw error;
+      if (!data?.ok) throw new Error(data?.error || "revalidator failed");
+      const confirmed = data.results?.filter((r: { status: string }) => r.status === "confirmed").length || 0;
+      const regressed = data.results?.filter((r: { status: string }) => r.status === "regressed").length || 0;
+      toast.success(`Drift reval: ${confirmed} confirmed, ${regressed} regressed (${data.processed} total)`);
+      queryClient.invalidateQueries({ queryKey: ["findings"] });
+      queryClient.invalidateQueries({ queryKey: ["recent-logs"] });
+    } catch (e: any) {
+      toast.error(`Drift reval error: ${e.message}`);
+    } finally {
+      setRevalTargets((prev) => { const n = new Set(prev); n.delete(targetId); return n; });
+    }
+  };
+
+  const startProFuzz = async (targetId: string) => {
+    setFuzzTargets((prev) => new Set(prev).add(targetId));
+    toast.info("🔥 Pro-Level Fuzzer engaged — deep payload + CVE template testing");
+    try {
+      const { data, error } = await supabase.functions.invoke("advanced-fuzzer", { body: { targetId } });
+      if (error) throw error;
+      if (!data?.ok) throw new Error(data?.error || "fuzzer failed");
+      toast.success(`Pro-Fuzz: ${data.totalProbes} probes, ${data.anomalies} anomalies, ${data.cveReport?.confirmed || 0} CVE matches`);
+      queryClient.invalidateQueries({ queryKey: ["findings"] });
+      queryClient.invalidateQueries({ queryKey: ["recent-logs"] });
+    } catch (e: any) {
+      toast.error(`Pro-Fuzz error: ${e.message}`);
+    } finally {
+      setFuzzTargets((prev) => { const n = new Set(prev); n.delete(targetId); return n; });
+    }
+  };
+
     navigator.clipboard.writeText(text);
     toast.success("Copied to clipboard");
   };
