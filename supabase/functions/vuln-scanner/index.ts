@@ -17,7 +17,36 @@ async function safeFetch(url: string, opts: RequestInit = {}, timeoutMs = 8000):
   }
 }
 
-// ─── SECLISTS PAYLOAD LOADER (Phase 11) ─────────────────
+// ─── ADAPTIVE DRIFT MUTATION HELPERS ────────────────────
+// Applies WAF-bypass obfuscations driven by detected drift strategies.
+function applyDriftMutation(payload: string, techniques: string[]): string {
+  if (!payload || techniques.length === 0) return payload;
+  let out = payload;
+  for (const tech of techniques) {
+    if (tech.includes("case-mutation")) {
+      out = out.split("").map((c, i) => i % 2 === 0 ? c.toUpperCase() : c.toLowerCase()).join("");
+    }
+    if (tech.includes("url-encode")) {
+      out = encodeURIComponent(out);
+    }
+    if (tech.includes("unicode")) {
+      out = out.split("").map(c =>
+        /[a-zA-Z]/.test(c) ? `\\u00${c.charCodeAt(0).toString(16).padStart(2, "0")}` : c
+      ).join("");
+    }
+    if (tech.includes("fromCharCode") && /alert|script/i.test(payload)) {
+      out = out.replace(/alert\(([^)]+)\)/gi, (_m, arg) =>
+        `eval(String.fromCharCode(${[...`alert(${arg})`].map(c => c.charCodeAt(0)).join(",")}))`);
+    }
+    if (tech.includes("chunked")) {
+      // No-op at payload level (transport encoding) — annotated for the request layer
+      out = `/*chunked*/${out}`;
+    }
+  }
+  return out;
+}
+
+
 const SECLISTS_BASE = "https://raw.githubusercontent.com/danielmiessler/SecLists/master";
 const SECLISTS_PATHS: Record<string, string> = {
   sqli: "Fuzzing/SQLi/quick-SQLi.txt",
