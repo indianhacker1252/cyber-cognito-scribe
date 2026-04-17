@@ -16,6 +16,7 @@ import {
   Copy, CheckCircle2, XCircle, AlertTriangle, Activity, Bug, GitCompare, Scan,
 } from "lucide-react";
 import { toast } from "sonner";
+import { WafDriftMonitor } from "@/components/WafDriftMonitor";
 
 const statusColors: Record<string, string> = {
   queued: "bg-cyber-amber/20 text-cyber-amber border-cyber-amber/30",
@@ -232,6 +233,8 @@ export default function Targets() {
           </DialogContent>
         </Dialog>
       </div>
+
+      <WafDriftMonitor />
 
       <div className="space-y-4">
         {isLoading ? (
