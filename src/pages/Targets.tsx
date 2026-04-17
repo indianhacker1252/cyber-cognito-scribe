@@ -14,6 +14,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import {
   Plus, Crosshair, Trash2, Radar, Loader2, ShieldAlert,
   Copy, CheckCircle2, XCircle, AlertTriangle, Activity, Bug, GitCompare, Scan,
+  RefreshCw, Flame,
 } from "lucide-react";
 import { toast } from "sonner";
 import { WafDriftMonitor } from "@/components/WafDriftMonitor";
@@ -97,6 +98,8 @@ export default function Targets() {
   const [deepAuditTargets, setDeepAuditTargets] = useState<Set<string>>(new Set());
   const [deepAuditResults, setDeepAuditResults] = useState<Record<string, DeepAuditResults>>({});
   const [expandedAudit, setExpandedAudit] = useState<string | null>(null);
+  const [revalTargets, setRevalTargets] = useState<Set<string>>(new Set());
+  const [fuzzTargets, setFuzzTargets] = useState<Set<string>>(new Set());
 
   const { data: targets, isLoading } = useQuery({
     queryKey: ["targets"],
