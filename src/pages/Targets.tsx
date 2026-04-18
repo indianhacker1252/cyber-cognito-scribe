@@ -348,18 +348,7 @@ export default function Targets() {
                         {isDeepAuditing ? "Auditing..." : auditData && isExpanded ? "Hide Audit" : "Deep Audit"}
                       </Button>
                     )}
-                    {target.domain && target.status === "completed" && (
-                      <Button variant="outline" size="sm" className="font-mono text-[10px] gap-1 border-cyber-amber/30 text-cyber-amber hover:bg-cyber-amber/10" onClick={() => startProFuzz(target.id)} disabled={fuzzTargets.has(target.id)}>
-                        {fuzzTargets.has(target.id) ? <Loader2 className="h-3 w-3 animate-spin" /> : <Flame className="h-3 w-3" />}
-                        {fuzzTargets.has(target.id) ? "Fuzzing..." : "Pro-Fuzz"}
-                      </Button>
-                    )}
-                    {target.domain && (
-                      <Button variant="outline" size="sm" className="font-mono text-[10px] gap-1 border-cyber-purple/30 text-cyber-purple hover:bg-cyber-purple/10" onClick={() => startDriftReval(target.id)} disabled={revalTargets.has(target.id)}>
-                        {revalTargets.has(target.id) ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
-                        {revalTargets.has(target.id) ? "Revalidating..." : "Drift Reval"}
-                      </Button>
-                    )}
+                    {/* Pro-Fuzz and Drift Reval auto-chain after Recon — buttons removed by design */}
                     <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" onClick={() => deleteTarget.mutate(target.id)}>
                       <Trash2 className="h-3 w-3" />
                     </Button>
