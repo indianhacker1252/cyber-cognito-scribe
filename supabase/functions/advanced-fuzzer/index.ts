@@ -187,29 +187,57 @@ async function fuzzEndpoint(
   return results;
 }
 
-// Test CVE templates from intel_feeds against target endpoints
+// Test CVE templates from intel_feeds against target endpoints — emits per-template scan_logs
 async function testCveTemplates(
   db: ReturnType<typeof createClient>,
   targetId: string,
   endpoints: Array<{ url: string }>
-): Promise<{ tested: number; confirmed: number; details: Array<Record<string, unknown>> }> {
+): Promise<{ tested: number; confirmed: number; failed: number; details: Array<Record<string, unknown>> }> {
   const { data: feeds } = await db
     .from("intel_feeds")
-    .select("id, title, vulnerability_class, extracted_payloads, severity, source_url")
+    .select("id, title, vulnerability_class, extracted_payloads, severity, source_url, source")
     .not("extracted_payloads", "is", null)
-    .limit(15);
+    .order("ingested_at", { ascending: false })
+    .limit(25);
 
-  if (!feeds || feeds.length === 0) return { tested: 0, confirmed: 0, details: [] };
+  if (!feeds || feeds.length === 0) {
+    await db.from("scan_logs").insert({
+      target_id: targetId, log_type: "info",
+      message: `📡 Intel templates: 0 available in intel_feeds — run Intel Sync first.`,
+    });
+    return { tested: 0, confirmed: 0, failed: 0, details: [] };
+  }
+
+  await db.from("scan_logs").insert({
+    target_id: targetId, log_type: "action",
+    message: `📡 Testing ${feeds.length} CVE templates from intel_feeds against ${Math.min(endpoints.length, 3)} live endpoints`,
+    metadata: { templateCount: feeds.length, endpointCount: Math.min(endpoints.length, 3) },
+  });
 
   const details: Array<Record<string, unknown>> = [];
-  let tested = 0, confirmed = 0;
+  let tested = 0, confirmed = 0, failed = 0;
 
   for (const feed of feeds) {
-    if (timeLeft() < 5000) break;
+    if (timeLeft() < 5000) {
+      await db.from("scan_logs").insert({
+        target_id: targetId, log_type: "info",
+        message: `⏱️ Template testing halted at ${tested}/${feeds.length} — time budget exhausted.`,
+      });
+      break;
+    }
     const payloads = (feed.extracted_payloads as string[] | null) || [];
-    if (payloads.length === 0) continue;
+    if (payloads.length === 0) {
+      await db.from("scan_logs").insert({
+        target_id: targetId, log_type: "info",
+        message: `⊘ [${feed.vulnerability_class || "unknown"}] "${(feed.title || "").slice(0, 80)}" — no payloads in template, skipped`,
+        metadata: { feedId: feed.id, source: feed.source, sourceUrl: feed.source_url },
+      });
+      continue;
+    }
 
-    // Test on first 3 endpoints
+    let templatePassed = false;
+    const perEndpoint: Array<{ url: string; status: number; matched: boolean; reason: string }> = [];
+
     for (const ep of endpoints.slice(0, 3)) {
       if (timeLeft() < 4000) break;
       const payload = payloads[0];
@@ -219,15 +247,20 @@ async function testCveTemplates(
         const r = await safeFetch(probeUrl, { headers: { "User-Agent": "CyberScope-CVE/1.0" } }, 5000);
         const body = await r.text().catch(() => "");
         tested++;
-        const matched = r.status >= 500 || /SQL syntax|stack trace|Exception/i.test(body);
+        const errLeak = /SQL syntax|stack trace|Exception|ORA-\d|MySQL|PostgreSQL/i.test(body);
+        const matched = r.status >= 500 || errLeak;
+        const reason = matched
+          ? (errLeak ? "error-leak in body" : `5xx status (${r.status})`)
+          : `no-anomaly (${r.status})`;
+        perEndpoint.push({ url: ep.url, status: r.status, matched, reason });
+
         if (matched) {
-          confirmed++;
+          templatePassed = true; confirmed++;
           details.push({
             cveTitle: feed.title, vulnClass: feed.vulnerability_class,
             endpoint: ep.url, status: r.status, payload, severity: feed.severity,
             sourceUrl: feed.source_url,
           });
-          // Persist as finding
           await db.from("vulnerability_findings").insert({
             target_id: targetId,
             title: `[CVE Match] ${feed.title}`,
@@ -237,13 +270,32 @@ async function testCveTemplates(
             confidence_score: 65,
             confidence_level: "medium",
             validation_status: "cve_template_matched",
-            triage_reasoning: `Advanced fuzzer matched CVE template "${feed.title}" against live endpoint.`,
+            triage_reasoning: `Advanced fuzzer matched CVE template "${feed.title}" against live endpoint. Reason: ${reason}.`,
           });
+        } else {
+          failed++;
         }
-      } catch { /* skip */ }
+      } catch (e) {
+        failed++;
+        perEndpoint.push({ url: ep.url, status: 0, matched: false, reason: `network: ${(e as Error).message.slice(0, 40)}` });
+      }
     }
+
+    // Per-template result log line — visible in Neural Log
+    const icon = templatePassed ? "✅" : "❌";
+    const resultType: "result" | "info" = templatePassed ? "result" : "info";
+    await db.from("scan_logs").insert({
+      target_id: targetId, log_type: resultType,
+      message: `${icon} [${feed.vulnerability_class || "unknown"}] "${(feed.title || "").slice(0, 80)}" — ${templatePassed ? "MATCH" : "no-match"} on ${perEndpoint.length} endpoints`,
+      metadata: {
+        feedId: feed.id, severity: feed.severity, source: feed.source,
+        sourceUrl: feed.source_url, payload: payloads[0]?.slice(0, 200),
+        perEndpoint, templatePassed,
+      },
+    });
   }
-  return { tested, confirmed, details };
+
+  return { tested, confirmed, failed, details };
 }
 
 Deno.serve(async (req) => {
@@ -321,7 +373,7 @@ Deno.serve(async (req) => {
 
     await db.from("scan_logs").insert({
       target_id: targetId, log_type: "result",
-      message: `✅ Pro-Fuzz complete — ${allResults.length} probes, ${anomalies.length} high-signal anomalies, ${cveReport.confirmed}/${cveReport.tested} CVE templates matched`,
+      message: `✅ Pro-Fuzz complete — ${allResults.length} probes, ${anomalies.length} high-signal anomalies | 📡 Templates: ${cveReport.tested} tested, ${cveReport.confirmed} ✅ matched, ${cveReport.failed} ❌ no-match`,
       metadata: { summary, cveReport },
     });
 

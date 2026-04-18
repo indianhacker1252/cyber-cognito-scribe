@@ -14,7 +14,6 @@ import { Skeleton } from "@/components/ui/skeleton";
 import {
   Plus, Crosshair, Trash2, Radar, Loader2, ShieldAlert,
   Copy, CheckCircle2, XCircle, AlertTriangle, Activity, Bug, GitCompare, Scan,
-  RefreshCw, Flame,
 } from "lucide-react";
 import { toast } from "sonner";
 import { WafDriftMonitor } from "@/components/WafDriftMonitor";
@@ -98,8 +97,6 @@ export default function Targets() {
   const [deepAuditTargets, setDeepAuditTargets] = useState<Set<string>>(new Set());
   const [deepAuditResults, setDeepAuditResults] = useState<Record<string, DeepAuditResults>>({});
   const [expandedAudit, setExpandedAudit] = useState<string | null>(null);
-  const [revalTargets, setRevalTargets] = useState<Set<string>>(new Set());
-  const [fuzzTargets, setFuzzTargets] = useState<Set<string>>(new Set());
 
   const { data: targets, isLoading } = useQuery({
     queryKey: ["targets"],
@@ -144,18 +141,45 @@ export default function Targets() {
 
   const startRecon = async (targetId: string) => {
     setScanningTargets((prev) => new Set(prev).add(targetId));
-    toast.info("Recon pipeline started — check Neural Log for live updates");
+    toast.info("Recon pipeline started — Pro-Fuzz + Drift Reval will auto-chain after recon");
     try {
       const { data, error } = await supabase.functions.invoke("recon-engine", { body: { targetId } });
-      if (error) toast.error(`Recon failed: ${error.message}`);
-      else if (data?.error) toast.error(`Recon failed: ${data.error}`);
-      else {
-        toast.success(`Recon complete: ${data.subdomains} subdomains, ${data.endpointsIngested} endpoints, 🕷️ ${data.spiderUrls || 0} crawled, ${data.spiderForms || 0} forms`);
-        queryClient.invalidateQueries({ queryKey: ["targets"] });
-        queryClient.invalidateQueries({ queryKey: ["endpoints-count"] });
-        queryClient.invalidateQueries({ queryKey: ["findings"] });
-        queryClient.invalidateQueries({ queryKey: ["recent-logs"] });
+      if (error) { toast.error(`Recon failed: ${error.message}`); return; }
+      if (data?.error) { toast.error(`Recon failed: ${data.error}`); return; }
+
+      toast.success(`Recon: ${data.subdomains} subdomains, ${data.endpointsIngested} endpoints — chaining Pro-Fuzz + Drift Reval...`);
+      queryClient.invalidateQueries({ queryKey: ["targets"] });
+      queryClient.invalidateQueries({ queryKey: ["endpoints-count"] });
+      queryClient.invalidateQueries({ queryKey: ["findings"] });
+      queryClient.invalidateQueries({ queryKey: ["recent-logs"] });
+
+      // ── Auto-chain: Adaptive Drift baseline → Pro-Fuzz → Drift Reval ──
+      // Fire in sequence, surface results in Neural Log via edge-function logging
+      try {
+        await supabase.functions.invoke("cyberscope-adaptive-drift", { body: { targetId } });
+      } catch (e) { console.warn("drift baseline failed:", e); }
+
+      try {
+        const { data: fz } = await supabase.functions.invoke("advanced-fuzzer", { body: { targetId } });
+        if (fz?.ok) {
+          toast.success(`🔥 Pro-Fuzz: ${fz.totalProbes} probes, ${fz.anomalies} anomalies, ${fz.cveReport?.confirmed || 0}/${fz.cveReport?.tested || 0} CVE templates matched`);
+        }
+      } catch (e: any) {
+        toast.error(`Pro-Fuzz error: ${e.message}`);
       }
+
+      try {
+        const { data: rv } = await supabase.functions.invoke("drift-revalidator", { body: { targetId } });
+        if (rv?.ok && rv.processed > 0) {
+          const confirmed = rv.results?.filter((r: { status: string }) => r.status === "confirmed").length || 0;
+          const regressed = rv.results?.filter((r: { status: string }) => r.status === "regressed").length || 0;
+          toast.success(`🔬 Drift Reval: ${confirmed} confirmed, ${regressed} regressed (${rv.processed} total)`);
+        }
+      } catch (e) { console.warn("drift reval failed:", e); }
+
+      queryClient.invalidateQueries({ queryKey: ["findings"] });
+      queryClient.invalidateQueries({ queryKey: ["recent-logs"] });
+      queryClient.invalidateQueries({ queryKey: ["targets-for-drift"] });
     } catch (e: any) {
       toast.error(`Recon error: ${e.message}`);
     } finally {
@@ -202,41 +226,6 @@ export default function Targets() {
     }
   };
 
-  const startDriftReval = async (targetId: string) => {
-    setRevalTargets((prev) => new Set(prev).add(targetId));
-    toast.info("Drift revalidation started — re-testing mutated payloads");
-    try {
-      const { data, error } = await supabase.functions.invoke("drift-revalidator", { body: { targetId } });
-      if (error) throw error;
-      if (!data?.ok) throw new Error(data?.error || "revalidator failed");
-      const confirmed = data.results?.filter((r: { status: string }) => r.status === "confirmed").length || 0;
-      const regressed = data.results?.filter((r: { status: string }) => r.status === "regressed").length || 0;
-      toast.success(`Drift reval: ${confirmed} confirmed, ${regressed} regressed (${data.processed} total)`);
-      queryClient.invalidateQueries({ queryKey: ["findings"] });
-      queryClient.invalidateQueries({ queryKey: ["recent-logs"] });
-    } catch (e: any) {
-      toast.error(`Drift reval error: ${e.message}`);
-    } finally {
-      setRevalTargets((prev) => { const n = new Set(prev); n.delete(targetId); return n; });
-    }
-  };
-
-  const startProFuzz = async (targetId: string) => {
-    setFuzzTargets((prev) => new Set(prev).add(targetId));
-    toast.info("🔥 Pro-Level Fuzzer engaged — deep payload + CVE template testing");
-    try {
-      const { data, error } = await supabase.functions.invoke("advanced-fuzzer", { body: { targetId } });
-      if (error) throw error;
-      if (!data?.ok) throw new Error(data?.error || "fuzzer failed");
-      toast.success(`Pro-Fuzz: ${data.totalProbes} probes, ${data.anomalies} anomalies, ${data.cveReport?.confirmed || 0} CVE matches`);
-      queryClient.invalidateQueries({ queryKey: ["findings"] });
-      queryClient.invalidateQueries({ queryKey: ["recent-logs"] });
-    } catch (e: any) {
-      toast.error(`Pro-Fuzz error: ${e.message}`);
-    } finally {
-      setFuzzTargets((prev) => { const n = new Set(prev); n.delete(targetId); return n; });
-    }
-  };
 
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text);
@@ -321,18 +310,7 @@ export default function Targets() {
                         {isDeepAuditing ? "Auditing..." : auditData && isExpanded ? "Hide Audit" : "Deep Audit"}
                       </Button>
                     )}
-                    {target.domain && target.status === "completed" && (
-                      <Button variant="outline" size="sm" className="font-mono text-[10px] gap-1 border-cyber-amber/30 text-cyber-amber hover:bg-cyber-amber/10" onClick={() => startProFuzz(target.id)} disabled={fuzzTargets.has(target.id)}>
-                        {fuzzTargets.has(target.id) ? <Loader2 className="h-3 w-3 animate-spin" /> : <Flame className="h-3 w-3" />}
-                        {fuzzTargets.has(target.id) ? "Fuzzing..." : "Pro-Fuzz"}
-                      </Button>
-                    )}
-                    {target.domain && (
-                      <Button variant="outline" size="sm" className="font-mono text-[10px] gap-1 border-cyber-purple/30 text-cyber-purple hover:bg-cyber-purple/10" onClick={() => startDriftReval(target.id)} disabled={revalTargets.has(target.id)}>
-                        {revalTargets.has(target.id) ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
-                        {revalTargets.has(target.id) ? "Revalidating..." : "Drift Reval"}
-                      </Button>
-                    )}
+                    {/* Pro-Fuzz and Drift Reval auto-chain after Recon — buttons removed by design */}
                     <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" onClick={() => deleteTarget.mutate(target.id)}>
                       <Trash2 className="h-3 w-3" />
                     </Button>

@@ -1,9 +1,12 @@
 import { useState, useRef, useEffect } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from "@/components/ui/select";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
@@ -31,22 +34,49 @@ interface DriftReport {
   detectedAt: string;
 }
 
-const initialEndpoint = "https://target.example.com/api/search";
-
 export function WafDriftMonitor() {
-  const [endpoint, setEndpoint] = useState(initialEndpoint);
+  const [selectedTargetId, setSelectedTargetId] = useState<string>("");
   const [running, setRunning] = useState(false);
   const [drift, setDrift] = useState<DriftReport | null>(null);
   const [steps, setSteps] = useState<MutationStep[]>([]);
   const [logLines, setLogLines] = useState<string[]>([
-    "[init] mutation engine idle — awaiting target endpoint",
+    "[init] mutation engine idle — select a target to begin",
   ]);
   const consoleRef = useRef<HTMLDivElement>(null);
 
+  const { data: targets } = useQuery({
+    queryKey: ["targets-for-drift"],
+    queryFn: async () => {
+      const { data } = await supabase
+        .from("target_workspaces")
+        .select("id, name, domain")
+        .not("domain", "is", null)
+        .order("created_at", { ascending: false });
+      return data || [];
+    },
+  });
+
+  // Auto-select first target
   useEffect(() => {
-    if (consoleRef.current) {
-      consoleRef.current.scrollTop = consoleRef.current.scrollHeight;
+    if (!selectedTargetId && targets && targets.length > 0) {
+      setSelectedTargetId(targets[0].id);
     }
+  }, [targets, selectedTargetId]);
+
+  // Reset state when target changes
+  useEffect(() => {
+    setDrift(null);
+    setSteps([]);
+    const t = targets?.find((x) => x.id === selectedTargetId);
+    setLogLines([
+      t
+        ? `[init] target locked → ${t.name} (${t.domain}) — click Simulate Adaptive Routing`
+        : "[init] mutation engine idle — select a target to begin",
+    ]);
+  }, [selectedTargetId, targets]);
+
+  useEffect(() => {
+    if (consoleRef.current) consoleRef.current.scrollTop = consoleRef.current.scrollHeight;
   }, [logLines]);
 
   const appendLog = (line: string) => {
@@ -55,38 +85,38 @@ export function WafDriftMonitor() {
   };
 
   const runSimulation = async () => {
-    if (!endpoint.trim()) {
-      toast.error("Provide a target endpoint");
+    const target = targets?.find((t) => t.id === selectedTargetId);
+    if (!target) {
+      toast.error("Select a target first");
       return;
     }
     setRunning(true);
     setSteps([]);
     setDrift(null);
-    setLogLines([`[boot] adaptive routing initiated → ${endpoint}`]);
+    setLogLines([`[boot] adaptive routing initiated → ${target.domain}`]);
     appendLog("calling cyberscope-adaptive-drift edge function...");
 
     try {
       const { data, error } = await supabase.functions.invoke("cyberscope-adaptive-drift", {
-        body: { endpoint, payload: "<script>alert(1)</script>" },
+        body: { targetId: target.id, payload: "<script>alert(1)</script>" },
       });
       if (error) throw error;
       if (!data?.ok) throw new Error(data?.error || "engine failure");
 
       setDrift(data.drift);
-      appendLog(`drift report received → ${data.drift.driftType}`);
+      appendLog(`drift report → ${data.drift.driftType}${data.drift.driftDetected ? " ⚠️ DRIFT" : " (stable)"}`);
       appendLog(`baseline: ${data.drift.previousServer} / ${data.drift.previousWaf}`);
       appendLog(`current : ${data.drift.currentServer} / ${data.drift.currentWaf}`);
 
-      // Animate steps in sequence
       const chain: MutationStep[] = data.mutationChain;
       for (const step of chain) {
-        await new Promise((r) => setTimeout(r, 900));
+        await new Promise((r) => setTimeout(r, 700));
         setSteps((prev) => [...prev, step]);
         appendLog(`iter#${step.iteration} [${step.technique}] → ${step.httpStatus} ${step.httpStatusText}`);
         appendLog(`  ↳ ${step.engineAction}`);
       }
       appendLog("mutation chain complete.");
-      toast.success("Adaptive routing simulation finished");
+      toast.success(`Drift scan finished — ${data.drift.driftType}`);
     } catch (e: any) {
       appendLog(`ERROR: ${e.message}`);
       toast.error(`Drift simulation failed: ${e.message}`);
@@ -99,6 +129,7 @@ export function WafDriftMonitor() {
     if (s >= 200 && s < 300) return "bg-primary/20 text-primary border-primary/40";
     if (s === 403 || s === 401) return "bg-cyber-red/20 text-cyber-red border-cyber-red/40";
     if (s === 406 || s === 429) return "bg-cyber-amber/20 text-cyber-amber border-cyber-amber/40";
+    if (s === 0) return "bg-muted text-muted-foreground border-border";
     return "bg-muted text-muted-foreground border-border";
   };
 
@@ -116,16 +147,25 @@ export function WafDriftMonitor() {
       <CardContent className="space-y-4">
         {/* Controls */}
         <div className="flex flex-col sm:flex-row gap-2">
-          <Input
-            value={endpoint}
-            onChange={(e) => setEndpoint(e.target.value)}
-            placeholder="Target Endpoint (e.g. https://api.example.com/search)"
-            className="font-mono text-xs bg-muted border-border flex-1"
-          />
+          <Select value={selectedTargetId} onValueChange={setSelectedTargetId}>
+            <SelectTrigger className="font-mono text-xs bg-muted border-border flex-1">
+              <SelectValue placeholder="Select target..." />
+            </SelectTrigger>
+            <SelectContent className="bg-popover border-border">
+              {(targets || []).map((t) => (
+                <SelectItem key={t.id} value={t.id} className="font-mono text-xs">
+                  {t.name} — {t.domain}
+                </SelectItem>
+              ))}
+              {(!targets || targets.length === 0) && (
+                <div className="p-2 text-[11px] font-mono text-muted-foreground">No targets with domain</div>
+              )}
+            </SelectContent>
+          </Select>
           <Button
             size="sm"
             onClick={runSimulation}
-            disabled={running}
+            disabled={running || !selectedTargetId}
             className="font-mono text-xs gap-1 bg-cyber-amber/20 text-cyber-amber border border-cyber-amber/40 hover:bg-cyber-amber/30"
           >
             {running ? <Loader2 className="h-3 w-3 animate-spin" /> : <Zap className="h-3 w-3" />}
@@ -156,13 +196,13 @@ export function WafDriftMonitor() {
               <div className="grid grid-cols-2 gap-2">
                 <div className="rounded border border-border bg-background/50 p-2">
                   <p className="text-[9px] font-mono text-muted-foreground uppercase mb-1">Last Scan</p>
-                  <p className="text-xs font-mono text-foreground">{drift?.previousServer || "—"}</p>
-                  <p className="text-[10px] font-mono text-muted-foreground">{drift?.previousWaf || "—"}</p>
+                  <p className="text-xs font-mono text-foreground break-all">{drift?.previousServer || "—"}</p>
+                  <p className="text-[10px] font-mono text-muted-foreground break-all">{drift?.previousWaf || "—"}</p>
                 </div>
                 <div className="rounded border border-cyber-amber/30 bg-cyber-amber/5 p-2">
                   <p className="text-[9px] font-mono text-cyber-amber uppercase mb-1">Current Scan</p>
-                  <p className="text-xs font-mono text-foreground">{drift?.currentServer || "—"}</p>
-                  <p className="text-[10px] font-mono text-cyber-amber">{drift?.currentWaf || "—"}</p>
+                  <p className="text-xs font-mono text-foreground break-all">{drift?.currentServer || "—"}</p>
+                  <p className="text-[10px] font-mono text-cyber-amber break-all">{drift?.currentWaf || "—"}</p>
                 </div>
               </div>
               {drift && (
@@ -194,19 +234,12 @@ export function WafDriftMonitor() {
                 {logLines.map((line, i) => {
                   const isError = line.includes("ERROR");
                   const isOk = line.includes("complete") || line.includes("Successful");
-                  const isWarn = line.includes("Blocked") || line.includes("drift");
-                  const color = isError
-                    ? "text-cyber-red"
-                    : isOk
-                    ? "text-primary"
-                    : isWarn
-                    ? "text-cyber-amber"
+                  const isWarn = line.includes("Blocked") || line.includes("DRIFT") || line.includes("drift");
+                  const color = isError ? "text-cyber-red"
+                    : isOk ? "text-primary"
+                    : isWarn ? "text-cyber-amber"
                     : "text-primary/70";
-                  return (
-                    <div key={i} className={color}>
-                      {line}
-                    </div>
-                  );
+                  return <div key={i} className={color}>{line}</div>;
                 })}
               </div>
             </CardContent>
@@ -237,7 +270,7 @@ export function WafDriftMonitor() {
                 {steps.length === 0 ? (
                   <TableRow className="border-border/50">
                     <TableCell colSpan={4} className="text-center font-mono text-[11px] text-muted-foreground py-6">
-                      No mutation chain — click "Simulate Adaptive Routing" to begin
+                      No mutation chain — select a target and click "Simulate Adaptive Routing"
                     </TableCell>
                   </TableRow>
                 ) : (
@@ -249,8 +282,8 @@ export function WafDriftMonitor() {
                       </TableCell>
                       <TableCell>
                         <Badge variant="outline" className={`font-mono text-[9px] gap-1 ${statusColor(s.httpStatus)}`}>
-                          {s.httpStatus === 200 ? <CheckCircle2 className="h-2.5 w-2.5" /> : <AlertTriangle className="h-2.5 w-2.5" />}
-                          {s.httpStatus} {s.httpStatusText}
+                          {s.httpStatus >= 200 && s.httpStatus < 300 ? <CheckCircle2 className="h-2.5 w-2.5" /> : <AlertTriangle className="h-2.5 w-2.5" />}
+                          {s.httpStatus || "—"} {s.httpStatusText}
                         </Badge>
                       </TableCell>
                       <TableCell className="font-mono text-[11px] text-muted-foreground">{s.engineAction}</TableCell>
