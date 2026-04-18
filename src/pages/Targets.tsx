@@ -144,18 +144,45 @@ export default function Targets() {
 
   const startRecon = async (targetId: string) => {
     setScanningTargets((prev) => new Set(prev).add(targetId));
-    toast.info("Recon pipeline started — check Neural Log for live updates");
+    toast.info("Recon pipeline started — Pro-Fuzz + Drift Reval will auto-chain after recon");
     try {
       const { data, error } = await supabase.functions.invoke("recon-engine", { body: { targetId } });
-      if (error) toast.error(`Recon failed: ${error.message}`);
-      else if (data?.error) toast.error(`Recon failed: ${data.error}`);
-      else {
-        toast.success(`Recon complete: ${data.subdomains} subdomains, ${data.endpointsIngested} endpoints, 🕷️ ${data.spiderUrls || 0} crawled, ${data.spiderForms || 0} forms`);
-        queryClient.invalidateQueries({ queryKey: ["targets"] });
-        queryClient.invalidateQueries({ queryKey: ["endpoints-count"] });
-        queryClient.invalidateQueries({ queryKey: ["findings"] });
-        queryClient.invalidateQueries({ queryKey: ["recent-logs"] });
+      if (error) { toast.error(`Recon failed: ${error.message}`); return; }
+      if (data?.error) { toast.error(`Recon failed: ${data.error}`); return; }
+
+      toast.success(`Recon: ${data.subdomains} subdomains, ${data.endpointsIngested} endpoints — chaining Pro-Fuzz + Drift Reval...`);
+      queryClient.invalidateQueries({ queryKey: ["targets"] });
+      queryClient.invalidateQueries({ queryKey: ["endpoints-count"] });
+      queryClient.invalidateQueries({ queryKey: ["findings"] });
+      queryClient.invalidateQueries({ queryKey: ["recent-logs"] });
+
+      // ── Auto-chain: Adaptive Drift baseline → Pro-Fuzz → Drift Reval ──
+      // Fire in sequence, surface results in Neural Log via edge-function logging
+      try {
+        await supabase.functions.invoke("cyberscope-adaptive-drift", { body: { targetId } });
+      } catch (e) { console.warn("drift baseline failed:", e); }
+
+      try {
+        const { data: fz } = await supabase.functions.invoke("advanced-fuzzer", { body: { targetId } });
+        if (fz?.ok) {
+          toast.success(`🔥 Pro-Fuzz: ${fz.totalProbes} probes, ${fz.anomalies} anomalies, ${fz.cveReport?.confirmed || 0}/${fz.cveReport?.tested || 0} CVE templates matched`);
+        }
+      } catch (e: any) {
+        toast.error(`Pro-Fuzz error: ${e.message}`);
       }
+
+      try {
+        const { data: rv } = await supabase.functions.invoke("drift-revalidator", { body: { targetId } });
+        if (rv?.ok && rv.processed > 0) {
+          const confirmed = rv.results?.filter((r: { status: string }) => r.status === "confirmed").length || 0;
+          const regressed = rv.results?.filter((r: { status: string }) => r.status === "regressed").length || 0;
+          toast.success(`🔬 Drift Reval: ${confirmed} confirmed, ${regressed} regressed (${rv.processed} total)`);
+        }
+      } catch (e) { console.warn("drift reval failed:", e); }
+
+      queryClient.invalidateQueries({ queryKey: ["findings"] });
+      queryClient.invalidateQueries({ queryKey: ["recent-logs"] });
+      queryClient.invalidateQueries({ queryKey: ["targets-for-drift"] });
     } catch (e: any) {
       toast.error(`Recon error: ${e.message}`);
     } finally {
