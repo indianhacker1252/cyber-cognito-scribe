@@ -97,8 +97,6 @@ export default function Targets() {
   const [deepAuditTargets, setDeepAuditTargets] = useState<Set<string>>(new Set());
   const [deepAuditResults, setDeepAuditResults] = useState<Record<string, DeepAuditResults>>({});
   const [expandedAudit, setExpandedAudit] = useState<string | null>(null);
-  const [revalTargets, setRevalTargets] = useState<Set<string>>(new Set());
-  const [fuzzTargets, setFuzzTargets] = useState<Set<string>>(new Set());
 
   const { data: targets, isLoading } = useQuery({
     queryKey: ["targets"],
