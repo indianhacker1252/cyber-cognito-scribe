@@ -14,7 +14,6 @@ import { Skeleton } from "@/components/ui/skeleton";
 import {
   Plus, Crosshair, Trash2, Radar, Loader2, ShieldAlert,
   Copy, CheckCircle2, XCircle, AlertTriangle, Activity, Bug, GitCompare, Scan,
-  RefreshCw, Flame,
 } from "lucide-react";
 import { toast } from "sonner";
 import { WafDriftMonitor } from "@/components/WafDriftMonitor";
