@@ -373,7 +373,7 @@ Deno.serve(async (req) => {
 
     await db.from("scan_logs").insert({
       target_id: targetId, log_type: "result",
-      message: `✅ Pro-Fuzz complete — ${allResults.length} probes, ${anomalies.length} high-signal anomalies, ${cveReport.confirmed}/${cveReport.tested} CVE templates matched`,
+      message: `✅ Pro-Fuzz complete — ${allResults.length} probes, ${anomalies.length} high-signal anomalies | 📡 Templates: ${cveReport.tested} tested, ${cveReport.confirmed} ✅ matched, ${cveReport.failed} ❌ no-match`,
       metadata: { summary, cveReport },
     });
 
