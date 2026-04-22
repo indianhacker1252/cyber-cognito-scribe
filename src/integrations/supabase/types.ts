@@ -164,6 +164,117 @@ export type Database = {
         }
         Relationships: []
       }
+      auth_profiles: {
+        Row: {
+          auth_type: string
+          bearer_token: string | null
+          cookie_header: string | null
+          created_at: string
+          id: string
+          is_valid: boolean | null
+          last_validated_at: string | null
+          login_body_template: string | null
+          login_method: string | null
+          login_password: string | null
+          login_url: string | null
+          login_username: string | null
+          profile_name: string
+          session_extract_regex: string | null
+          target_id: string
+          updated_at: string
+        }
+        Insert: {
+          auth_type?: string
+          bearer_token?: string | null
+          cookie_header?: string | null
+          created_at?: string
+          id?: string
+          is_valid?: boolean | null
+          last_validated_at?: string | null
+          login_body_template?: string | null
+          login_method?: string | null
+          login_password?: string | null
+          login_url?: string | null
+          login_username?: string | null
+          profile_name?: string
+          session_extract_regex?: string | null
+          target_id: string
+          updated_at?: string
+        }
+        Update: {
+          auth_type?: string
+          bearer_token?: string | null
+          cookie_header?: string | null
+          created_at?: string
+          id?: string
+          is_valid?: boolean | null
+          last_validated_at?: string | null
+          login_body_template?: string | null
+          login_method?: string | null
+          login_password?: string | null
+          login_url?: string | null
+          login_username?: string | null
+          profile_name?: string
+          session_extract_regex?: string | null
+          target_id?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      canary_baselines: {
+        Row: {
+          baseline_blocked: boolean | null
+          baseline_body_hash: string | null
+          baseline_body_length: number | null
+          baseline_status: number | null
+          canary_name: string
+          created_at: string
+          current_blocked: boolean | null
+          current_body_hash: string | null
+          current_body_length: number | null
+          current_status: number | null
+          drift_detected: boolean | null
+          id: string
+          last_checked_at: string | null
+          payload: string
+          target_id: string
+        }
+        Insert: {
+          baseline_blocked?: boolean | null
+          baseline_body_hash?: string | null
+          baseline_body_length?: number | null
+          baseline_status?: number | null
+          canary_name: string
+          created_at?: string
+          current_blocked?: boolean | null
+          current_body_hash?: string | null
+          current_body_length?: number | null
+          current_status?: number | null
+          drift_detected?: boolean | null
+          id?: string
+          last_checked_at?: string | null
+          payload: string
+          target_id: string
+        }
+        Update: {
+          baseline_blocked?: boolean | null
+          baseline_body_hash?: string | null
+          baseline_body_length?: number | null
+          baseline_status?: number | null
+          canary_name?: string
+          created_at?: string
+          current_blocked?: boolean | null
+          current_body_hash?: string | null
+          current_body_length?: number | null
+          current_status?: number | null
+          drift_detected?: boolean | null
+          id?: string
+          last_checked_at?: string | null
+          payload?: string
+          target_id?: string
+        }
+        Relationships: []
+      }
       chat_messages: {
         Row: {
           content: string
@@ -419,6 +530,48 @@ export type Database = {
           },
         ]
       }
+      exploit_chains: {
+        Row: {
+          chain_name: string
+          chain_steps: Json
+          completed_at: string | null
+          created_at: string
+          execution_log: Json | null
+          final_evidence: Json | null
+          id: string
+          severity: string | null
+          state_variables: Json | null
+          status: string
+          target_id: string
+        }
+        Insert: {
+          chain_name: string
+          chain_steps?: Json
+          completed_at?: string | null
+          created_at?: string
+          execution_log?: Json | null
+          final_evidence?: Json | null
+          id?: string
+          severity?: string | null
+          state_variables?: Json | null
+          status?: string
+          target_id: string
+        }
+        Update: {
+          chain_name?: string
+          chain_steps?: Json
+          completed_at?: string | null
+          created_at?: string
+          execution_log?: Json | null
+          final_evidence?: Json | null
+          id?: string
+          severity?: string | null
+          state_variables?: Json | null
+          status?: string
+          target_id?: string
+        }
+        Relationships: []
+      }
       intel_feeds: {
         Row: {
           affected_tech_stack: Json | null
@@ -628,6 +781,60 @@ export type Database = {
           },
         ]
       }
+      oob_callbacks: {
+        Row: {
+          callback_type: string
+          created_at: string
+          finding_id: string | null
+          id: string
+          payload_context: string | null
+          received_at: string | null
+          request_body: string | null
+          request_headers: Json | null
+          request_method: string | null
+          request_path: string | null
+          source_ip: string | null
+          target_id: string | null
+          token: string
+          user_agent: string | null
+          vuln_class: string | null
+        }
+        Insert: {
+          callback_type?: string
+          created_at?: string
+          finding_id?: string | null
+          id?: string
+          payload_context?: string | null
+          received_at?: string | null
+          request_body?: string | null
+          request_headers?: Json | null
+          request_method?: string | null
+          request_path?: string | null
+          source_ip?: string | null
+          target_id?: string | null
+          token: string
+          user_agent?: string | null
+          vuln_class?: string | null
+        }
+        Update: {
+          callback_type?: string
+          created_at?: string
+          finding_id?: string | null
+          id?: string
+          payload_context?: string | null
+          received_at?: string | null
+          request_body?: string | null
+          request_headers?: Json | null
+          request_method?: string | null
+          request_path?: string | null
+          source_ip?: string | null
+          target_id?: string | null
+          token?: string
+          user_agent?: string | null
+          vuln_class?: string | null
+        }
+        Relationships: []
+      }
       pending_approvals: {
         Row: {
           ai_verification_notes: string | null
@@ -729,6 +936,57 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      scan_jobs: {
+        Row: {
+          attempts: number
+          completed_at: string | null
+          created_at: string
+          error_message: string | null
+          id: string
+          job_type: string
+          max_attempts: number
+          next_run_at: string
+          payload: Json | null
+          priority: number
+          result: Json | null
+          started_at: string | null
+          status: string
+          target_id: string
+        }
+        Insert: {
+          attempts?: number
+          completed_at?: string | null
+          created_at?: string
+          error_message?: string | null
+          id?: string
+          job_type: string
+          max_attempts?: number
+          next_run_at?: string
+          payload?: Json | null
+          priority?: number
+          result?: Json | null
+          started_at?: string | null
+          status?: string
+          target_id: string
+        }
+        Update: {
+          attempts?: number
+          completed_at?: string | null
+          created_at?: string
+          error_message?: string | null
+          id?: string
+          job_type?: string
+          max_attempts?: number
+          next_run_at?: string
+          payload?: Json | null
+          priority?: number
+          result?: Json | null
+          started_at?: string | null
+          status?: string
+          target_id?: string
+        }
+        Relationships: []
       }
       scan_logs: {
         Row: {
