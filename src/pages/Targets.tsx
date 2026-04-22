@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { WafDriftMonitor } from "@/components/WafDriftMonitor";
+import { AdvancedScannerPanel } from "@/components/AdvancedScannerPanel";
 
 const statusColors: Record<string, string> = {
   queued: "bg-cyber-amber/20 text-cyber-amber border-cyber-amber/30",
