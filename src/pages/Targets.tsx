@@ -469,6 +469,10 @@ export default function Targets() {
                         </Card>
                       </TabsContent>
                     </Tabs>
+
+                    <div className="mt-4">
+                      <AdvancedScannerPanel targetId={target.id} baseUrl={target.domain ? `https://${target.domain}` : (target.api_schema_url || "")} />
+                    </div>
                   </div>
                 )}
               </div>
