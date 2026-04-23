@@ -33,13 +33,14 @@ export const AdvancedScannerPanel = ({ targetId, baseUrl }: Props) => {
   const [mythosChains, setMythosChains] = useState<any[]>([]);
   const [mythosVariants, setMythosVariants] = useState<any[]>([]);
   const [mythosPatches, setMythosPatches] = useState<any[]>([]);
+  const [mythosDebates, setMythosDebates] = useState<any[]>([]);
   const [autoMythos, setAutoMythos] = useState(false);
   const [repoUrl, setRepoUrl] = useState("");
 
   useEffect(() => { void loadAll(); }, [targetId]);
 
   const loadAll = async () => {
-    const [{ data: ap }, { data: oob }, { data: ch }, { data: jb }, { data: dr }, { data: mr }, { data: mc }, { data: mv }, { data: mp }, { data: tgt }] = await Promise.all([
+    const [{ data: ap }, { data: oob }, { data: ch }, { data: jb }, { data: dr }, { data: mr }, { data: mc }, { data: mv }, { data: mp }, mdRes, { data: tgt }] = await Promise.all([
       supabase.from("auth_profiles").select("*").eq("target_id", targetId).maybeSingle(),
       supabase.from("oob_callbacks").select("*").eq("target_id", targetId).order("created_at", { ascending: false }).limit(10),
       supabase.from("exploit_chains").select("*").eq("target_id", targetId).order("created_at", { ascending: false }).limit(5),
@@ -49,6 +50,7 @@ export const AdvancedScannerPanel = ({ targetId, baseUrl }: Props) => {
       supabase.from("mythos_chains").select("*").eq("target_id", targetId).order("created_at", { ascending: false }).limit(8),
       supabase.from("mythos_variants").select("*").eq("target_id", targetId).order("created_at", { ascending: false }).limit(10),
       supabase.from("mythos_patches").select("*").eq("target_id", targetId).order("created_at", { ascending: false }).limit(8),
+      (supabase.from("mythos_debates" as any).select("*").eq("target_id", targetId).order("created_at", { ascending: false }).limit(6)) as any,
       supabase.from("target_workspaces").select("auto_mythos").eq("id", targetId).maybeSingle(),
     ]);
     if (ap) setAuthProfile(ap);
@@ -60,6 +62,7 @@ export const AdvancedScannerPanel = ({ targetId, baseUrl }: Props) => {
     setMythosChains(mc || []);
     setMythosVariants(mv || []);
     setMythosPatches(mp || []);
+    setMythosDebates(((mdRes as any)?.data as any[]) || []);
     setAutoMythos(!!(tgt as any)?.auto_mythos);
   };
 
@@ -256,13 +259,42 @@ export const AdvancedScannerPanel = ({ targetId, baseUrl }: Props) => {
             </div>
 
             <div className="border border-border rounded p-2 text-xs">
-              <div className="font-semibold mb-1">🛡️ Defensive Patches</div>
+              <div className="font-semibold mb-1">🛡️ Defensive Patches (validated)</div>
               {mythosPatches.length === 0 && <div className="text-muted-foreground">No patches generated yet</div>}
               {mythosPatches.map((p) => (
                 <details key={p.id} className="border-b border-border py-1">
-                  <summary className="cursor-pointer flex justify-between"><span>{p.framework} / {p.language}</span><Badge>{p.patch_type}</Badge></summary>
+                  <summary className="cursor-pointer flex justify-between items-center gap-2">
+                    <span className="truncate">{p.framework} / {p.language}</span>
+                    <span className="flex gap-1">
+                      <Badge variant={p.validation_status === "passed" ? "default" : p.validation_status === "failed" ? "destructive" : "outline"}>
+                        {p.validation_status || "pending"} • risk {p.risk_score ?? "?"}
+                      </Badge>
+                      <Badge variant="outline">{p.patch_type}</Badge>
+                    </span>
+                  </summary>
                   <pre className="text-[10px] bg-muted/30 p-2 rounded mt-1 overflow-auto max-h-40 whitespace-pre-wrap">{p.patch_diff}</pre>
                   {p.waf_rule && <pre className="text-[10px] bg-muted/30 p-2 rounded mt-1 whitespace-pre-wrap">WAF: {p.waf_rule}</pre>}
+                </details>
+              ))}
+            </div>
+
+            <div className="border border-border rounded p-2 text-xs">
+              <div className="font-semibold mb-1">🥷 Two-Agent Debates (FP elimination)</div>
+              {mythosDebates.length === 0 && <div className="text-muted-foreground">No debates yet — runs during Mythos iterations</div>}
+              {mythosDebates.map((d) => (
+                <details key={d.id} className="border-b border-border py-1">
+                  <summary className="cursor-pointer flex justify-between items-center gap-2">
+                    <span className="truncate">{d.param_name} @ {(() => { try { return new URL(d.endpoint_url).pathname; } catch { return d.endpoint_url; } })()}</span>
+                    <Badge variant={d.fp_verdict === "true_positive" ? "destructive" : d.fp_verdict === "false_positive" ? "outline" : "secondary"}>
+                      {d.fp_verdict} • {d.confidence_score}%
+                    </Badge>
+                  </summary>
+                  <div className="mt-1 space-y-1">
+                    <div className="bg-muted/30 p-1 rounded"><span className="text-cyber-cyan font-bold">A:</span> {d.transcript?.[0]?.msg}</div>
+                    <div className="bg-muted/30 p-1 rounded"><span className="text-cyber-green font-bold">B:</span> {d.transcript?.[1]?.msg}</div>
+                    <div className="bg-muted/30 p-1 rounded"><span className="text-cyber-amber font-bold">⚔️ Payload:</span> <code>{d.agreed_payload}</code></div>
+                    <div className="bg-muted/30 p-1 rounded text-[10px]"><span className="font-bold">Debate:</span> {d.fp_reasoning?.slice(0, 300)}</div>
+                  </div>
                 </details>
               ))}
             </div>

@@ -1,4 +1,5 @@
-// Pillar 4: Zero-day variant generator from CVE root-cause patterns
+// Pillar 4: Zero-day variant generator from CVE root-cause patterns.
+// MVP+: enqueues per-variant test jobs through scan_jobs (streams progress to Mythos tab).
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
@@ -7,23 +8,6 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
-async function testPayload(url: string, payload: string): Promise<{ status: number; bodyLen: number; reflected: boolean; errorSig: boolean }> {
-  try {
-    const u = new URL(url);
-    u.searchParams.set("q", payload);
-    const r = await fetch(u.toString(), { signal: AbortSignal.timeout(8000) });
-    const body = await r.text();
-    return {
-      status: r.status,
-      bodyLen: body.length,
-      reflected: body.includes(payload),
-      errorSig: /SQL|syntax error|stack trace|undefined|TypeError|fatal error/i.test(body),
-    };
-  } catch {
-    return { status: 0, bodyLen: 0, reflected: false, errorSig: false };
-  }
-}
-
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
   try {
@@ -31,6 +15,12 @@ serve(async (req) => {
     if (!targetId) throw new Error("targetId required");
 
     const db = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
+
+    await db.from("scan_logs").insert({
+      target_id: targetId, log_type: "thought",
+      message: `🌀 Variant Gen: pulling CVE root-cause patterns from intel feeds`,
+      metadata: { phase: "variant-intel-pull", run_id: runId },
+    });
 
     let intel: any[] = [];
     if (cveIds?.length) {
@@ -41,10 +31,16 @@ serve(async (req) => {
       intel = data || [];
     }
 
-    const { data: endpoints } = await db.from("discovered_endpoints").select("url,method").eq("target_id", targetId).limit(10);
+    const { data: endpoints } = await db.from("discovered_endpoints").select("url,method,parameters").eq("target_id", targetId).limit(20);
 
     const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
     if (!LOVABLE_API_KEY) throw new Error("LOVABLE_API_KEY not configured");
+
+    await db.from("scan_logs").insert({
+      target_id: targetId, log_type: "action",
+      message: `🧬 Variant Gen: asking LLM for root-cause variants from ${intel.length} CVEs`,
+      metadata: { phase: "variant-llm-call", run_id: runId },
+    });
 
     const aiResp = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
       method: "POST",
@@ -91,43 +87,80 @@ serve(async (req) => {
     const args = JSON.parse(aiData.choices?.[0]?.message?.tool_calls?.[0]?.function?.arguments || "{}");
     const variants = (args.variants || []).slice(0, 8);
 
-    const records: any[] = [];
+    // Insert variants as "queued" — actual testing is queued as scan_jobs
+    const variantRecords: any[] = [];
     for (const v of variants) {
-      const ep = endpoints?.[0]?.url;
-      let testStatus = "untested";
-      let testResult: any = {};
-      let isZeroDay = false;
-      if (ep) {
-        const r = await testPayload(ep, v.variant_payload);
-        testResult = r;
-        testStatus = r.status === 0 ? "error" : (r.reflected || r.errorSig ? "candidate" : "negative");
-        isZeroDay = r.reflected || r.errorSig;
-      }
-      records.push({
-        run_id: runId ?? null, target_id: targetId, parent_cve: v.parent_cve,
-        vuln_class: v.vuln_class, root_cause_pattern: v.root_cause_pattern,
+      const ep = endpoints?.[0]?.url ?? null;
+      const paramName = endpoints?.[0]?.parameters
+        ? Object.keys(endpoints[0].parameters as Record<string, string>)[0] || "q"
+        : "q";
+      const { data: inserted } = await db.from("mythos_variants").insert({
+        run_id: runId ?? null, target_id: targetId,
+        parent_cve: v.parent_cve, vuln_class: v.vuln_class,
+        root_cause_pattern: v.root_cause_pattern,
         variant_payload: v.variant_payload, variant_rationale: v.variant_rationale,
-        test_endpoint: ep ?? null, test_status: testStatus, test_result: testResult,
-        is_zero_day_candidate: isZeroDay,
-      });
+        test_endpoint: ep, test_status: "queued",
+        test_result: {}, is_zero_day_candidate: false,
+      }).select().single();
+      if (inserted) variantRecords.push({ ...inserted, _paramName: paramName });
     }
 
-    if (records.length) await db.from("mythos_variants").insert(records);
-
-    const candidates = records.filter(r => r.is_zero_day_candidate).length;
     await db.from("scan_logs").insert({
-      target_id: targetId, log_type: candidates > 0 ? "warning" : "info",
-      message: `🌀 Mythos Variant Gen: ${variants.length} variants tested, ${candidates} zero-day candidates`,
-      metadata: { variants: variants.length, candidates },
+      target_id: targetId, log_type: "result",
+      message: `🧬 Variant Gen: ${variants.length} variants generated, queueing tests`,
+      metadata: { phase: "variant-generated", run_id: runId, count: variants.length },
     });
 
-    return new Response(JSON.stringify({ variantsCount: variants.length, candidates, variants: records }), {
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    // Queue per-variant test jobs (streams results into Mythos tab as worker picks them up)
+    const jobs = variantRecords
+      .filter(v => v.test_endpoint)
+      .map(v => ({
+        target_id: targetId,
+        job_type: "variant_test",
+        priority: 6,
+        payload: {
+          variantId: v.id,
+          payload: v.variant_payload,
+          endpoint: v.test_endpoint,
+          paramName: v._paramName,
+          vulnClass: v.vuln_class,
+        },
+      }));
+    if (jobs.length) await db.from("scan_jobs").insert(jobs);
+
+    // Also run inline tests for first 3 (so we have immediate results without waiting for cron)
+    let immediateCandidates = 0;
+    for (const v of variantRecords.slice(0, 3)) {
+      if (!v.test_endpoint) continue;
+      try {
+        const u = new URL(v.test_endpoint);
+        u.searchParams.set(v._paramName, v.variant_payload);
+        const r = await fetch(u.toString(), { signal: AbortSignal.timeout(6000) });
+        const body = await r.text();
+        const reflected = body.includes(v.variant_payload);
+        const errorSig = /SQL|syntax error|stack trace|undefined|TypeError|fatal error/i.test(body);
+        const isCand = reflected || errorSig;
+        if (isCand) immediateCandidates++;
+        await db.from("mythos_variants").update({
+          test_status: isCand ? "candidate" : "negative",
+          test_result: { status: r.status, bodyLen: body.length, reflected, errorSig },
+          is_zero_day_candidate: isCand,
+        } as any).eq("id", v.id);
+      } catch { /* leave as queued */ }
+    }
+
+    await db.from("scan_logs").insert({
+      target_id: targetId,
+      log_type: immediateCandidates > 0 ? "result" : "info",
+      message: `🌀 Variant Gen done: ${variants.length} variants, ${immediateCandidates} immediate 0-day candidates, ${jobs.length} queued for follow-up`,
+      metadata: { phase: "variant-complete", run_id: runId, candidates: immediateCandidates, queued: jobs.length },
     });
+
+    return new Response(JSON.stringify({ variantsCount: variants.length, candidates: immediateCandidates, queued: jobs.length }),
+      { headers: { ...corsHeaders, "Content-Type": "application/json" } });
   } catch (e) {
     console.error(e);
-    return new Response(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }), {
-      status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    return new Response(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }),
+      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
   }
 });

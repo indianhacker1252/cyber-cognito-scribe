@@ -147,13 +147,42 @@ export default function NeuralLog() {
   }, [initialLogs]);
 
   useEffect(() => {
-    const channel = supabase
-      .channel("scan-logs-realtime")
-      .on("postgres_changes", { event: "INSERT", schema: "public", table: "scan_logs" }, (payload) => {
-        if (!paused) setLogs(prev => [...prev, payload.new as ScanLog]);
-      })
-      .subscribe();
-    return () => { supabase.removeChannel(channel); };
+    let channel: ReturnType<typeof supabase.channel> | null = null;
+    let reconnectTimer: number | null = null;
+
+    const subscribe = () => {
+      channel = supabase
+        .channel(`scan-logs-realtime-${Date.now()}`)
+        .on("postgres_changes", { event: "INSERT", schema: "public", table: "scan_logs" }, (payload) => {
+          if (!paused) setLogs(prev => [...prev, payload.new as ScanLog].slice(-1000));
+        })
+        .subscribe((status) => {
+          if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
+            // Reconnect after 2s
+            if (reconnectTimer) clearTimeout(reconnectTimer);
+            reconnectTimer = setTimeout(() => {
+              if (channel) supabase.removeChannel(channel);
+              subscribe();
+            }, 2000) as unknown as number;
+          }
+        });
+    };
+
+    // Re-subscribe when tab becomes visible again (long-poll resilience)
+    const onVisible = () => {
+      if (document.visibilityState === "visible" && channel) {
+        supabase.removeChannel(channel);
+        subscribe();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+
+    subscribe();
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (channel) supabase.removeChannel(channel);
+    };
   }, [paused]);
 
   // Also listen for new findings/endpoints in realtime

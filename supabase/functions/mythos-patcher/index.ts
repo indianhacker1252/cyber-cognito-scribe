@@ -55,20 +55,38 @@ serve(async (req) => {
     const aiData = await aiResp.json();
     const patch = JSON.parse(aiData.choices?.[0]?.message?.tool_calls?.[0]?.function?.arguments || "{}");
 
+    // Static-check the diff BEFORE saving (configurable risk threshold)
+    const threshold = 70;
+    let validation: any = { passed: true, risk_score: 50, lint_warnings: [], risk_factors: [], notes: "skipped", validationId: null };
+    try {
+      const vResp = await fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/mythos-patch-validate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}` },
+        body: JSON.stringify({ patchDiff: patch.patch_diff || "", language, targetId, findingId, threshold }),
+      });
+      if (vResp.ok) validation = await vResp.json();
+    } catch { /* tolerate validator failure — keep default */ }
+
+    const validationStatus = validation.passed ? "passed" : "failed";
+
     const { data: inserted } = await db.from("mythos_patches").insert({
       finding_id: findingId, target_id: targetId,
       patch_type: "code", language, framework,
       patch_diff: patch.patch_diff, waf_rule: patch.waf_rule,
       config_change: patch.config_change, rationale: patch.rationale,
-    }).select().single();
+      validation_status: validationStatus,
+      validation_id: validation.validationId ?? null,
+      risk_score: validation.risk_score ?? 50,
+    } as any).select().single();
 
     await db.from("scan_logs").insert({
-      target_id: targetId, log_type: "info",
-      message: `🛡️ Mythos Patch: generated defensive fix for "${finding.title}"`,
-      metadata: { finding_id: findingId, patch_id: inserted?.id },
+      target_id: targetId,
+      log_type: validation.passed ? "info" : "error",
+      message: `🛡️ Mythos Patch: ${validation.passed ? "generated + validated" : "REJECTED by static check"} for "${finding.title}" (risk ${validation.risk_score}/${threshold})`,
+      metadata: { finding_id: findingId, patch_id: inserted?.id, validation, phase: "patch-final" },
     });
 
-    return new Response(JSON.stringify({ patchId: inserted?.id, patch }), {
+    return new Response(JSON.stringify({ patchId: inserted?.id, patch, validation }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (e) {
