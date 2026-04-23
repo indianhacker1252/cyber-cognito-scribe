@@ -178,6 +178,19 @@ export default function Targets() {
         }
       } catch (e) { console.warn("drift reval failed:", e); }
 
+      // ── Mythos auto-trigger if target has auto_mythos enabled ──
+      try {
+        const { data: tgt } = await supabase.from("target_workspaces").select("auto_mythos").eq("id", targetId).maybeSingle();
+        if ((tgt as any)?.auto_mythos) {
+          toast.info("🧠 Auto-Mythos enabled — launching long-horizon agent run");
+          supabase.functions.invoke("mythos-agent", { body: { targetId, triggerType: "auto", maxIterations: 3 } })
+            .then(({ data: mr }: any) => {
+              if (mr?.runId) toast.success(`Mythos run ${mr.runId.slice(0, 8)}: ${mr.totalChains} chains, ${mr.totalVariants} variants`);
+            })
+            .catch((e) => console.warn("mythos auto failed:", e));
+        }
+      } catch (e) { console.warn("auto-mythos check failed:", e); }
+
       queryClient.invalidateQueries({ queryKey: ["findings"] });
       queryClient.invalidateQueries({ queryKey: ["recent-logs"] });
       queryClient.invalidateQueries({ queryKey: ["targets-for-drift"] });
