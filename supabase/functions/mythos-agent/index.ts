@@ -56,12 +56,13 @@ serve(async (req) => {
       }
     }
 
-    // Phase 2: iterative chain + variant loop
+    // Phase 2: iterative chain + variant + debate loop
     for (let i = 1; i <= maxIterations; i++) {
       await db.from("mythos_runs").update({ iteration: i }).eq("id", runId);
       await append(`iter-${i}`, `Iteration ${i}/${maxIterations} starting`);
 
       // Chainer
+      await append(`iter-${i}-chain`, `🔗 Asking LLM to propose kill-chains from current findings`);
       const chainRes = await call("mythos-chainer", { targetId, runId });
       if (chainRes.ok) {
         const c = chainRes.data.chainsCount || 0;
@@ -69,17 +70,42 @@ serve(async (req) => {
         await append(`iter-${i}-chain`, `Chainer proposed ${c} kill-chains`, { chains: c });
       }
 
-      // Variant gen
+      // Variant gen (now queues per-payload tests)
+      await append(`iter-${i}-variant`, `🌀 Generating zero-day variants from CVE root causes`);
       const varRes = await call("mythos-variant-gen", { targetId, runId });
       if (varRes.ok) {
         const v = varRes.data.variantsCount || 0;
         const cand = varRes.data.candidates || 0;
         totalVariants += v;
-        await append(`iter-${i}-variant`, `Generated ${v} variants, ${cand} zero-day candidates`, { variants: v, candidates: cand });
+        await append(`iter-${i}-variant`, `Generated ${v} variants, ${cand} immediate 0-day candidates`, { variants: v, candidates: cand });
       }
 
+      // Debate phase: pick top N suspicious params and run two-agent debate
+      await append(`iter-${i}-debate`, `🥷 Two-agent black-hat debate on top params`);
+      const { data: eps } = await db.from("discovered_endpoints")
+        .select("url,parameters").eq("target_id", targetId).limit(8);
+      let debatesRun = 0, fpEliminated = 0, tpConfirmed = 0;
+      for (const ep of (eps || [])) {
+        const params = (ep.parameters as Record<string, string>) || {};
+        const paramKeys = Object.keys(params).slice(0, 1);
+        for (const pk of paramKeys) {
+          const dRes = await call("mythos-debate", {
+            targetId, runId, endpointUrl: ep.url, paramName: pk,
+            paramValue: params[pk], vulnClassHint: "auto",
+          });
+          if (dRes.ok) {
+            debatesRun++;
+            if (dRes.data.fpVerdict === "false_positive") fpEliminated++;
+            if (dRes.data.fpVerdict === "true_positive") tpConfirmed++;
+          }
+          if (debatesRun >= 4) break;
+        }
+        if (debatesRun >= 4) break;
+      }
+      await append(`iter-${i}-debate`, `Debates: ${debatesRun} run, ${tpConfirmed} TP, ${fpEliminated} FP eliminated`, { debatesRun, tpConfirmed, fpEliminated });
+
       // Stop early if nothing new
-      if ((chainRes.data?.chainsCount ?? 0) === 0 && (varRes.data?.candidates ?? 0) === 0 && i >= 2) {
+      if ((chainRes.data?.chainsCount ?? 0) === 0 && (varRes.data?.candidates ?? 0) === 0 && debatesRun === 0 && i >= 2) {
         await append(`iter-${i}`, `No new attack surface — stopping early`);
         break;
       }
