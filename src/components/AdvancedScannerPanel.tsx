@@ -184,7 +184,7 @@ export const AdvancedScannerPanel = ({ targetId, baseUrl }: Props) => {
         </CardTitle>
       </CardHeader>
       <CardContent>
-        <Tabs defaultValue="auth">
+        <Tabs defaultValue="mythos">
           <TabsList className="grid grid-cols-7">
             <TabsTrigger value="mythos"><Brain className="w-3 h-3 mr-1" />Mythos</TabsTrigger>
             <TabsTrigger value="auth"><Key className="w-3 h-3 mr-1" />Auth</TabsTrigger>
