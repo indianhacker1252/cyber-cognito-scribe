@@ -351,6 +351,102 @@ export type Database = {
           },
         ]
       }
+      code_findings: {
+        Row: {
+          ai_reasoning: string | null
+          created_at: string
+          file_path: string
+          id: string
+          line_end: number | null
+          line_start: number | null
+          linked_dast_finding_id: string | null
+          reachability_confirmed: boolean | null
+          repository_id: string
+          severity: string
+          sink_snippet: string | null
+          source_snippet: string | null
+          taint_path: Json | null
+          target_id: string
+          vuln_class: string
+        }
+        Insert: {
+          ai_reasoning?: string | null
+          created_at?: string
+          file_path: string
+          id?: string
+          line_end?: number | null
+          line_start?: number | null
+          linked_dast_finding_id?: string | null
+          reachability_confirmed?: boolean | null
+          repository_id: string
+          severity?: string
+          sink_snippet?: string | null
+          source_snippet?: string | null
+          taint_path?: Json | null
+          target_id: string
+          vuln_class: string
+        }
+        Update: {
+          ai_reasoning?: string | null
+          created_at?: string
+          file_path?: string
+          id?: string
+          line_end?: number | null
+          line_start?: number | null
+          linked_dast_finding_id?: string | null
+          reachability_confirmed?: boolean | null
+          repository_id?: string
+          severity?: string
+          sink_snippet?: string | null
+          source_snippet?: string | null
+          taint_path?: Json | null
+          target_id?: string
+          vuln_class?: string
+        }
+        Relationships: []
+      }
+      code_repositories: {
+        Row: {
+          branch: string | null
+          created_at: string
+          file_count: number | null
+          id: string
+          ingestion_log: Json | null
+          ingestion_status: string
+          language: string | null
+          repo_url: string | null
+          source_tree: Json | null
+          target_id: string
+          updated_at: string
+        }
+        Insert: {
+          branch?: string | null
+          created_at?: string
+          file_count?: number | null
+          id?: string
+          ingestion_log?: Json | null
+          ingestion_status?: string
+          language?: string | null
+          repo_url?: string | null
+          source_tree?: Json | null
+          target_id: string
+          updated_at?: string
+        }
+        Update: {
+          branch?: string | null
+          created_at?: string
+          file_count?: number | null
+          id?: string
+          ingestion_log?: Json | null
+          ingestion_status?: string
+          language?: string | null
+          repo_url?: string | null
+          source_tree?: Json | null
+          target_id?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
       discovered_endpoints: {
         Row: {
           created_at: string
@@ -781,6 +877,198 @@ export type Database = {
           },
         ]
       }
+      mythos_chains: {
+        Row: {
+          chain_name: string
+          chain_narrative: string | null
+          combined_cvss: number | null
+          combined_severity: string | null
+          created_at: string
+          execution_evidence: Json | null
+          execution_status: string | null
+          finding_ids: Json | null
+          id: string
+          run_id: string | null
+          steps: Json
+          target_id: string
+        }
+        Insert: {
+          chain_name: string
+          chain_narrative?: string | null
+          combined_cvss?: number | null
+          combined_severity?: string | null
+          created_at?: string
+          execution_evidence?: Json | null
+          execution_status?: string | null
+          finding_ids?: Json | null
+          id?: string
+          run_id?: string | null
+          steps?: Json
+          target_id: string
+        }
+        Update: {
+          chain_name?: string
+          chain_narrative?: string | null
+          combined_cvss?: number | null
+          combined_severity?: string | null
+          created_at?: string
+          execution_evidence?: Json | null
+          execution_status?: string | null
+          finding_ids?: Json | null
+          id?: string
+          run_id?: string | null
+          steps?: Json
+          target_id?: string
+        }
+        Relationships: []
+      }
+      mythos_patches: {
+        Row: {
+          applied: boolean | null
+          config_change: string | null
+          created_at: string
+          finding_id: string | null
+          framework: string | null
+          id: string
+          language: string | null
+          patch_diff: string | null
+          patch_type: string
+          rationale: string | null
+          target_id: string
+          waf_rule: string | null
+        }
+        Insert: {
+          applied?: boolean | null
+          config_change?: string | null
+          created_at?: string
+          finding_id?: string | null
+          framework?: string | null
+          id?: string
+          language?: string | null
+          patch_diff?: string | null
+          patch_type?: string
+          rationale?: string | null
+          target_id: string
+          waf_rule?: string | null
+        }
+        Update: {
+          applied?: boolean | null
+          config_change?: string | null
+          created_at?: string
+          finding_id?: string | null
+          framework?: string | null
+          id?: string
+          language?: string | null
+          patch_diff?: string | null
+          patch_type?: string
+          rationale?: string | null
+          target_id?: string
+          waf_rule?: string | null
+        }
+        Relationships: []
+      }
+      mythos_runs: {
+        Row: {
+          chains_count: number | null
+          completed_at: string | null
+          created_at: string
+          current_phase: string | null
+          findings_count: number | null
+          id: string
+          iteration: number
+          max_iterations: number
+          started_at: string | null
+          status: string
+          target_id: string
+          thought_log: Json | null
+          trigger_type: string
+          updated_at: string
+          variants_count: number | null
+        }
+        Insert: {
+          chains_count?: number | null
+          completed_at?: string | null
+          created_at?: string
+          current_phase?: string | null
+          findings_count?: number | null
+          id?: string
+          iteration?: number
+          max_iterations?: number
+          started_at?: string | null
+          status?: string
+          target_id: string
+          thought_log?: Json | null
+          trigger_type?: string
+          updated_at?: string
+          variants_count?: number | null
+        }
+        Update: {
+          chains_count?: number | null
+          completed_at?: string | null
+          created_at?: string
+          current_phase?: string | null
+          findings_count?: number | null
+          id?: string
+          iteration?: number
+          max_iterations?: number
+          started_at?: string | null
+          status?: string
+          target_id?: string
+          thought_log?: Json | null
+          trigger_type?: string
+          updated_at?: string
+          variants_count?: number | null
+        }
+        Relationships: []
+      }
+      mythos_variants: {
+        Row: {
+          created_at: string
+          id: string
+          is_zero_day_candidate: boolean | null
+          parent_cve: string | null
+          root_cause_pattern: string | null
+          run_id: string | null
+          target_id: string
+          test_endpoint: string | null
+          test_result: Json | null
+          test_status: string | null
+          variant_payload: string
+          variant_rationale: string | null
+          vuln_class: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          is_zero_day_candidate?: boolean | null
+          parent_cve?: string | null
+          root_cause_pattern?: string | null
+          run_id?: string | null
+          target_id: string
+          test_endpoint?: string | null
+          test_result?: Json | null
+          test_status?: string | null
+          variant_payload: string
+          variant_rationale?: string | null
+          vuln_class: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          is_zero_day_candidate?: boolean | null
+          parent_cve?: string | null
+          root_cause_pattern?: string | null
+          run_id?: string | null
+          target_id?: string
+          test_endpoint?: string | null
+          test_result?: Json | null
+          test_status?: string | null
+          variant_payload?: string
+          variant_rationale?: string | null
+          vuln_class?: string
+        }
+        Relationships: []
+      }
       oob_callbacks: {
         Row: {
           callback_type: string
@@ -1113,6 +1401,7 @@ export type Database = {
       target_workspaces: {
         Row: {
           api_schema_url: string | null
+          auto_mythos: boolean
           created_at: string
           domain: string | null
           id: string
@@ -1123,6 +1412,7 @@ export type Database = {
         }
         Insert: {
           api_schema_url?: string | null
+          auto_mythos?: boolean
           created_at?: string
           domain?: string | null
           id?: string
@@ -1133,6 +1423,7 @@ export type Database = {
         }
         Update: {
           api_schema_url?: string | null
+          auto_mythos?: boolean
           created_at?: string
           domain?: string | null
           id?: string
