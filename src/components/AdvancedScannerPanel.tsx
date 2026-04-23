@@ -39,18 +39,28 @@ export const AdvancedScannerPanel = ({ targetId, baseUrl }: Props) => {
   useEffect(() => { void loadAll(); }, [targetId]);
 
   const loadAll = async () => {
-    const [{ data: ap }, { data: oob }, { data: ch }, { data: jb }, { data: dr }] = await Promise.all([
+    const [{ data: ap }, { data: oob }, { data: ch }, { data: jb }, { data: dr }, { data: mr }, { data: mc }, { data: mv }, { data: mp }, { data: tgt }] = await Promise.all([
       supabase.from("auth_profiles").select("*").eq("target_id", targetId).maybeSingle(),
       supabase.from("oob_callbacks").select("*").eq("target_id", targetId).order("created_at", { ascending: false }).limit(10),
       supabase.from("exploit_chains").select("*").eq("target_id", targetId).order("created_at", { ascending: false }).limit(5),
       supabase.from("scan_jobs").select("*").eq("target_id", targetId).order("created_at", { ascending: false }).limit(10),
       supabase.from("canary_baselines").select("*").eq("target_id", targetId).order("last_checked_at", { ascending: false }),
+      supabase.from("mythos_runs").select("*").eq("target_id", targetId).order("created_at", { ascending: false }).limit(5),
+      supabase.from("mythos_chains").select("*").eq("target_id", targetId).order("created_at", { ascending: false }).limit(8),
+      supabase.from("mythos_variants").select("*").eq("target_id", targetId).order("created_at", { ascending: false }).limit(10),
+      supabase.from("mythos_patches").select("*").eq("target_id", targetId).order("created_at", { ascending: false }).limit(8),
+      supabase.from("target_workspaces").select("auto_mythos").eq("id", targetId).maybeSingle(),
     ]);
     if (ap) setAuthProfile(ap);
     setOobTokens(oob || []);
     setChains(ch || []);
     setJobs(jb || []);
     setDrifts(dr || []);
+    setMythosRuns(mr || []);
+    setMythosChains(mc || []);
+    setMythosVariants(mv || []);
+    setMythosPatches(mp || []);
+    setAutoMythos(!!(tgt as any)?.auto_mythos);
   };
 
   const saveAuth = async () => {
