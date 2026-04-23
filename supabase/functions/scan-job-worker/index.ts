@@ -22,6 +22,9 @@ const JOB_ROUTES: Record<string, string> = {
   drift_canary: "canary-drift-monitor",
   json_fuzz: "json-fuzzer",
   cve: "cve-version-matcher",
+  variant_test: "mythos-variant-test",
+  debate: "mythos-debate",
+  patch_validate: "mythos-patch-validate",
 };
 
 async function runJob(job: any): Promise<{ ok: boolean; result?: any; error?: string }> {
