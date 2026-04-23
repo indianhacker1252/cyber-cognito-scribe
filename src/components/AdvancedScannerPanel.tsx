@@ -185,7 +185,8 @@ export const AdvancedScannerPanel = ({ targetId, baseUrl }: Props) => {
       </CardHeader>
       <CardContent>
         <Tabs defaultValue="auth">
-          <TabsList className="grid grid-cols-6">
+          <TabsList className="grid grid-cols-7">
+            <TabsTrigger value="mythos"><Brain className="w-3 h-3 mr-1" />Mythos</TabsTrigger>
             <TabsTrigger value="auth"><Key className="w-3 h-3 mr-1" />Auth</TabsTrigger>
             <TabsTrigger value="oob"><Link2 className="w-3 h-3 mr-1" />OOB</TabsTrigger>
             <TabsTrigger value="chain"><Activity className="w-3 h-3 mr-1" />Chains</TabsTrigger>
@@ -193,6 +194,79 @@ export const AdvancedScannerPanel = ({ targetId, baseUrl }: Props) => {
             <TabsTrigger value="browser"><Globe className="w-3 h-3 mr-1" />Browser</TabsTrigger>
             <TabsTrigger value="drift">Drift / Jobs</TabsTrigger>
           </TabsList>
+
+          <TabsContent value="mythos" className="space-y-3 pt-3">
+            <div className="flex items-center justify-between border border-primary/40 rounded p-2 bg-primary/5">
+              <div>
+                <div className="text-sm font-semibold flex items-center gap-2"><Brain className="w-4 h-4 text-primary" />Auto-Mythos after Recon</div>
+                <div className="text-xs text-muted-foreground">Long-horizon agent runs automatically when recon completes</div>
+              </div>
+              <Switch checked={autoMythos} onCheckedChange={toggleAutoMythos} />
+            </div>
+
+            <div className="space-y-2">
+              <Label className="text-xs">Optional: GitHub repo URL for SAST taint analysis (Pillar 1)</Label>
+              <div className="flex gap-2">
+                <Input placeholder="https://github.com/owner/repo" value={repoUrl} onChange={(e) => setRepoUrl(e.target.value)} />
+                <Button size="sm" variant="outline" onClick={ingestRepo} disabled={busy === "sast" || !repoUrl}>
+                  {busy === "sast" ? <Loader2 className="w-3 h-3 animate-spin" /> : "SAST"}
+                </Button>
+              </div>
+            </div>
+
+            <Button className="w-full" onClick={runMythos} disabled={busy === "mythos"}>
+              {busy === "mythos" ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : <Brain className="w-3 h-3 mr-1" />}
+              Run Mythos Agent (5 Pillars: SAST + Chainer + Variants + Patches)
+            </Button>
+
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              <div className="border border-border rounded p-2">
+                <div className="font-semibold mb-1">Recent Runs</div>
+                {mythosRuns.length === 0 && <div className="text-muted-foreground">No runs yet</div>}
+                {mythosRuns.map((r) => (
+                  <div key={r.id} className="flex justify-between border-b border-border py-1">
+                    <span>{r.current_phase} ({r.iteration}/{r.max_iterations})</span>
+                    <Badge variant={r.status === "complete" ? "default" : r.status === "running" ? "outline" : "destructive"}>{r.status}</Badge>
+                  </div>
+                ))}
+              </div>
+              <div className="border border-border rounded p-2">
+                <div className="font-semibold mb-1">🔗 Auto Kill-Chains</div>
+                {mythosChains.length === 0 && <div className="text-muted-foreground">None discovered</div>}
+                {mythosChains.map((c) => (
+                  <div key={c.id} className="border-b border-border py-1">
+                    <div className="flex justify-between"><span className="truncate">{c.chain_name}</span><Badge>{c.combined_severity}</Badge></div>
+                    <div className="text-muted-foreground text-[10px] truncate">{c.chain_narrative}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="border border-border rounded p-2 text-xs">
+              <div className="font-semibold mb-1">🌀 Zero-Day Variants</div>
+              {mythosVariants.length === 0 && <div className="text-muted-foreground">No variants yet</div>}
+              {mythosVariants.map((v) => (
+                <div key={v.id} className="flex justify-between border-b border-border py-1">
+                  <code className="truncate max-w-[60%]">{v.variant_payload}</code>
+                  <Badge variant={v.is_zero_day_candidate ? "destructive" : "outline"}>
+                    {v.is_zero_day_candidate ? "🚨 0-DAY" : v.test_status}
+                  </Badge>
+                </div>
+              ))}
+            </div>
+
+            <div className="border border-border rounded p-2 text-xs">
+              <div className="font-semibold mb-1">🛡️ Defensive Patches</div>
+              {mythosPatches.length === 0 && <div className="text-muted-foreground">No patches generated yet</div>}
+              {mythosPatches.map((p) => (
+                <details key={p.id} className="border-b border-border py-1">
+                  <summary className="cursor-pointer flex justify-between"><span>{p.framework} / {p.language}</span><Badge>{p.patch_type}</Badge></summary>
+                  <pre className="text-[10px] bg-muted/30 p-2 rounded mt-1 overflow-auto max-h-40 whitespace-pre-wrap">{p.patch_diff}</pre>
+                  {p.waf_rule && <pre className="text-[10px] bg-muted/30 p-2 rounded mt-1 whitespace-pre-wrap">WAF: {p.waf_rule}</pre>}
+                </details>
+              ))}
+            </div>
+          </TabsContent>
 
           <TabsContent value="auth" className="space-y-3 pt-3">
             <Select value={authProfile.auth_type} onValueChange={(v) => setAuthProfile({ ...authProfile, auth_type: v })}>
