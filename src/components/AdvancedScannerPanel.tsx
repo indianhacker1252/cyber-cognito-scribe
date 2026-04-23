@@ -29,6 +29,12 @@ export const AdvancedScannerPanel = ({ targetId, baseUrl }: Props) => {
   const [busy, setBusy] = useState<string | null>(null);
   const [jobs, setJobs] = useState<any[]>([]);
   const [drifts, setDrifts] = useState<any[]>([]);
+  const [mythosRuns, setMythosRuns] = useState<any[]>([]);
+  const [mythosChains, setMythosChains] = useState<any[]>([]);
+  const [mythosVariants, setMythosVariants] = useState<any[]>([]);
+  const [mythosPatches, setMythosPatches] = useState<any[]>([]);
+  const [autoMythos, setAutoMythos] = useState(false);
+  const [repoUrl, setRepoUrl] = useState("");
 
   useEffect(() => { void loadAll(); }, [targetId]);
 
