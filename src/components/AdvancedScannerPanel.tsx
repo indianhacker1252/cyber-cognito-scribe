@@ -33,13 +33,14 @@ export const AdvancedScannerPanel = ({ targetId, baseUrl }: Props) => {
   const [mythosChains, setMythosChains] = useState<any[]>([]);
   const [mythosVariants, setMythosVariants] = useState<any[]>([]);
   const [mythosPatches, setMythosPatches] = useState<any[]>([]);
+  const [mythosDebates, setMythosDebates] = useState<any[]>([]);
   const [autoMythos, setAutoMythos] = useState(false);
   const [repoUrl, setRepoUrl] = useState("");
 
   useEffect(() => { void loadAll(); }, [targetId]);
 
   const loadAll = async () => {
-    const [{ data: ap }, { data: oob }, { data: ch }, { data: jb }, { data: dr }, { data: mr }, { data: mc }, { data: mv }, { data: mp }, { data: tgt }] = await Promise.all([
+    const [{ data: ap }, { data: oob }, { data: ch }, { data: jb }, { data: dr }, { data: mr }, { data: mc }, { data: mv }, { data: mp }, mdRes, { data: tgt }] = await Promise.all([
       supabase.from("auth_profiles").select("*").eq("target_id", targetId).maybeSingle(),
       supabase.from("oob_callbacks").select("*").eq("target_id", targetId).order("created_at", { ascending: false }).limit(10),
       supabase.from("exploit_chains").select("*").eq("target_id", targetId).order("created_at", { ascending: false }).limit(5),
@@ -49,6 +50,7 @@ export const AdvancedScannerPanel = ({ targetId, baseUrl }: Props) => {
       supabase.from("mythos_chains").select("*").eq("target_id", targetId).order("created_at", { ascending: false }).limit(8),
       supabase.from("mythos_variants").select("*").eq("target_id", targetId).order("created_at", { ascending: false }).limit(10),
       supabase.from("mythos_patches").select("*").eq("target_id", targetId).order("created_at", { ascending: false }).limit(8),
+      (supabase.from("mythos_debates" as any).select("*").eq("target_id", targetId).order("created_at", { ascending: false }).limit(6)) as any,
       supabase.from("target_workspaces").select("auto_mythos").eq("id", targetId).maybeSingle(),
     ]);
     if (ap) setAuthProfile(ap);
@@ -60,6 +62,7 @@ export const AdvancedScannerPanel = ({ targetId, baseUrl }: Props) => {
     setMythosChains(mc || []);
     setMythosVariants(mv || []);
     setMythosPatches(mp || []);
+    setMythosDebates(((mdRes as any)?.data as any[]) || []);
     setAutoMythos(!!(tgt as any)?.auto_mythos);
   };
 
