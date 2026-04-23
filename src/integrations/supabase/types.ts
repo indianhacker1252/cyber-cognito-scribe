@@ -922,6 +922,66 @@ export type Database = {
         }
         Relationships: []
       }
+      mythos_debates: {
+        Row: {
+          agent_a_learning: string | null
+          agent_b_learning: string | null
+          agreed_payload: string | null
+          agreed_rationale: string | null
+          confidence_score: number | null
+          created_at: string
+          endpoint_url: string | null
+          fp_reasoning: string | null
+          fp_verdict: string | null
+          id: string
+          param_name: string | null
+          param_value: string | null
+          run_id: string | null
+          target_id: string
+          test_result: Json | null
+          transcript: Json
+          vuln_class: string | null
+        }
+        Insert: {
+          agent_a_learning?: string | null
+          agent_b_learning?: string | null
+          agreed_payload?: string | null
+          agreed_rationale?: string | null
+          confidence_score?: number | null
+          created_at?: string
+          endpoint_url?: string | null
+          fp_reasoning?: string | null
+          fp_verdict?: string | null
+          id?: string
+          param_name?: string | null
+          param_value?: string | null
+          run_id?: string | null
+          target_id: string
+          test_result?: Json | null
+          transcript?: Json
+          vuln_class?: string | null
+        }
+        Update: {
+          agent_a_learning?: string | null
+          agent_b_learning?: string | null
+          agreed_payload?: string | null
+          agreed_rationale?: string | null
+          confidence_score?: number | null
+          created_at?: string
+          endpoint_url?: string | null
+          fp_reasoning?: string | null
+          fp_verdict?: string | null
+          id?: string
+          param_name?: string | null
+          param_value?: string | null
+          run_id?: string | null
+          target_id?: string
+          test_result?: Json | null
+          transcript?: Json
+          vuln_class?: string | null
+        }
+        Relationships: []
+      }
       mythos_patches: {
         Row: {
           applied: boolean | null
@@ -934,7 +994,10 @@ export type Database = {
           patch_diff: string | null
           patch_type: string
           rationale: string | null
+          risk_score: number | null
           target_id: string
+          validation_id: string | null
+          validation_status: string | null
           waf_rule: string | null
         }
         Insert: {
@@ -948,7 +1011,10 @@ export type Database = {
           patch_diff?: string | null
           patch_type?: string
           rationale?: string | null
+          risk_score?: number | null
           target_id: string
+          validation_id?: string | null
+          validation_status?: string | null
           waf_rule?: string | null
         }
         Update: {
@@ -962,7 +1028,10 @@ export type Database = {
           patch_diff?: string | null
           patch_type?: string
           rationale?: string | null
+          risk_score?: number | null
           target_id?: string
+          validation_id?: string | null
+          validation_status?: string | null
           waf_rule?: string | null
         }
         Relationships: []
@@ -1120,6 +1189,51 @@ export type Database = {
           token?: string
           user_agent?: string | null
           vuln_class?: string | null
+        }
+        Relationships: []
+      }
+      patch_validations: {
+        Row: {
+          created_at: string
+          finding_id: string | null
+          id: string
+          lint_warnings: Json | null
+          passed_threshold: boolean | null
+          patch_id: string | null
+          risk_factors: Json | null
+          risk_score: number | null
+          syntax_ok: boolean | null
+          target_id: string
+          threshold_used: number | null
+          validator_notes: string | null
+        }
+        Insert: {
+          created_at?: string
+          finding_id?: string | null
+          id?: string
+          lint_warnings?: Json | null
+          passed_threshold?: boolean | null
+          patch_id?: string | null
+          risk_factors?: Json | null
+          risk_score?: number | null
+          syntax_ok?: boolean | null
+          target_id: string
+          threshold_used?: number | null
+          validator_notes?: string | null
+        }
+        Update: {
+          created_at?: string
+          finding_id?: string | null
+          id?: string
+          lint_warnings?: Json | null
+          passed_threshold?: boolean | null
+          patch_id?: string | null
+          risk_factors?: Json | null
+          risk_score?: number | null
+          syntax_ok?: boolean | null
+          target_id?: string
+          threshold_used?: number | null
+          validator_notes?: string | null
         }
         Relationships: []
       }
