@@ -11,7 +11,8 @@ import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "sonner";
-import { Shield, Key, Link2, Code, Globe, Activity, Loader2 } from "lucide-react";
+import { Switch } from "@/components/ui/switch";
+import { Shield, Key, Link2, Code, Globe, Activity, Loader2, Brain } from "lucide-react";
 
 interface Props { targetId: string; baseUrl: string; }
 
