@@ -132,6 +132,49 @@ export const AdvancedScannerPanel = ({ targetId, baseUrl }: Props) => {
     void loadAll();
   };
 
+  const runMythos = async () => {
+    setBusy("mythos");
+    toast.info("🧠 Mythos agent starting — this may take 1-3 minutes");
+    const { data, error } = await supabase.functions.invoke("mythos-agent", {
+      body: { targetId, triggerType: "manual", maxIterations: 3, repoUrl: repoUrl || undefined },
+    });
+    setBusy(null);
+    if (error) return toast.error(error.message);
+    if (data?.error) return toast.error(data.error);
+    toast.success(`✅ Mythos: ${data.totalChains} chains, ${data.totalVariants} variants, ${data.totalFindings} SAST findings`);
+    void loadAll();
+  };
+
+  const ingestRepo = async () => {
+    if (!repoUrl) return toast.error("Enter a GitHub repo URL");
+    setBusy("sast");
+    const { data, error } = await supabase.functions.invoke("mythos-codebase-ingest", {
+      body: { targetId, repoUrl },
+    });
+    setBusy(null);
+    if (error) return toast.error(error.message);
+    toast.success(`SAST: ${data.findingsCount} taint flows in ${data.fileCount} files`);
+    void loadAll();
+  };
+
+  const generatePatch = async (findingId: string) => {
+    setBusy(`patch-${findingId}`);
+    const { data, error } = await supabase.functions.invoke("mythos-patcher", {
+      body: { findingId, targetId },
+    });
+    setBusy(null);
+    if (error) return toast.error(error.message);
+    toast.success("Patch generated");
+    void loadAll();
+  };
+
+  const toggleAutoMythos = async (val: boolean) => {
+    setAutoMythos(val);
+    const { error } = await supabase.from("target_workspaces").update({ auto_mythos: val } as any).eq("id", targetId);
+    if (error) { toast.error(error.message); setAutoMythos(!val); }
+    else toast.success(`Auto-Mythos ${val ? "enabled" : "disabled"} — runs after every recon`);
+  };
+
   return (
     <Card className="border-primary/30">
       <CardHeader>
