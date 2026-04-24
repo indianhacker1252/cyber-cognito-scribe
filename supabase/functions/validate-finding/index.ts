@@ -37,7 +37,39 @@ serve(async (req) => {
   try {
     const { findingId, approvalId, targetId, script, action } = await req.json();
 
+    // ─── Rule 4: Hard API Kill Switch ───
+    // If the supplied "script" looks like an LLM error string (rate-limit /
+    // 402 / 429 / 500), refuse — never weaponize an error response as a payload.
+    if (script && typeof script === "string" && isApiErrorPayload(script)) {
+      console.error(`[CRITICAL] validate-finding refused to execute LLM error string as PoC`);
+      return respond(false, {
+        error: "Refused: input looks like an API error string, not a PoC script.",
+        diagnostics: { error_stage: "api_kill_switch" },
+      });
+    }
+
     const db = createClient(
+      Deno.env.get("SUPABASE_URL")!,
+      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
+    );
+
+    // ─── Rule 3: Gauntlet Supremacy ───
+    // AI peer review may NOT process a finding the Gauntlet rejected.
+    if (action === "validate" && (findingId || approvalId)) {
+      const tbl = findingId ? "vulnerability_findings" : "pending_approvals";
+      const id = findingId || approvalId;
+      const { data: f } = await db.from(tbl).select("evidence,validation_status,triage_reasoning").eq("id", id).maybeSingle();
+      const ev = (f?.evidence as Record<string, unknown> | undefined) || {};
+      const gv = (ev.gauntletVerdict as string | undefined) || "";
+      const vs = (f?.validation_status as string | undefined) || "";
+      if (gv === "false_positive" || vs === "false_positive_gauntlet") {
+        return respond(false, {
+          error: "AI peer review forbidden: this finding failed the Gauntlet (proven=0).",
+          diagnostics: { error_stage: "gauntlet_supremacy" },
+        });
+      }
+    }
+
       Deno.env.get("SUPABASE_URL")!,
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
     );
