@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { resolveTargetProtocol, browserHeaders, BROWSER_UA } from "../_shared/security-gates.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -310,13 +311,14 @@ async function harvestOTX(
 async function spiderCrawl(
   domain: string,
   maxPages = 30,
-  maxDepth = 3
+  maxDepth = 3,
+  scheme: "https" | "http" = "https",
 ): Promise<{ urls: string[]; forms: Array<{ action: string; method: string; inputs: string[] }>; jsFiles: string[] }> {
   const visited = new Set<string>();
   const discovered: string[] = [];
   const forms: Array<{ action: string; method: string; inputs: string[] }> = [];
   const jsFiles: string[] = [];
-  const queue: Array<{ url: string; depth: number }> = [{ url: `https://${domain}`, depth: 0 }];
+  const queue: Array<{ url: string; depth: number }> = [{ url: `${scheme}://${domain}`, depth: 0 }];
 
   while (queue.length > 0 && visited.size < maxPages) {
     const item = queue.shift();
@@ -327,9 +329,10 @@ async function spiderCrawl(
     try {
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), 6000);
+      // Rule 6: Inject browser UA so legacy WAFs don't drop the request.
       const resp = await fetch(item.url, {
         method: "GET",
-        headers: { "User-Agent": "CyberScope-Spider/2.0" },
+        headers: browserHeaders(),
         redirect: "follow",
         signal: ctrl.signal,
       });
@@ -349,8 +352,8 @@ async function spiderCrawl(
           const href = match[1];
           let fullUrl: string;
           if (href.startsWith("http")) fullUrl = href;
-          else if (href.startsWith("//")) fullUrl = `https:${href}`;
-          else if (href.startsWith("/")) fullUrl = `https://${domain}${href}`;
+          else if (href.startsWith("//")) fullUrl = `${scheme}:${href}`;
+          else if (href.startsWith("/")) fullUrl = `${scheme}://${domain}${href}`;
           else fullUrl = `${item.url.replace(/\/[^/]*$/, "/")}${href}`;
 
           const parsed = new URL(fullUrl);
@@ -504,7 +507,7 @@ async function fingerprintTech(url: string): Promise<TechFingerprint> {
     const resp = await fetch(url, {
       method: "GET",
       redirect: "follow",
-      headers: { "User-Agent": "CyberScope-Scanner/2.0" },
+      headers: browserHeaders(),
     });
 
     for (const [key, value] of resp.headers.entries()) {
@@ -682,6 +685,18 @@ serve(async (req) => {
     await db.from("target_workspaces").update({ status: "scanning" }).eq("id", targetId);
     await log(db, targetId, taskId, "info", `🔍 Elite recon pipeline started for ${domain}`);
 
+    // ── Step 0: Protocol fallback engine (Rule 1) ──
+    // Test https first with a strict 3000ms timeout. If it drops/times out,
+    // downgrade to http so the spider/fingerprint never hangs on legacy targets.
+    await log(db, targetId, taskId, "thought", `🔌 Resolving protocol for ${domain} (https first, 3s timeout, http fallback)`);
+    const resolved = await resolveTargetProtocol(domain, 3000);
+    if (resolved.downgraded) {
+      await log(db, targetId, taskId, "action", `⬇️  HTTPS unreachable (${resolved.reason || "timeout"}) — downgraded to http://`, { resolved });
+    } else {
+      await log(db, targetId, taskId, "info", `🔒 Using ${resolved.scheme}:// for ${domain}`, { resolved });
+    }
+    const SCHEME = resolved.scheme;
+
     // ── Step 1: Parallel subdomain enumeration (crt.sh + Google Dorks + ThreatCrowd + URLScan) ──
     await log(db, targetId, taskId, "thought", `Enumerating ALL subdomains via crt.sh, Google Dorks, URLScan, ThreatCrowd for ${domain}`);
 
@@ -704,21 +719,21 @@ serve(async (req) => {
     const liveCount = liveSubdomains.filter(s => s.status < 400).length;
     await log(db, targetId, taskId, "result", `🟢 ${liveCount}/${allSubdomains.length} subdomains are LIVE`, { liveSubdomains: liveSubdomains.slice(0, 20) });
 
-    // ── Step 3: Tech fingerprinting ──
-    await log(db, targetId, taskId, "thought", `Fingerprinting technology stack for https://${domain}`);
-    const fingerprint = await fingerprintTech(`https://${domain}`);
+    // ── Step 3: Tech fingerprinting (uses resolved scheme) ──
+    await log(db, targetId, taskId, "thought", `Fingerprinting technology stack for ${SCHEME}://${domain}`);
+    const fingerprint = await fingerprintTech(`${SCHEME}://${domain}`);
     await log(db, targetId, taskId, "result", `Tech stack: Server=${fingerprint.server || "unknown"}, Framework=${fingerprint.framework || "unknown"}, WAF=${fingerprint.waf || "none"}`, { fingerprint });
 
     // ── Step 4: Spider crawl on main domain + top live subdomains ──
     const spiderTargets = [domain, ...liveSubdomains.filter(s => s.status < 400).map(s => s.subdomain).slice(0, 5)];
-    await log(db, targetId, taskId, "thought", `🕷️ Spider crawling ${spiderTargets.length} targets (main + top subdomains)`);
+    await log(db, targetId, taskId, "thought", `🕷️ Spider crawling ${spiderTargets.length} targets via ${SCHEME}:// (main + top subdomains)`);
 
     let allSpiderUrls: string[] = [];
     let allForms: Array<{ action: string; method: string; inputs: string[] }> = [];
     let allJsFiles: string[] = [];
 
     for (const target of spiderTargets) {
-      const spiderResults = await spiderCrawl(target, 20, 3);
+      const spiderResults = await spiderCrawl(target, 20, 3, SCHEME);
       allSpiderUrls.push(...spiderResults.urls);
       allForms.push(...spiderResults.forms);
       allJsFiles.push(...spiderResults.jsFiles);

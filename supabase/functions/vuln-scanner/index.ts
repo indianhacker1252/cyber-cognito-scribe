@@ -1,5 +1,13 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import {
+  enforceZeroPayloadGate,
+  applyGauntletVerdict,
+  aiReviewAllowed,
+  verdictFromResponse,
+  resolveTargetProtocol,
+  browserHeaders,
+} from "../_shared/security-gates.ts";
 
 // ─── GLOBAL TIMEOUT HELPER ─────────────────────────────
 const SCAN_START = Date.now();
@@ -535,11 +543,18 @@ async function runDifferentialTest(
           result.isVulnerable = true;
           result.confidence = "high";
           result.confidenceScore = 85;
-        } else if (trueResp.status !== falseResp.status && trueResp.status === 500 && Math.abs(trueBody.length - falseBody.length) > 200) {
-          // Only flag if status changed to 500 AND body significantly different — 200→200 is normal
-          result.isVulnerable = true;
-          result.confidence = "low";
-          result.confidenceScore = 30;
+        } else if (trueResp.status === 500) {
+          // Rule 5: 500 is only a TP if the body has an explicit stack trace / leak.
+          const v = verdictFromResponse({
+            status: 500, body: trueBody,
+            diffBytes: Math.abs(trueBody.length - falseBody.length),
+          });
+          if (v.result === "true_positive") {
+            result.isVulnerable = true;
+            result.confidence = "medium";
+            result.confidenceScore = v.confidence;
+          }
+          // else: 500 with no leak → False Positive, not flagged.
         }
       } else if (vulnClass === "idor" || vulnClass === "privilege-escalation") {
         if (trueResp.status === 200 && falseResp.status === 200) {
@@ -1852,10 +1867,35 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
       const proof = proofResults.get(idx);
       const peer = peerResults.get(idx);
 
-      // Skip disputed findings with no proof
-      if (peer?.verdict === "disputed" && !proof?.proven) {
-        await log(db, targetId, taskId, "info", `🚫 Dropped ${diff.vulnClass} — disputed by peer review and no deterministic proof`);
+      // ─── Rule 3: Gauntlet Supremacy ───
+      // Recon -> Exploit (Gauntlet) -> AI Peer Review.
+      // If Gauntlet proven=0, the finding is INSTANTLY a False Positive
+      // and is dropped from the queue. AI Peer Review may NOT resurrect it.
+      const attemptedCount = (diff.intruderResults?.length ?? 0) + 1; // +1 for the diff probe
+      const provenCount = proof?.proven ? 1 : 0;
+      const gauntletGate = applyGauntletVerdict(
+        { payloads_tested: attemptedCount, confidence_score: diff.confidenceScore, severity: diff.confidence },
+        { proven: provenCount, attempted: attemptedCount, evidence: proof },
+      );
+
+      if (gauntletGate.gauntlet_verdict === "false_positive") {
+        await log(db, targetId, taskId, "info",
+          `🛡️ Gauntlet supremacy: dropped ${diff.vulnClass} — physical proof=0 (AI peer review forbidden from resurrecting)`);
         continue;
+      }
+
+      // ─── Rule 2: Zero-Payload Hallucination Kill Switch ───
+      // If no payloads were physically tested, force confidence to 0 and
+      // strip severity. The UI can never render this as High/Critical.
+      const gated = enforceZeroPayloadGate({
+        payloads_tested: attemptedCount,
+        confidence_score: diff.confidenceScore,
+        severity: diff.confidence,
+      });
+      if (gated.validation_status === "unverified_no_payload") {
+        await log(db, targetId, taskId, "info",
+          `🚫 Zero-payload gate: ${diff.vulnClass} stripped to info — no physical payloads tested`);
+        // continue to persist as info-only; do not skip entirely
       }
 
       const severityMap: Record<string, string> = { high: "high", medium: "medium", low: "low" };
@@ -1865,10 +1905,15 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
       let effectiveSeverity = severityMap[diff.confidence] || "medium";
       if (effectiveSeverity === "critical" && !proof?.proven) effectiveSeverity = "high";
 
+      // Apply the gate's severity downgrade if it triggered
+      if (gated.validation_status === "unverified_no_payload") {
+        effectiveSeverity = "info";
+      }
+
       const proofNote = proof?.proven ? `\n\n🛡️ **Gauntlet Proof**: ${proof.proofType} — ${proof.mathematicalBasis}` : "\n\n⚠️ No deterministic proof — requires manual verification";
       const peerNote = peer ? `\n\n🤔 **Peer Review**: ${peer.verdict.toUpperCase()} (skeptic score: ${peer.skepticScore}) — ${peer.reasoning}` : "";
       const fullDescription = `Parameter "${matchingCheck?.paramName}" showed differential response behavior indicating possible ${diff.vulnClass}.${diff.adaptationUsed ? `\n\nAdaptive mutation "${diff.adaptationUsed}" was used.` : ""}${diff.intruderResults ? `\n\n**Intruder Results:** ${diff.intruderResults.length} payloads tested, ${diff.intruderResults.filter(i => i.status === 200).length} returned 200 OK.` : ""}${proofNote}${peerNote}`;
-      const triageNote = `Gauntlet: ${proof?.proven ? "PROVEN" : "UNPROVEN"} (${proof?.proofType || "N/A"}). Peer: ${peer?.verdict || "N/A"} (skeptic: ${peer?.skepticScore || 0})`;
+      const triageNote = `Gauntlet: PROVEN (${proof?.proofType || "verified"}). Peer: ${peer?.verdict || "N/A"} (skeptic: ${peer?.skepticScore || 0})`;
 
       // Route by severity: high/critical → approvals, others → auto-accept
       if (effectiveSeverity === "high" || effectiveSeverity === "critical") {
@@ -1897,6 +1942,7 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
             url: matchingCheck?.url, owaspCategory: diff.owaspCategory,
             adaptationUsed: diff.adaptationUsed || null, intruderResults: diff.intruderResults || null,
             gauntletProof: proof || null, peerReview: peer || null,
+            payloadsTested: attemptedCount, gauntletVerdict: gauntletGate.gauntlet_verdict,
           },
         });
         approvalCount++;
@@ -1998,9 +2044,22 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
       }
     }
 
-    // AI-verified assessments
+    // AI-verified assessments — Rule 3: AI Peer Review is forbidden from
+    // creating high/critical findings for which there is zero physical
+    // payload evidence (no Gauntlet pass). Force them to info-only.
     for (const assessment of aiAssessments.assessments) {
       const confidenceLabel = assessment.confidenceScore >= 80 ? "high" : assessment.confidenceScore >= 50 ? "medium" : "low";
+      const aiFinding = enforceZeroPayloadGate({
+        payloads_tested: 0, // AI deep-assessments are inferred, not physically tested
+        confidence_score: assessment.confidenceScore,
+        severity: assessment.severity,
+      });
+      // AI Peer Review may not promote anything past 'info' without a Gauntlet pass.
+      if (!aiReviewAllowed(aiFinding) && (assessment.severity === "high" || assessment.severity === "critical")) {
+        await log(db, targetId, taskId, "info",
+          `🚫 AI peer review blocked from promoting "${assessment.title}" — no Gauntlet pass / zero payloads tested`);
+        assessment.severity = "info";
+      }
 
       if (assessment.severity === "high" || assessment.severity === "critical") {
         await db.from("pending_approvals").insert({
