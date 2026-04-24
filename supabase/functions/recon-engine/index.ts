@@ -685,6 +685,18 @@ serve(async (req) => {
     await db.from("target_workspaces").update({ status: "scanning" }).eq("id", targetId);
     await log(db, targetId, taskId, "info", `🔍 Elite recon pipeline started for ${domain}`);
 
+    // ── Step 0: Protocol fallback engine (Rule 1) ──
+    // Test https first with a strict 3000ms timeout. If it drops/times out,
+    // downgrade to http so the spider/fingerprint never hangs on legacy targets.
+    await log(db, targetId, taskId, "thought", `🔌 Resolving protocol for ${domain} (https first, 3s timeout, http fallback)`);
+    const resolved = await resolveTargetProtocol(domain, 3000);
+    if (resolved.downgraded) {
+      await log(db, targetId, taskId, "action", `⬇️  HTTPS unreachable (${resolved.reason || "timeout"}) — downgraded to http://`, { resolved });
+    } else {
+      await log(db, targetId, taskId, "info", `🔒 Using ${resolved.scheme}:// for ${domain}`, { resolved });
+    }
+    const SCHEME = resolved.scheme;
+
     // ── Step 1: Parallel subdomain enumeration (crt.sh + Google Dorks + ThreatCrowd + URLScan) ──
     await log(db, targetId, taskId, "thought", `Enumerating ALL subdomains via crt.sh, Google Dorks, URLScan, ThreatCrowd for ${domain}`);
 
@@ -707,21 +719,21 @@ serve(async (req) => {
     const liveCount = liveSubdomains.filter(s => s.status < 400).length;
     await log(db, targetId, taskId, "result", `🟢 ${liveCount}/${allSubdomains.length} subdomains are LIVE`, { liveSubdomains: liveSubdomains.slice(0, 20) });
 
-    // ── Step 3: Tech fingerprinting ──
-    await log(db, targetId, taskId, "thought", `Fingerprinting technology stack for https://${domain}`);
-    const fingerprint = await fingerprintTech(`https://${domain}`);
+    // ── Step 3: Tech fingerprinting (uses resolved scheme) ──
+    await log(db, targetId, taskId, "thought", `Fingerprinting technology stack for ${SCHEME}://${domain}`);
+    const fingerprint = await fingerprintTech(`${SCHEME}://${domain}`);
     await log(db, targetId, taskId, "result", `Tech stack: Server=${fingerprint.server || "unknown"}, Framework=${fingerprint.framework || "unknown"}, WAF=${fingerprint.waf || "none"}`, { fingerprint });
 
     // ── Step 4: Spider crawl on main domain + top live subdomains ──
     const spiderTargets = [domain, ...liveSubdomains.filter(s => s.status < 400).map(s => s.subdomain).slice(0, 5)];
-    await log(db, targetId, taskId, "thought", `🕷️ Spider crawling ${spiderTargets.length} targets (main + top subdomains)`);
+    await log(db, targetId, taskId, "thought", `🕷️ Spider crawling ${spiderTargets.length} targets via ${SCHEME}:// (main + top subdomains)`);
 
     let allSpiderUrls: string[] = [];
     let allForms: Array<{ action: string; method: string; inputs: string[] }> = [];
     let allJsFiles: string[] = [];
 
     for (const target of spiderTargets) {
-      const spiderResults = await spiderCrawl(target, 20, 3);
+      const spiderResults = await spiderCrawl(target, 20, 3, SCHEME);
       allSpiderUrls.push(...spiderResults.urls);
       allForms.push(...spiderResults.forms);
       allJsFiles.push(...spiderResults.jsFiles);
