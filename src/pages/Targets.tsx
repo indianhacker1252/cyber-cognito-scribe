@@ -140,45 +140,63 @@ export default function Targets() {
     },
   });
 
+  // Long-running scans: tolerate client-side timeouts (Supabase JS aborts at ~150s).
+  // The edge function continues running server-side; we surface progress via Neural Log + DB polling.
+  const isTimeoutOrNetworkError = (err: any): boolean => {
+    const m = (err?.message || String(err) || "").toLowerCase();
+    return m.includes("timeout") || m.includes("aborted") || m.includes("failed to fetch") ||
+           m.includes("network") || m.includes("load failed") || m.includes("context canceled");
+  };
+
   const startRecon = async (targetId: string) => {
     setScanningTargets((prev) => new Set(prev).add(targetId));
     toast.info("Recon pipeline started — Pro-Fuzz + Drift Reval will auto-chain after recon");
+    let reconOk = false;
     try {
       const { data, error } = await supabase.functions.invoke("recon-engine", { body: { targetId } });
-      if (error) { toast.error(`Recon failed: ${error.message}`); return; }
-      if (data?.error) { toast.error(`Recon failed: ${data.error}`); return; }
+      if (error) {
+        if (isTimeoutOrNetworkError(error)) {
+          toast.info("Recon running in background — watch Neural Log for live progress");
+          reconOk = true; // server still executing
+        } else {
+          toast.error(`Recon failed: ${error.message}`); return;
+        }
+      } else if (data?.error) { toast.error(`Recon failed: ${data.error}`); return; }
+      else {
+        reconOk = true;
+        toast.success(`Recon: ${data.subdomains} subdomains, ${data.endpointsIngested} endpoints — chaining Pro-Fuzz + Drift Reval...`);
+      }
 
-      toast.success(`Recon: ${data.subdomains} subdomains, ${data.endpointsIngested} endpoints — chaining Pro-Fuzz + Drift Reval...`);
       queryClient.invalidateQueries({ queryKey: ["targets"] });
       queryClient.invalidateQueries({ queryKey: ["endpoints-count"] });
       queryClient.invalidateQueries({ queryKey: ["findings"] });
       queryClient.invalidateQueries({ queryKey: ["recent-logs"] });
 
-      // ── Auto-chain: Adaptive Drift baseline → Pro-Fuzz → Drift Reval ──
-      // Fire in sequence, surface results in Neural Log via edge-function logging
-      try {
-        await supabase.functions.invoke("cyberscope-adaptive-drift", { body: { targetId } });
-      } catch (e) { console.warn("drift baseline failed:", e); }
+      if (!reconOk) return;
 
-      try {
-        const { data: fz } = await supabase.functions.invoke("advanced-fuzzer", { body: { targetId } });
-        if (fz?.ok) {
-          toast.success(`🔥 Pro-Fuzz: ${fz.totalProbes} probes, ${fz.anomalies} anomalies, ${fz.cveReport?.confirmed || 0}/${fz.cveReport?.tested || 0} CVE templates matched`);
-        }
-      } catch (e: any) {
-        toast.error(`Pro-Fuzz error: ${e.message}`);
-      }
+      // ── Auto-chain: fire-and-forget; results stream to Neural Log ──
+      supabase.functions.invoke("cyberscope-adaptive-drift", { body: { targetId } })
+        .catch((e) => console.warn("drift baseline:", e?.message));
 
-      try {
-        const { data: rv } = await supabase.functions.invoke("drift-revalidator", { body: { targetId } });
-        if (rv?.ok && rv.processed > 0) {
-          const confirmed = rv.results?.filter((r: { status: string }) => r.status === "confirmed").length || 0;
-          const regressed = rv.results?.filter((r: { status: string }) => r.status === "regressed").length || 0;
-          toast.success(`🔬 Drift Reval: ${confirmed} confirmed, ${regressed} regressed (${rv.processed} total)`);
-        }
-      } catch (e) { console.warn("drift reval failed:", e); }
+      supabase.functions.invoke("advanced-fuzzer", { body: { targetId } })
+        .then(({ data: fz }: any) => {
+          if (fz?.ok) toast.success(`🔥 Pro-Fuzz: ${fz.totalProbes} probes, ${fz.anomalies} anomalies, ${fz.cveReport?.confirmed || 0}/${fz.cveReport?.tested || 0} CVE matched`);
+        })
+        .catch((e) => {
+          if (!isTimeoutOrNetworkError(e)) toast.error(`Pro-Fuzz error: ${e.message}`);
+        });
 
-      // ── Mythos auto-trigger if target has auto_mythos enabled ──
+      supabase.functions.invoke("drift-revalidator", { body: { targetId } })
+        .then(({ data: rv }: any) => {
+          if (rv?.ok && rv.processed > 0) {
+            const confirmed = rv.results?.filter((r: { status: string }) => r.status === "confirmed").length || 0;
+            const regressed = rv.results?.filter((r: { status: string }) => r.status === "regressed").length || 0;
+            toast.success(`🔬 Drift Reval: ${confirmed} confirmed, ${regressed} regressed`);
+          }
+        })
+        .catch((e) => console.warn("drift reval:", e?.message));
+
+      // ── Mythos auto-trigger ──
       try {
         const { data: tgt } = await supabase.from("target_workspaces").select("auto_mythos").eq("id", targetId).maybeSingle();
         if ((tgt as any)?.auto_mythos) {
@@ -187,15 +205,19 @@ export default function Targets() {
             .then(({ data: mr }: any) => {
               if (mr?.runId) toast.success(`Mythos run ${mr.runId.slice(0, 8)}: ${mr.totalChains} chains, ${mr.totalVariants} variants`);
             })
-            .catch((e) => console.warn("mythos auto failed:", e));
+            .catch((e) => console.warn("mythos auto:", e?.message));
         }
-      } catch (e) { console.warn("auto-mythos check failed:", e); }
+      } catch (e) { console.warn("auto-mythos check:", e); }
 
       queryClient.invalidateQueries({ queryKey: ["findings"] });
       queryClient.invalidateQueries({ queryKey: ["recent-logs"] });
       queryClient.invalidateQueries({ queryKey: ["targets-for-drift"] });
     } catch (e: any) {
-      toast.error(`Recon error: ${e.message}`);
+      if (isTimeoutOrNetworkError(e)) {
+        toast.info("Recon running in background — watch Neural Log");
+      } else {
+        toast.error(`Recon error: ${e.message}`);
+      }
     } finally {
       setScanningTargets((prev) => { const n = new Set(prev); n.delete(targetId); return n; });
     }
@@ -203,20 +225,29 @@ export default function Targets() {
 
   const startVulnScan = async (targetId: string) => {
     setVulnScanTargets((prev) => new Set(prev).add(targetId));
-    toast.info("Vuln scan started — findings will appear in Approvals queue");
+    toast.info("Vuln scan started — findings will appear in Approvals queue (watch Neural Log)");
     try {
       const { data, error } = await supabase.functions.invoke("vuln-scanner", { body: { targetId } });
-      if (error) toast.error(`Vuln scan failed: ${error.message}`);
-      else if (data?.error) toast.error(`Vuln scan failed: ${data.error}`);
+      if (error) {
+        if (isTimeoutOrNetworkError(error)) {
+          toast.info("OWASP scan running in background — check Neural Log + Approvals");
+        } else {
+          toast.error(`Vuln scan failed: ${error.message}`);
+        }
+      } else if (data?.error) toast.error(`Vuln scan failed: ${data.error}`);
       else {
         const coverageCount = data.owaspCoverage?.length || 0;
         toast.success(`OWASP scan complete: ${data.vulnsFound} active, ${data.passiveIssues || 0} passive, ${data.approvalsQueued} queued (${coverageCount} OWASP categories)`);
-        queryClient.invalidateQueries({ queryKey: ["targets"] });
-        queryClient.invalidateQueries({ queryKey: ["approvals"] });
-        queryClient.invalidateQueries({ queryKey: ["recent-logs"] });
       }
+      queryClient.invalidateQueries({ queryKey: ["targets"] });
+      queryClient.invalidateQueries({ queryKey: ["approvals"] });
+      queryClient.invalidateQueries({ queryKey: ["recent-logs"] });
     } catch (e: any) {
-      toast.error(`Vuln scan error: ${e.message}`);
+      if (isTimeoutOrNetworkError(e)) {
+        toast.info("OWASP scan running in background — check Neural Log");
+      } else {
+        toast.error(`Vuln scan error: ${e.message}`);
+      }
     } finally {
       setVulnScanTargets((prev) => { const n = new Set(prev); n.delete(targetId); return n; });
     }
@@ -229,12 +260,22 @@ export default function Targets() {
       const { data, error } = await supabase.functions.invoke("cyberscope-deep-audit", {
         body: { targetUrl: targetDomain.startsWith("http") ? targetDomain : `https://${targetDomain}`, targetId },
       });
-      if (error) throw error;
+      if (error) {
+        if (isTimeoutOrNetworkError(error)) {
+          toast.info("Deep Audit running in background — refresh shortly to see results");
+          return;
+        }
+        throw error;
+      }
       setDeepAuditResults((prev) => ({ ...prev, [targetId]: data as DeepAuditResults }));
       setExpandedAudit(targetId);
       toast.success("Deep Audit complete — review results below");
     } catch (e: any) {
-      toast.error(`Deep Audit error: ${e.message}`);
+      if (isTimeoutOrNetworkError(e)) {
+        toast.info("Deep Audit running in background — refresh shortly");
+      } else {
+        toast.error(`Deep Audit error: ${e.message}`);
+      }
     } finally {
       setDeepAuditTargets((prev) => { const n = new Set(prev); n.delete(targetId); return n; });
     }
