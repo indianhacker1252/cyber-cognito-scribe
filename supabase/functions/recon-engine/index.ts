@@ -311,13 +311,14 @@ async function harvestOTX(
 async function spiderCrawl(
   domain: string,
   maxPages = 30,
-  maxDepth = 3
+  maxDepth = 3,
+  scheme: "https" | "http" = "https",
 ): Promise<{ urls: string[]; forms: Array<{ action: string; method: string; inputs: string[] }>; jsFiles: string[] }> {
   const visited = new Set<string>();
   const discovered: string[] = [];
   const forms: Array<{ action: string; method: string; inputs: string[] }> = [];
   const jsFiles: string[] = [];
-  const queue: Array<{ url: string; depth: number }> = [{ url: `https://${domain}`, depth: 0 }];
+  const queue: Array<{ url: string; depth: number }> = [{ url: `${scheme}://${domain}`, depth: 0 }];
 
   while (queue.length > 0 && visited.size < maxPages) {
     const item = queue.shift();
@@ -328,9 +329,10 @@ async function spiderCrawl(
     try {
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), 6000);
+      // Rule 6: Inject browser UA so legacy WAFs don't drop the request.
       const resp = await fetch(item.url, {
         method: "GET",
-        headers: { "User-Agent": "CyberScope-Spider/2.0" },
+        headers: browserHeaders(),
         redirect: "follow",
         signal: ctrl.signal,
       });
@@ -350,8 +352,8 @@ async function spiderCrawl(
           const href = match[1];
           let fullUrl: string;
           if (href.startsWith("http")) fullUrl = href;
-          else if (href.startsWith("//")) fullUrl = `https:${href}`;
-          else if (href.startsWith("/")) fullUrl = `https://${domain}${href}`;
+          else if (href.startsWith("//")) fullUrl = `${scheme}:${href}`;
+          else if (href.startsWith("/")) fullUrl = `${scheme}://${domain}${href}`;
           else fullUrl = `${item.url.replace(/\/[^/]*$/, "/")}${href}`;
 
           const parsed = new URL(fullUrl);
