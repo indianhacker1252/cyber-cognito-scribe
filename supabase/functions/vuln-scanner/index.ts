@@ -543,11 +543,18 @@ async function runDifferentialTest(
           result.isVulnerable = true;
           result.confidence = "high";
           result.confidenceScore = 85;
-        } else if (trueResp.status !== falseResp.status && trueResp.status === 500 && Math.abs(trueBody.length - falseBody.length) > 200) {
-          // Only flag if status changed to 500 AND body significantly different — 200→200 is normal
-          result.isVulnerable = true;
-          result.confidence = "low";
-          result.confidenceScore = 30;
+        } else if (trueResp.status === 500) {
+          // Rule 5: 500 is only a TP if the body has an explicit stack trace / leak.
+          const v = verdictFromResponse({
+            status: 500, body: trueBody,
+            diffBytes: Math.abs(trueBody.length - falseBody.length),
+          });
+          if (v.result === "true_positive") {
+            result.isVulnerable = true;
+            result.confidence = "medium";
+            result.confidenceScore = v.confidence;
+          }
+          // else: 500 with no leak → False Positive, not flagged.
         }
       } else if (vulnClass === "idor" || vulnClass === "privilege-escalation") {
         if (trueResp.status === 200 && falseResp.status === 200) {
