@@ -2037,9 +2037,22 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
       }
     }
 
-    // AI-verified assessments
+    // AI-verified assessments — Rule 3: AI Peer Review is forbidden from
+    // creating high/critical findings for which there is zero physical
+    // payload evidence (no Gauntlet pass). Force them to info-only.
     for (const assessment of aiAssessments.assessments) {
       const confidenceLabel = assessment.confidenceScore >= 80 ? "high" : assessment.confidenceScore >= 50 ? "medium" : "low";
+      const aiFinding = enforceZeroPayloadGate({
+        payloads_tested: 0, // AI deep-assessments are inferred, not physically tested
+        confidence_score: assessment.confidenceScore,
+        severity: assessment.severity,
+      });
+      // AI Peer Review may not promote anything past 'info' without a Gauntlet pass.
+      if (!aiReviewAllowed(aiFinding) && (assessment.severity === "high" || assessment.severity === "critical")) {
+        await log(db, targetId, taskId, "info",
+          `🚫 AI peer review blocked from promoting "${assessment.title}" — no Gauntlet pass / zero payloads tested`);
+        assessment.severity = "info";
+      }
 
       if (assessment.severity === "high" || assessment.severity === "critical") {
         await db.from("pending_approvals").insert({
