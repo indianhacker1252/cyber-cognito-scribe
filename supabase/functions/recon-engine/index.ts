@@ -507,7 +507,7 @@ async function fingerprintTech(url: string): Promise<TechFingerprint> {
     const resp = await fetch(url, {
       method: "GET",
       redirect: "follow",
-      headers: { "User-Agent": "CyberScope-Scanner/2.0" },
+      headers: browserHeaders(),
     });
 
     for (const [key, value] of resp.headers.entries()) {
