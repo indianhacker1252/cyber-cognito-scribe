@@ -2133,6 +2133,30 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
 
     await db.from("target_workspaces").update({ status: "completed" }).eq("id", targetId);
 
+    // ── Auto-trigger Mythos agent if enabled on this target ──
+    try {
+      const { data: ws } = await db.from("target_workspaces")
+        .select("auto_mythos").eq("id", targetId).maybeSingle();
+      if ((ws as any)?.auto_mythos) {
+        await db.from("scan_logs").insert({
+          target_id: targetId, log_type: "info",
+          message: `🧠 auto_mythos enabled — triggering Mythos agent post-scan`,
+          metadata: { trigger: "post_scan_auto" },
+        } as any);
+        // fire-and-forget; mythos-agent runs its own loop
+        fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/mythos-agent`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ targetId, triggerType: "post_scan_auto", maxIterations: 3 }),
+        }).catch((e) => console.error("mythos-agent dispatch failed:", e));
+      }
+    } catch (e) {
+      console.error("auto_mythos check failed:", e);
+    }
+
     return new Response(
       JSON.stringify({
         success: true,
