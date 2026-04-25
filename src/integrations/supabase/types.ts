@@ -668,6 +668,48 @@ export type Database = {
         }
         Relationships: []
       }
+      external_infra_config: {
+        Row: {
+          auth_token: string | null
+          created_at: string
+          endpoint_url: string | null
+          extra_config: Json | null
+          health_status: string | null
+          id: string
+          is_active: boolean
+          last_health_check: string | null
+          mode: string
+          service: string
+          updated_at: string
+        }
+        Insert: {
+          auth_token?: string | null
+          created_at?: string
+          endpoint_url?: string | null
+          extra_config?: Json | null
+          health_status?: string | null
+          id?: string
+          is_active?: boolean
+          last_health_check?: string | null
+          mode?: string
+          service: string
+          updated_at?: string
+        }
+        Update: {
+          auth_token?: string | null
+          created_at?: string
+          endpoint_url?: string | null
+          extra_config?: Json | null
+          health_status?: string | null
+          id?: string
+          is_active?: boolean
+          last_health_check?: string | null
+          mode?: string
+          service?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
       intel_feeds: {
         Row: {
           affected_tech_stack: Json | null
