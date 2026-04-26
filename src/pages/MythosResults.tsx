@@ -246,7 +246,7 @@ export default function MythosResults() {
         <Card>
           <CardContent className="p-4">
             <div className="text-[10px] font-mono text-muted-foreground uppercase">XSS</div>
-            <div className="text-2xl font-mono font-bold text-yellow-500">{stats.xss}</div>
+            <div className="text-2xl font-mono font-bold text-warning">{stats.xss}</div>
           </CardContent>
         </Card>
         <Card>
@@ -457,7 +457,7 @@ export default function MythosResults() {
       {targetDomain && (
         <div className="text-[10px] font-mono text-muted-foreground flex items-center gap-1">
           <TargetIcon className="h-3 w-3" /> Target: <span className="text-primary">{targetDomain}</span>
-          <AlertTriangle className="h-3 w-3 ml-2 text-yellow-500" /> All testing must be authorized.
+          <AlertTriangle className="h-3 w-3 ml-2 text-warning" /> All testing must be authorized.
         </div>
       )}
     </div>
