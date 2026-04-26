@@ -150,6 +150,9 @@ export default function Settings() {
 
   return (
     <div className="space-y-8 max-w-3xl pb-12">
+      {/* ── Readiness Dashboard ── */}
+      <ReadinessDashboard providers={configs || []} infraRows={infraRows || []} />
+
       {/* ── AI Provider Settings ── */}
       <div>
         <h1 className="text-2xl font-mono font-bold text-foreground flex items-center gap-2">
