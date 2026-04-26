@@ -388,3 +388,105 @@ function InfraCard({
     </Card>
   );
 }
+
+// ──────────────────────────────────────────────────────────────────────────
+// Readiness Dashboard — shows live/degraded state per engine
+// ──────────────────────────────────────────────────────────────────────────
+function ReadinessDashboard({
+  providers, infraRows,
+}: {
+  providers: ProviderConfig[];
+  infraRows: InfraRow[];
+}) {
+  const llmActive = providers.some((p) => p.is_active && p.api_key);
+  const docker = infraRows.find((r) => r.service === "docker_worker");
+  const browser = infraRows.find((r) => r.service === "browserless");
+  const oob = infraRows.find((r) => r.service === "oob");
+
+  const items = [
+    {
+      key: "llm",
+      icon: Brain,
+      label: "AI Reasoning Engine",
+      live: llmActive,
+      liveText: "ACTIVE — Mythos loop, debate, chainer, variant-gen, deep triage all online",
+      degradedText: "DEGRADED — falling back to Lovable AI only. Add OpenAI/Gemini key for full XBOW-class reasoning.",
+    },
+    {
+      key: "docker",
+      icon: Container,
+      label: "Docker Worker (nuclei/ffuf/sqlmap)",
+      live: !!(docker?.is_active && docker?.endpoint_url),
+      liveText: `ACTIVE — streaming output from ${docker?.endpoint_url?.slice(0, 40)}...`,
+      degradedText: "OFFLINE — real exploit tooling disabled. Deploy docker-worker-reference and add URL.",
+    },
+    {
+      key: "browser",
+      icon: Globe,
+      label: "Real Browser (Browserless)",
+      live: !!(browser?.is_active && browser?.endpoint_url),
+      liveText: "ACTIVE — DOM XSS, SPA crawl, post-auth scanning enabled",
+      degradedText: "OFFLINE — pure HTTP only. ~90% of modern SPA bugs invisible. Add Browserless URL+token.",
+    },
+    {
+      key: "oob",
+      icon: Radio,
+      label: "Out-of-Band Detector",
+      live: !!(oob?.is_active && (oob?.endpoint_url || oob?.mode === "local")),
+      liveText: `ACTIVE — ${oob?.mode || "local"} backend will catch SSRF / blind RCE / blind XXE`,
+      degradedText: "OFFLINE — blind vuln classes will be missed.",
+    },
+  ];
+
+  const liveCount = items.filter((i) => i.live).length;
+  const parityPct = Math.round((liveCount / items.length) * 100);
+
+  return (
+    <Card className="border-primary/30 bg-card">
+      <CardHeader className="pb-3">
+        <CardTitle className="text-lg font-mono flex items-center gap-2">
+          <Activity className="h-5 w-5 text-primary" />
+          Engine Readiness
+          <Badge variant={parityPct === 100 ? "default" : "secondary"} className="ml-auto font-mono">
+            {liveCount}/{items.length} LIVE · {parityPct}% XBOW-parity
+          </Badge>
+        </CardTitle>
+        <CardDescription className="text-xs">
+          Real-time status of every reasoning + execution engine. Anything OFFLINE means that vuln class is invisible.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        {items.map((it) => {
+          const Icon = it.icon;
+          return (
+            <div key={it.key} className="flex items-start gap-3 p-2 rounded border border-border/60 bg-background/40">
+              <Icon className={`h-5 w-5 mt-0.5 shrink-0 ${it.live ? "text-primary" : "text-muted-foreground"}`} />
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-mono text-foreground">{it.label}</span>
+                  {it.live ? (
+                    <Badge variant="default" className="text-[10px] h-4 px-1.5">LIVE</Badge>
+                  ) : (
+                    <Badge variant="outline" className="text-[10px] h-4 px-1.5 border-destructive/50 text-destructive">OFFLINE</Badge>
+                  )}
+                </div>
+                <p className="text-[11px] text-muted-foreground mt-0.5">
+                  {it.live ? it.liveText : it.degradedText}
+                </p>
+              </div>
+              {it.live ? (
+                <CheckCircle2 className="h-4 w-4 text-primary shrink-0" />
+              ) : (
+                <XCircle className="h-4 w-4 text-destructive shrink-0" />
+              )}
+            </div>
+          );
+        })}
+        <div className="pt-2 mt-2 border-t border-border/50 flex items-center gap-2 text-[11px] font-mono text-muted-foreground">
+          <Zap className="h-3 w-3 text-primary" />
+          Reflection-XSS auto-promoter & post-scan Mythos loop are <span className="text-primary">always on</span> — no config required.
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
