@@ -10,7 +10,7 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import {
-  Key, Sparkles, ShieldCheck, Trash2, Save, Container, Globe, Radio, CheckCircle2, XCircle, Loader2,
+  Key, Sparkles, ShieldCheck, Trash2, Save, Container, Globe, Radio, CheckCircle2, XCircle, Loader2, Activity, Brain, Zap,
 } from "lucide-react";
 
 // ──────────────────────────────────────────────────────────────────────────
