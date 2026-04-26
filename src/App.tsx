@@ -14,6 +14,7 @@ import IntelFeed from "./pages/IntelFeed";
 import Settings from "./pages/Settings";
 import FalsePositives from "./pages/FalsePositives";
 import AttackVisualization from "./pages/AttackVisualization";
+import MythosResults from "./pages/MythosResults";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -36,6 +37,7 @@ const App = () => (
             <Route path="/settings" element={<Settings />} />
             <Route path="/false-positives" element={<FalsePositives />} />
             <Route path="/attack-viz" element={<AttackVisualization />} />
+            <Route path="/mythos" element={<MythosResults />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </Layout>
