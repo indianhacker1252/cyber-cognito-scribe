@@ -15,14 +15,34 @@ serve(async (req) => {
 
     const db = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 
-    const [findings, endpoints, codeFindings] = await Promise.all([
+    const [findings, endpoints, codeFindings, pending] = await Promise.all([
       db.from("vulnerability_findings").select("id,title,severity,vuln_class:title,payload,description").eq("target_id", targetId).limit(40),
       db.from("discovered_endpoints").select("url,method,parameters").eq("target_id", targetId).limit(40),
       db.from("code_findings").select("vuln_class,file_path,severity").eq("target_id", targetId).limit(20),
+      db.from("pending_approvals").select("title,severity,finding_type,payload_used").eq("target_id", targetId).limit(20),
     ]);
 
+    const totalSignals = (findings.data?.length || 0) + (codeFindings.data?.length || 0) + (pending.data?.length || 0);
+    if (totalSignals < 2) {
+      await db.from("scan_logs").insert({
+        target_id: targetId, log_type: "info",
+        message: `🔗 Chainer skipped: only ${totalSignals} signal(s); need ≥2 to chain`,
+        metadata: { phase: "chainer-skip", run_id: runId },
+      });
+      return new Response(JSON.stringify({ chainsCount: 0, skipped: true, reason: "insufficient signals" }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
+
     const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
-    if (!LOVABLE_API_KEY) throw new Error("LOVABLE_API_KEY not configured");
+    if (!LOVABLE_API_KEY) {
+      await db.from("scan_logs").insert({
+        target_id: targetId, log_type: "warning",
+        message: `🔗 Chainer skipped: LOVABLE_API_KEY missing`,
+        metadata: { phase: "chainer-no-key", run_id: runId },
+      });
+      return new Response(JSON.stringify({ chainsCount: 0, skipped: true, reason: "no LLM key" }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
 
     const aiResp = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
       method: "POST",
@@ -31,7 +51,7 @@ serve(async (req) => {
         model: "google/gemini-2.5-flash",
         messages: [
           { role: "system", content: "You are an elite offensive security researcher (think Mythos/AIxCC). Given findings + endpoints + SAST results, propose multi-stage exploit chains where each step's output enables the next. Each chain should be a realistic kill-chain (e.g. info-leak → auth bypass → RCE). Return 1-4 chains, max." },
-          { role: "user", content: `Target findings:\n${JSON.stringify(findings.data || []).slice(0, 4000)}\n\nEndpoints:\n${JSON.stringify(endpoints.data || []).slice(0, 2000)}\n\nSAST taint flows:\n${JSON.stringify(codeFindings.data || []).slice(0, 1500)}\n\nProduce kill-chains.` },
+          { role: "user", content: `Target findings:\n${JSON.stringify(findings.data || []).slice(0, 3500)}\n\nPending suspicions:\n${JSON.stringify(pending.data || []).slice(0, 1500)}\n\nEndpoints:\n${JSON.stringify(endpoints.data || []).slice(0, 1500)}\n\nSAST taint flows:\n${JSON.stringify(codeFindings.data || []).slice(0, 1500)}\n\nProduce kill-chains.` },
         ],
         tools: [{
           type: "function", function: {
@@ -104,8 +124,8 @@ serve(async (req) => {
     });
   } catch (e) {
     console.error(e);
-    return new Response(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }), {
-      status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
+    return new Response(JSON.stringify({ chainsCount: 0, error: e instanceof Error ? e.message : String(e) }), {
+      status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
 });
