@@ -2159,6 +2159,16 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
         },
         body: JSON.stringify({ targetId }),
       }).catch((e) => console.error("xss-reflection-promoter dispatch failed:", e));
+
+      // fire-and-forget parameter brute-force XSS sweep (XBOW/Mythos-style probing)
+      fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/param-bruteforce-xss`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ targetId, maxEndpoints: 8, maxParamsPerEndpoint: 12 }),
+      }).catch((e) => console.error("param-bruteforce-xss dispatch failed:", e));
     } catch (e) {
       console.error("post-scan auto-trigger failed:", e);
     }
