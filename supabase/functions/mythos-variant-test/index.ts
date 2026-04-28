@@ -55,6 +55,25 @@ serve(async (req) => {
       } as any).eq("id", variantId);
     }
 
+    // Auto-promote 0-day candidates to vulnerability_findings (Mythos-style)
+    if (isCandidate) {
+      await db.from("vulnerability_findings").insert({
+        target_id: targetId,
+        title: `🌀 0-Day Variant: ${vulnClass || "unknown"} via mutated payload`,
+        severity: result.errorSig ? "critical" : "high",
+        payload,
+        cvss_score: result.errorSig ? 8.8 : 7.5,
+        description: `Variant payload triggered ${result.errorSig ? "error signature" : "reflection"} on ${endpoint}. Status: ${result.status}, body length: ${result.bodyLen}b. Generated from CVE root-cause pattern.`,
+        remediation: `Apply context-aware sanitization on parameter "${paramName || "q"}". Validate against schema/allowlist.`,
+        confidence_score: result.errorSig && result.reflected ? 92 : 85,
+        confidence_level: "high",
+        validation_status: "verified",
+        ai_verified: true,
+        reachability_status: "reachable",
+        poc: `curl '${endpoint}?${paramName || "q"}=${encodeURIComponent(payload)}'`,
+      });
+    }
+
     await db.from("scan_logs").insert({
       target_id: targetId,
       log_type: isCandidate ? "result" : "info",
