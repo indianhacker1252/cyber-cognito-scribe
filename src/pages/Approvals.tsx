@@ -329,6 +329,12 @@ export default function Approvals() {
                   {approval.status}
                 </Badge>
                 <Button
+                  variant="outline" size="sm" className="h-6 px-2 font-mono text-[10px] gap-1 border-cyber-green/30 text-cyber-green hover:bg-cyber-green/10"
+                  onClick={(e) => { e.stopPropagation(); setDetailsApproval(approval); }}
+                >
+                  <FileText className="h-3 w-3" /> Details
+                </Button>
+                <Button
                   variant="ghost" size="icon" className="h-6 w-6 text-muted-foreground hover:text-destructive"
                   onClick={(e) => { e.stopPropagation(); deleteApproval.mutate(approval.id); }}
                 >
