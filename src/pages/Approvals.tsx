@@ -8,6 +8,8 @@ import { CheckCircle, XCircle, AlertTriangle, Eye, ShieldCheck, Shield, Trash2, 
 import { toast } from "sonner";
 import ValidationModal from "@/components/ValidationModal";
 import AdaptiveValidationModal from "@/components/AdaptiveValidationModal";
+import FindingDetailsDialog from "@/components/FindingDetailsDialog";
+import { FileText } from "lucide-react";
 import { markAsFalsePositive } from "@/services/LearningService";
 import { triageFinding } from "@/services/TriageBrain";
 import { deepTriageFinding } from "@/services/DeepSignalTriage";
@@ -71,6 +73,7 @@ export default function Approvals() {
   const [adaptiveTarget, setAdaptiveTarget] = useState<Approval | null>(null);
   const [triaging, setTriaging] = useState<string | null>(null);
   const [deepTriaging, setDeepTriaging] = useState<string | null>(null);
+  const [detailsApproval, setDetailsApproval] = useState<Approval | null>(null);
 
   const { data: approvals, isLoading } = useQuery({
     queryKey: ["approvals"],
@@ -325,6 +328,12 @@ export default function Approvals() {
                 <Badge variant="outline" className={`text-[9px] font-mono ${statusBadge[approval.status]}`}>
                   {approval.status}
                 </Badge>
+                <Button
+                  variant="outline" size="sm" className="h-6 px-2 font-mono text-[10px] gap-1 border-cyber-green/30 text-cyber-green hover:bg-cyber-green/10"
+                  onClick={(e) => { e.stopPropagation(); setDetailsApproval(approval); }}
+                >
+                  <FileText className="h-3 w-3" /> Details
+                </Button>
                 <Button
                   variant="ghost" size="icon" className="h-6 w-6 text-muted-foreground hover:text-destructive"
                   onClick={(e) => { e.stopPropagation(); deleteApproval.mutate(approval.id); }}
@@ -631,6 +640,11 @@ export default function Approvals() {
           source="approval"
         />
       )}
+      <FindingDetailsDialog
+        open={!!detailsApproval}
+        onOpenChange={(open) => { if (!open) setDetailsApproval(null); }}
+        finding={detailsApproval as any}
+      />
     </div>
   );
 }

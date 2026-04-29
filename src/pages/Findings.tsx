@@ -8,6 +8,8 @@ import { ShieldAlert, Shield, Trash2, BrainCircuit, Gauge, Ban, Filter, X, FileD
 import { toast } from "sonner";
 import ValidationModal from "@/components/ValidationModal";
 import AdaptiveValidationModal from "@/components/AdaptiveValidationModal";
+import FindingDetailsDialog from "@/components/FindingDetailsDialog";
+import { FileText } from "lucide-react";
 import { markAsFalsePositive } from "@/services/LearningService";
 import { triageFinding } from "@/services/TriageBrain";
 
@@ -29,6 +31,7 @@ export default function Findings() {
   const queryClient = useQueryClient();
   const [selectedFinding, setSelectedFinding] = useState<any>(null);
   const [adaptiveFinding, setAdaptiveFinding] = useState<any>(null);
+  const [detailsFinding, setDetailsFinding] = useState<any>(null);
   const [triaging, setTriaging] = useState<string | null>(null);
   const [activeTargetFilter, setActiveTargetFilter] = useState<string | null>(null);
 
@@ -279,6 +282,9 @@ export default function Findings() {
                   </TableCell>
                   <TableCell>
                     <div className="flex gap-1">
+                      <Button variant="outline" size="sm" className="font-mono text-[10px] gap-1 border-cyber-green/30 text-cyber-green hover:bg-cyber-green/10" onClick={() => setDetailsFinding(f)}>
+                        <FileText className="h-3 w-3" /> Details
+                      </Button>
                       <Button variant="outline" size="sm" className="font-mono text-[10px] gap-1 border-primary/30 text-primary hover:bg-primary/10" onClick={() => setSelectedFinding(f)}>
                         <Shield className="h-3 w-3" /> Validate
                       </Button>
@@ -331,6 +337,11 @@ export default function Findings() {
           source="finding"
         />
       )}
+      <FindingDetailsDialog
+        open={!!detailsFinding}
+        onOpenChange={(open) => { if (!open) setDetailsFinding(null); }}
+        finding={detailsFinding}
+      />
     </div>
   );
 }
