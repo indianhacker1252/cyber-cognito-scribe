@@ -337,6 +337,11 @@ export default function Findings() {
           source="finding"
         />
       )}
+      <FindingDetailsDialog
+        open={!!detailsFinding}
+        onOpenChange={(open) => { if (!open) setDetailsFinding(null); }}
+        finding={detailsFinding}
+      />
     </div>
   );
 }
