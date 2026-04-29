@@ -10,17 +10,28 @@ const corsHeaders = {
 
 async function probe(url: string, payload: string, paramName = "q"): Promise<any> {
   try {
+    const baseResp = await fetch(url, { signal: AbortSignal.timeout(6000), redirect: "manual" });
+    const baseBody = await baseResp.text();
     const u = new URL(url);
     u.searchParams.set(paramName, payload);
     const t0 = Date.now();
-    const r = await fetch(u.toString(), { signal: AbortSignal.timeout(8000) });
+    const r = await fetch(u.toString(), { signal: AbortSignal.timeout(8000), redirect: "manual" });
     const body = await r.text();
+    const sqlError = /SQL syntax|mysql_|pg_query|SQLSTATE|ORA-|unclosed quotation/i.test(body) && !/SQL syntax|mysql_|pg_query|SQLSTATE|ORA-|unclosed quotation/i.test(baseBody);
+    const sstiEval = /\b2674\b|\b49\b/.test(body) && !/\b2674\b|\b49\b/.test(baseBody) && !body.includes(payload);
+    const cmdOutput = /cyberscope_marker|uid=\d+\(/.test(body) && !/cyberscope_marker|uid=\d+\(/.test(baseBody);
+    const fileLeak = /root:.*:0:0|\/bin\/bash/.test(body) && !/root:.*:0:0|\/bin\/bash/.test(baseBody);
+    const deterministicProof = sqlError || sstiEval || cmdOutput || fileLeak;
     return {
       status: r.status,
+      baselineStatus: baseResp.status,
       bodyLen: body.length,
+      baselineLen: baseBody.length,
       latencyMs: Date.now() - t0,
       reflected: body.includes(payload),
-      errorSig: /SQL syntax|mysql_|pg_query|SQLSTATE|ORA-|stack trace|TypeError|fatal error/i.test(body),
+      errorSig: sqlError,
+      deterministicProof,
+      proofType: sqlError ? "sql_error" : sstiEval ? "template_eval" : cmdOutput ? "command_output" : fileLeak ? "file_leak" : "none",
       bodySnippet: body.slice(0, 300),
     };
   } catch (e) {
@@ -43,7 +54,7 @@ serve(async (req) => {
     });
 
     const result = await probe(endpoint, payload, paramName || "q");
-    const isCandidate = result.reflected || result.errorSig;
+    const isCandidate = result.deterministicProof || result.reflected;
     const status = result.status === 0 ? "error" : (isCandidate ? "candidate" : "negative");
 
     if (variantId) {
@@ -55,17 +66,17 @@ serve(async (req) => {
       } as any).eq("id", variantId);
     }
 
-    // Auto-promote 0-day candidates to vulnerability_findings (Mythos-style)
-    if (isCandidate) {
+    // Auto-promote only deterministic proof. Reflection-only candidates stay in Mythos for review.
+    if (result.deterministicProof) {
       await db.from("vulnerability_findings").insert({
         target_id: targetId,
         title: `🌀 0-Day Variant: ${vulnClass || "unknown"} via mutated payload`,
         severity: result.errorSig ? "critical" : "high",
         payload,
         cvss_score: result.errorSig ? 8.8 : 7.5,
-        description: `Variant payload triggered ${result.errorSig ? "error signature" : "reflection"} on ${endpoint}. Status: ${result.status}, body length: ${result.bodyLen}b. Generated from CVE root-cause pattern.`,
+        description: `Variant payload triggered deterministic proof (${result.proofType}) on ${endpoint}. Baseline ${result.baselineStatus}/${result.baselineLen}b → mutated ${result.status}/${result.bodyLen}b. Generated from CVE root-cause pattern.`,
         remediation: `Apply context-aware sanitization on parameter "${paramName || "q"}". Validate against schema/allowlist.`,
-        confidence_score: result.errorSig && result.reflected ? 92 : 85,
+        confidence_score: 92,
         confidence_level: "high",
         validation_status: "verified",
         ai_verified: true,
