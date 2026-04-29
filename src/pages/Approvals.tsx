@@ -640,6 +640,11 @@ export default function Approvals() {
           source="approval"
         />
       )}
+      <FindingDetailsDialog
+        open={!!detailsApproval}
+        onOpenChange={(open) => { if (!open) setDetailsApproval(null); }}
+        finding={detailsApproval as any}
+      />
     </div>
   );
 }
