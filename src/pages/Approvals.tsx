@@ -8,6 +8,8 @@ import { CheckCircle, XCircle, AlertTriangle, Eye, ShieldCheck, Shield, Trash2, 
 import { toast } from "sonner";
 import ValidationModal from "@/components/ValidationModal";
 import AdaptiveValidationModal from "@/components/AdaptiveValidationModal";
+import FindingDetailsDialog from "@/components/FindingDetailsDialog";
+import { FileText } from "lucide-react";
 import { markAsFalsePositive } from "@/services/LearningService";
 import { triageFinding } from "@/services/TriageBrain";
 import { deepTriageFinding } from "@/services/DeepSignalTriage";
