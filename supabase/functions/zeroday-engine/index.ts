@@ -130,8 +130,12 @@ async function runProbeSet(endpoint: string, paramName: string, db: any, targetI
   const results: any[] = [];
   // Test endpoint first to get baseline
   let baseline = "";
+  let baselineStatus = 0;
+  let baselineLocation = "";
   try {
     const r = await safeFetch(endpoint, {}, 5000);
+    baselineStatus = r.status;
+    baselineLocation = r.headers.get("location") || "";
     baseline = await r.text();
   } catch { /* ignore */ }
 
@@ -141,8 +145,9 @@ async function runProbeSet(endpoint: string, paramName: string, db: any, targetI
       u.searchParams.set(paramName, p.payload);
       const r = await safeFetch(u.toString(), { redirect: "manual" }, 6000);
       const body = await r.text();
-      const det = p.detect(body, r.status, r.headers);
-      if (det.hit && body !== baseline) {
+      const det = p.detect(body, r.status, r.headers, baseline);
+      const locationChanged = (r.headers.get("location") || "") !== baselineLocation;
+      if (det.hit && (body !== baseline || r.status !== baselineStatus || locationChanged)) {
         await log(`🚨 ${p.vulnClass}: ${det.evidence}`, { url: u.toString(), confidence: det.confidence });
         if (det.confidence >= 85) {
           await db.from("vulnerability_findings").insert({
@@ -153,6 +158,7 @@ async function runProbeSet(endpoint: string, paramName: string, db: any, targetI
             remediation: `Sanitize/escape ${paramName} before use. Apply context-aware encoding.`,
             confidence_score: det.confidence, confidence_level: "high",
             validation_status: "verified", ai_verified: true, reachability_status: "reachable",
+            triage_reasoning: `Deterministic 0-day probe proof: ${det.evidence}. Baseline status ${baselineStatus}, mutated status ${r.status}.`,
             poc: `curl '${u.toString()}'`,
           });
         } else {
