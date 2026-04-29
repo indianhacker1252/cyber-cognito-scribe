@@ -373,7 +373,7 @@ function getTestPairs(paramValue: string): Record<string, { truthy: string; fals
 }
 
 // Intruder payloads for deeper verification per vuln class
-function getIntruderPayloads(vulnClass: string, paramValue: string): string[] {
+function getIntruderPayloads(vulnClass: string, paramValue: string, adaptivePayloads: string[] = []): string[] {
   const base: Record<string, string[]> = {
     sqli: [
       `${paramValue}' OR 1=1--`, `${paramValue}" OR "1"="1`, `${paramValue}' UNION SELECT NULL--`,
@@ -399,7 +399,7 @@ function getIntruderPayloads(vulnClass: string, paramValue: string): string[] {
       "${7*7}", "{{7*'7'}}", "<%= 7*7 %>", "#{7*7}",
     ],
   };
-  return base[vulnClass] || [];
+  return [...new Set([...(adaptivePayloads || []), ...(base[vulnClass] || [])])].filter(Boolean).slice(0, 12);
 }
 
 const MUTATIONS: Array<{ name: string; transform: (s: string) => string }> = [
@@ -422,17 +422,19 @@ async function runDifferentialTest(
   baseUrl: string,
   paramName: string,
   paramValue: string,
-  vulnClass: string
+  vulnClass: string,
+  overrideTruthyPayload?: string
 ): Promise<DiffResult | null> {
   const testPairs = getTestPairs(paramValue);
   const pair = testPairs[vulnClass];
   if (!pair) return null;
-  if (!isSafePayload(pair.truthy) || !isSafePayload(pair.falsy)) return null;
+  const truthyPayload = overrideTruthyPayload || pair.truthy;
+  if (!isSafePayload(truthyPayload) || !isSafePayload(pair.falsy)) return null;
 
   const payloadsToTry = [
-    { payload: pair.truthy, name: "original" },
+    { payload: truthyPayload, name: overrideTruthyPayload ? "override" : "original" },
     ...MUTATIONS.slice(0, MAX_ADAPTIVE_RETRIES).map((m) => ({
-      payload: m.transform(pair.truthy),
+      payload: m.transform(truthyPayload),
       name: m.name,
     })),
   ];
@@ -612,7 +614,10 @@ async function runDifferentialTest(
 
       // ─── Intruder Mode: run additional payloads for confirmed vulns ───
       if (result.isVulnerable) {
-        const intruderPayloads = getIntruderPayloads(vulnClass, paramValue);
+        const intruderPayloads = getIntruderPayloads(vulnClass, paramValue, [
+          ...(highYieldPayloads.get(vulnClass) || []),
+          ...(secListsPayloadsMap.get(vulnClass) || []).slice(0, 6),
+        ]);
         const intruderResults: Array<{ payload: string; status: number; length: number; timingMs: number }> = [];
 
         for (const ip of intruderPayloads.slice(0, 5)) {
@@ -1225,7 +1230,7 @@ serve(async (req) => {
                 const evolved = gm.mutate(result.truePayload);
                 if (evolved === result.truePayload) continue;
 
-                const evoResult = await runDifferentialTest(check.url, check.paramName, check.paramValue, vulnClass);
+                const evoResult = await runDifferentialTest(check.url, check.paramName, check.paramValue, vulnClass, evolved);
                 if (evoResult && evoResult.isVulnerable && evoResult.confidenceScore > result.confidenceScore) {
                   diffResults.push(evoResult);
                   experienceRecords.push({
@@ -1475,7 +1480,7 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
 
                   await log(db, targetId, taskId, "action", `🎯 AI Follow-up: Testing ${test.paramName} for ${test.vulnClass} — ${test.reasoning.slice(0, 80)}`);
 
-                  const followResult = await runDifferentialTest(matchEp.url, test.paramName, (matchEp.parameters as Record<string,string>)?.[test.paramName] || "", test.vulnClass);
+                  const followResult = await runDifferentialTest(matchEp.url, test.paramName, (matchEp.parameters as Record<string,string>)?.[test.paramName] || "", test.vulnClass, test.payload);
                   if (followResult) {
                     diffResults.push(followResult);
                     if (followResult.isVulnerable) {

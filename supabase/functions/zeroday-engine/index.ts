@@ -22,14 +22,22 @@ async function safeFetch(url: string, opts: RequestInit = {}, timeoutMs = 7000) 
   } finally { clearTimeout(t); }
 }
 
-interface Probe { vulnClass: string; severity: "critical"|"high"|"medium"|"low"; payload: string; detect: (body: string, status: number, headers: Headers) => { hit: boolean; evidence: string; confidence: number } }
+interface Probe { vulnClass: string; severity: "critical"|"high"|"medium"|"low"; payload: string; detect: (body: string, status: number, headers: Headers, baseline: string) => { hit: boolean; evidence: string; confidence: number } }
+
+function isExternalRedirect(headers: Headers, expectedHost: string) {
+  const loc = headers.get("location") || "";
+  if (!loc) return false;
+  try {
+    const parsed = new URL(loc, "https://placeholder.invalid");
+    return parsed.hostname === expectedHost;
+  } catch { return false; }
+}
 
 // ─── SSTI ────────────────────────────────────────────────
 const SSTI_PROBES: Probe[] = [
-  { vulnClass: "ssti-jinja", severity: "critical", payload: "{{7*7}}", detect: b => ({ hit: /\b49\b/.test(b) && !/\{\{7\*7\}\}/.test(b), evidence: "Jinja2 evaluated 7*7=49", confidence: 95 }) },
-  { vulnClass: "ssti-twig", severity: "critical", payload: "{{7*'7'}}", detect: b => ({ hit: /\b7777777\b/.test(b), evidence: "Twig evaluated 7*'7'", confidence: 95 }) },
-  { vulnClass: "ssti-erb", severity: "critical", payload: "<%= 7*7 %>", detect: b => ({ hit: /\b49\b/.test(b) && !/<%=/.test(b), evidence: "ERB evaluated", confidence: 90 }) },
-  { vulnClass: "ssti-velocity", severity: "high", payload: "#set($x=7*7)$x", detect: b => ({ hit: /\b49\b/.test(b) && !/#set/.test(b), evidence: "Velocity eval", confidence: 85 }) },
+  { vulnClass: "ssti-jinja", severity: "critical", payload: "{{1337*2}}", detect: (b, _s, _h, base) => ({ hit: /\b2674\b/.test(b) && !/\b2674\b/.test(base) && !b.includes("{{1337*2}}"), evidence: "Jinja-style template evaluated 1337*2=2674", confidence: 95 }) },
+  { vulnClass: "ssti-erb", severity: "critical", payload: "<%= 1337*2 %>", detect: (b, _s, _h, base) => ({ hit: /\b2674\b/.test(b) && !/\b2674\b/.test(base) && !b.includes("<%="), evidence: "ERB-style template evaluated 1337*2=2674", confidence: 92 }) },
+  { vulnClass: "ssti-velocity", severity: "high", payload: "#set($x=1337*2)$x", detect: (b, _s, _h, base) => ({ hit: /\b2674\b/.test(b) && !/\b2674\b/.test(base) && !b.includes("#set"), evidence: "Velocity-style template evaluated 1337*2=2674", confidence: 90 }) },
 ];
 
 // ─── NoSQL Injection (reflected error) ───────────────────
@@ -48,7 +56,7 @@ const PROTO_PROBES: Probe[] = [
 const REDIRECT_PROBES: Probe[] = [
   { vulnClass: "open-redirect", severity: "medium", payload: "https://evil.example.com/", detect: (_b, s, h) => {
     const loc = h.get("location") || "";
-    return { hit: (s === 301 || s === 302 || s === 307) && /evil\.example\.com/.test(loc), evidence: `Location: ${loc}`, confidence: 90 };
+    return { hit: (s === 301 || s === 302 || s === 303 || s === 307 || s === 308) && isExternalRedirect(h, "evil.example.com"), evidence: `External redirect Location host: ${loc}`, confidence: 90 };
   }},
 ];
 
@@ -60,7 +68,7 @@ const CRLF_PROBES: Probe[] = [
 // ─── SSRF (basic — full OOB requires oob-collector) ──────
 const SSRF_PROBES: Probe[] = [
   { vulnClass: "ssrf", severity: "critical", payload: "http://169.254.169.254/latest/meta-data/", detect: b => ({ hit: /ami-id|instance-id|iam\/security-credentials/.test(b), evidence: "AWS IMDS leaked", confidence: 99 }) },
-  { vulnClass: "ssrf", severity: "critical", payload: "http://metadata.google.internal/computeMetadata/v1/", detect: b => ({ hit: /computeMetadata|instance\/service-accounts/.test(b), evidence: "GCP metadata leaked", confidence: 99 }) },
+  { vulnClass: "ssrf", severity: "critical", payload: "http://metadata.google.internal/computeMetadata/v1/", detect: (b, _s, h) => ({ hit: /Metadata-Flavor:\s*Google|instance\/service-accounts|project\/project-id|numeric-project-id/i.test(b) || h.get("metadata-flavor") === "Google", evidence: "GCP metadata response leaked", confidence: 99 }) },
 ];
 
 // ─── Deserialization markers ─────────────────────────────
@@ -122,8 +130,12 @@ async function runProbeSet(endpoint: string, paramName: string, db: any, targetI
   const results: any[] = [];
   // Test endpoint first to get baseline
   let baseline = "";
+  let baselineStatus = 0;
+  let baselineLocation = "";
   try {
     const r = await safeFetch(endpoint, {}, 5000);
+    baselineStatus = r.status;
+    baselineLocation = r.headers.get("location") || "";
     baseline = await r.text();
   } catch { /* ignore */ }
 
@@ -133,8 +145,9 @@ async function runProbeSet(endpoint: string, paramName: string, db: any, targetI
       u.searchParams.set(paramName, p.payload);
       const r = await safeFetch(u.toString(), { redirect: "manual" }, 6000);
       const body = await r.text();
-      const det = p.detect(body, r.status, r.headers);
-      if (det.hit && body !== baseline) {
+      const det = p.detect(body, r.status, r.headers, baseline);
+      const locationChanged = (r.headers.get("location") || "") !== baselineLocation;
+      if (det.hit && (body !== baseline || r.status !== baselineStatus || locationChanged)) {
         await log(`🚨 ${p.vulnClass}: ${det.evidence}`, { url: u.toString(), confidence: det.confidence });
         if (det.confidence >= 85) {
           await db.from("vulnerability_findings").insert({
@@ -145,6 +158,7 @@ async function runProbeSet(endpoint: string, paramName: string, db: any, targetI
             remediation: `Sanitize/escape ${paramName} before use. Apply context-aware encoding.`,
             confidence_score: det.confidence, confidence_level: "high",
             validation_status: "verified", ai_verified: true, reachability_status: "reachable",
+            triage_reasoning: `Deterministic 0-day probe proof: ${det.evidence}. Baseline status ${baselineStatus}, mutated status ${r.status}.`,
             poc: `curl '${u.toString()}'`,
           });
         } else {

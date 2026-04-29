@@ -274,20 +274,19 @@ async function autoTestTemplateOnTarget(
           }, 6000);
           const mutBody = await mutResp.text();
 
-          // Differential analysis
+          // Deterministic proof only — no promotion from status/length drift alone
           const lenDiff = Math.abs(mutBody.length - baseBody.length);
-          const statusDiff = mutResp.status !== baseResp.status;
-          const hasEvidence = lenDiff > 100 || statusDiff ||
-            (vulnClass === "rxss" && mutBody.includes("<cyberscope>")) ||
-            (vulnClass === "sqli" && /sql syntax|SQLSTATE|ORA-/i.test(mutBody)) ||
-            (vulnClass === "cmdi" && mutBody.includes("cyberscope_marker")) ||
-            (vulnClass === "ssti" && /\b49\b/.test(mutBody) && !/\b49\b/.test(baseBody)) ||
-            (vulnClass === "path-traversal" && /root:.*:0:0/.test(mutBody));
+          const sqlError = /sql syntax|SQLSTATE|ORA-|pg_query|unclosed quotation/i.test(mutBody) && !/sql syntax|SQLSTATE|ORA-|pg_query|unclosed quotation/i.test(baseBody);
+          const xssProof = vulnClass === "rxss" && mutBody.includes("<cyberscope>") && !baseBody.includes("<cyberscope>");
+          const cmdProof = vulnClass === "cmdi" && /cyberscope_marker|uid=\d+\(/i.test(mutBody) && !/cyberscope_marker|uid=\d+\(/i.test(baseBody);
+          const sstiProof = vulnClass === "ssti" && /\b2674\b|\b49\b/.test(mutBody) && !/\b2674\b|\b49\b/.test(baseBody);
+          const fileProof = vulnClass === "path-traversal" && /root:.*:0:0|\/bin\/bash/i.test(mutBody) && !/root:.*:0:0|\/bin\/bash/i.test(baseBody);
+          const hasEvidence = sqlError || xssProof || cmdProof || sstiProof || fileProof;
 
           if (hasEvidence) {
             confirmed = true;
             bestPayload = payload;
-            bestEvidence = `Differential confirmed: baseline(${baseResp.status}, ${baseBody.length}B) vs mutated(${mutResp.status}, ${mutBody.length}B). Delta: ${lenDiff}B.`;
+            bestEvidence = `Deterministic proof: baseline(${baseResp.status}, ${baseBody.length}B) vs mutated(${mutResp.status}, ${mutBody.length}B). Delta: ${lenDiff}B.`;
             break;
           }
 
