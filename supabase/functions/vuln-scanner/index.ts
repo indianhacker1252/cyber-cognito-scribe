@@ -373,7 +373,7 @@ function getTestPairs(paramValue: string): Record<string, { truthy: string; fals
 }
 
 // Intruder payloads for deeper verification per vuln class
-function getIntruderPayloads(vulnClass: string, paramValue: string): string[] {
+function getIntruderPayloads(vulnClass: string, paramValue: string, adaptivePayloads: string[] = []): string[] {
   const base: Record<string, string[]> = {
     sqli: [
       `${paramValue}' OR 1=1--`, `${paramValue}" OR "1"="1`, `${paramValue}' UNION SELECT NULL--`,
@@ -399,7 +399,7 @@ function getIntruderPayloads(vulnClass: string, paramValue: string): string[] {
       "${7*7}", "{{7*'7'}}", "<%= 7*7 %>", "#{7*7}",
     ],
   };
-  return base[vulnClass] || [];
+  return [...new Set([...(adaptivePayloads || []), ...(base[vulnClass] || [])])].filter(Boolean).slice(0, 12);
 }
 
 const MUTATIONS: Array<{ name: string; transform: (s: string) => string }> = [
@@ -612,7 +612,10 @@ async function runDifferentialTest(
 
       // ─── Intruder Mode: run additional payloads for confirmed vulns ───
       if (result.isVulnerable) {
-        const intruderPayloads = getIntruderPayloads(vulnClass, paramValue);
+        const intruderPayloads = getIntruderPayloads(vulnClass, paramValue, [
+          ...(highYieldPayloads.get(vulnClass) || []),
+          ...(secListsPayloadsMap.get(vulnClass) || []).slice(0, 6),
+        ]);
         const intruderResults: Array<{ payload: string; status: number; length: number; timingMs: number }> = [];
 
         for (const ip of intruderPayloads.slice(0, 5)) {
