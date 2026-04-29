@@ -282,6 +282,9 @@ export default function Findings() {
                   </TableCell>
                   <TableCell>
                     <div className="flex gap-1">
+                      <Button variant="outline" size="sm" className="font-mono text-[10px] gap-1 border-cyber-green/30 text-cyber-green hover:bg-cyber-green/10" onClick={() => setDetailsFinding(f)}>
+                        <FileText className="h-3 w-3" /> Details
+                      </Button>
                       <Button variant="outline" size="sm" className="font-mono text-[10px] gap-1 border-primary/30 text-primary hover:bg-primary/10" onClick={() => setSelectedFinding(f)}>
                         <Shield className="h-3 w-3" /> Validate
                       </Button>
