@@ -24,20 +24,27 @@ async function safeFetch(url: string, opts: RequestInit = {}, timeoutMs = 7000) 
 
 interface Probe { vulnClass: string; severity: "critical"|"high"|"medium"|"low"; payload: string; detect: (body: string, status: number, headers: Headers, baseline: string) => { hit: boolean; evidence: string; confidence: number } }
 
-function isExternalRedirect(headers: Headers, expectedHost: string) {
+function isExternalRedirect(headers: Headers, expectedHost: string, baseUrl: string) {
   const loc = headers.get("location") || "";
   if (!loc) return false;
   try {
-    const parsed = new URL(loc, "https://placeholder.invalid");
-    return parsed.hostname === expectedHost;
+    const parsed = new URL(loc, baseUrl);
+    // STRICT: Location HOST must equal the attacker host. If it equals the original target host,
+    // the server is just echoing the param back into a canonical redirect — NOT an open redirect.
+    if (parsed.hostname !== expectedHost) return false;
+    const base = new URL(baseUrl);
+    if (parsed.hostname === base.hostname) return false;
+    return true;
   } catch { return false; }
 }
 
 // ─── SSTI ────────────────────────────────────────────────
+// Require: eval result present in mutated, ABSENT in baseline, AND literal payload NOT reflected
+// (verbatim reflection = template engine did not evaluate = false positive).
 const SSTI_PROBES: Probe[] = [
-  { vulnClass: "ssti-jinja", severity: "critical", payload: "{{1337*2}}", detect: (b, _s, _h, base) => ({ hit: /\b2674\b/.test(b) && !/\b2674\b/.test(base) && !b.includes("{{1337*2}}"), evidence: "Jinja-style template evaluated 1337*2=2674", confidence: 95 }) },
-  { vulnClass: "ssti-erb", severity: "critical", payload: "<%= 1337*2 %>", detect: (b, _s, _h, base) => ({ hit: /\b2674\b/.test(b) && !/\b2674\b/.test(base) && !b.includes("<%="), evidence: "ERB-style template evaluated 1337*2=2674", confidence: 92 }) },
-  { vulnClass: "ssti-velocity", severity: "high", payload: "#set($x=1337*2)$x", detect: (b, _s, _h, base) => ({ hit: /\b2674\b/.test(b) && !/\b2674\b/.test(base) && !b.includes("#set"), evidence: "Velocity-style template evaluated 1337*2=2674", confidence: 90 }) },
+  { vulnClass: "ssti-jinja", severity: "critical", payload: "{{1337*2}}", detect: (b, _s, _h, base) => ({ hit: /\b2674\b/.test(b) && !/\b2674\b/.test(base) && !b.includes("{{1337*2}}") && !b.includes("{{ 1337*2 }}"), evidence: "Jinja-style template evaluated 1337*2=2674", confidence: 95 }) },
+  { vulnClass: "ssti-erb", severity: "critical", payload: "<%= 1337*2 %>", detect: (b, _s, _h, base) => ({ hit: /\b2674\b/.test(b) && !/\b2674\b/.test(base) && !b.includes("<%= 1337*2 %>") && !b.includes("<%=1337*2%>"), evidence: "ERB-style template evaluated 1337*2=2674", confidence: 92 }) },
+  { vulnClass: "ssti-velocity", severity: "high", payload: "#set($x=1337*2)$x", detect: (b, _s, _h, base) => ({ hit: /\b2674\b/.test(b) && !/\b2674\b/.test(base) && !b.includes("#set($x=1337*2)"), evidence: "Velocity-style template evaluated 1337*2=2674", confidence: 90 }) },
 ];
 
 // ─── NoSQL Injection (reflected error) ───────────────────
