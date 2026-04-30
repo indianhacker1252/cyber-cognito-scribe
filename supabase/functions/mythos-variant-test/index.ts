@@ -2,6 +2,7 @@
 // Tests ONE variant against ONE endpoint, streams result into scan_logs and updates mythos_variants.
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { createEvidencePackage } from "../_shared/proof-packages.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -54,7 +55,7 @@ serve(async (req) => {
     });
 
     const result = await probe(endpoint, payload, paramName || "q");
-    const isCandidate = result.deterministicProof || result.reflected;
+    const isCandidate = result.deterministicProof;
     const status = result.status === 0 ? "error" : (isCandidate ? "candidate" : "negative");
 
     if (variantId) {
@@ -68,7 +69,7 @@ serve(async (req) => {
 
     // Auto-promote only deterministic proof. Reflection-only candidates stay in Mythos for review.
     if (result.deterministicProof) {
-      await db.from("vulnerability_findings").insert({
+      const findingPayload = {
         target_id: targetId,
         title: `🌀 0-Day Variant: ${vulnClass || "unknown"} via mutated payload`,
         severity: result.errorSig ? "critical" : "high",
@@ -82,7 +83,31 @@ serve(async (req) => {
         ai_verified: true,
         reachability_status: "reachable",
         poc: `curl '${endpoint}?${paramName || "q"}=${encodeURIComponent(payload)}'`,
+      };
+
+      const { data: insertedFinding } = await db.from("vulnerability_findings").insert(findingPayload).select("id").single();
+      const evidenceId = await createEvidencePackage(db, {
+        targetId,
+        findingId: insertedFinding?.id || null,
+        title: findingPayload.title,
+        proofSummary: `Variant payload produced deterministic ${result.proofType} evidence on ${endpoint}. Baseline ${result.baselineStatus}/${result.baselineLen}B versus mutated ${result.status}/${result.bodyLen}B.`,
+        remediation: findingPayload.remediation,
+        request: {
+          method: "GET",
+          url: `${endpoint}?${paramName || "q"}=${encodeURIComponent(payload)}`,
+          headers: { "User-Agent": "CyberScope-VariantTest/1.0" },
+          payload,
+          parameter: paramName || "q",
+        },
+        baselineResponse: { status: result.baselineStatus, length: result.baselineLen, body: null, bodySnippet: "Baseline body omitted by variant test" },
+        mutatedResponse: { status: result.status, length: result.bodyLen, body: result.bodySnippet, bodySnippet: result.bodySnippet },
+        validationStatus: "verified",
+        pocScript: findingPayload.poc,
       });
+
+      if (insertedFinding?.id && evidenceId) {
+        await db.from("vulnerability_findings").update({ evidence_package_id: evidenceId }).eq("id", insertedFinding.id);
+      }
     }
 
     await db.from("scan_logs").insert({
