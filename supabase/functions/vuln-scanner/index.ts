@@ -8,6 +8,7 @@ import {
   resolveTargetProtocol,
   browserHeaders,
 } from "../_shared/security-gates.ts";
+import { createEvidencePackage } from "../_shared/proof-packages.ts";
 
 // ─── GLOBAL TIMEOUT HELPER ─────────────────────────────
 const SCAN_START = Date.now();
@@ -1642,14 +1643,8 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
       let mathBasis = "N/A";
 
       if (vf.vulnClass === "sqli" || vf.vulnClass === "auth-bypass") {
-        const lenDiff = Math.abs((vf.mutated.bodySnippet || "").length - (vf.baseline.bodySnippet || "").length);
-        const ratio = lenDiff / Math.max((vf.baseline.bodySnippet || "").length, 1);
-        if (ratio > 0.15 && vf.mutated.status === 200) {
-          proven = true; proofType = "boolean_differential";
-          mathBasis = `Body differential: ${(ratio*100).toFixed(1)}% change`;
-        }
         const sqlErrors = [/sql syntax/i, /ORA-\d+/i, /SQLSTATE/i, /pg_query/i, /unclosed quotation/i];
-        if (!proven && sqlErrors.some(p => p.test(vf.mutated.bodySnippet || "") && !p.test(vf.baseline.bodySnippet || ""))) {
+        if (sqlErrors.some(p => p.test(vf.mutated.bodySnippet || "") && !p.test(vf.baseline.bodySnippet || ""))) {
           proven = true; proofType = "error_based"; mathBasis = "DB error string in mutated response only";
         }
       } else if (vf.vulnClass === "rxss" || vf.vulnClass === "stored-xss") {
@@ -2035,33 +2030,14 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
       const cveSeverityMap: Record<string, string> = { CRITICAL: "critical", HIGH: "high", MEDIUM: "medium", LOW: "low" };
       const cveSev = cveSeverityMap[cve.severity] || "medium";
 
-      if (cveSev === "high" || cveSev === "critical") {
-        await db.from("pending_approvals").insert({
-          target_id: targetId,
-          finding_type: "cve-correlation",
-          severity: cveSev,
-          title: `${cve.cveId} — ${cve.description.slice(0, 80)}`,
-          description: cve.description,
-          cve_ids: [cve.cveId],
-          cvss_score: cve.cvssScore,
-          confidence_level: cveVerified ? "high" : "medium",
-          ai_verified: cveVerified,
-          ai_verification_notes: cveVerifyNotes,
-          evidence: { techStack, cveId: cve.cveId, severity: cve.severity, owaspCategory: "A06:2021 Vulnerable and Outdated Components" },
-        });
-        approvalCount++;
-      } else {
-        await autoAcceptFinding({
-          target_id: targetId,
-          title: `${cve.cveId} — ${cve.description.slice(0, 80)}`,
-          severity: cveSev,
-          description: cve.description,
-          cvss_score: cve.cvssScore,
-          confidence_level: cveVerified ? "high" : "medium",
-          ai_verified: cveVerified,
-          triage_reasoning: cveVerifyNotes,
-        });
-      }
+      await log(
+        db,
+        targetId,
+        taskId,
+        "info",
+        `🧾 Advisory-only CVE signal kept out of findings: ${cve.cveId} — exploit proof required before reporting`,
+        { cveId: cve.cveId, cvssScore: cve.cvssScore, aiVerified: cveVerified, notes: cveVerifyNotes },
+      );
     }
 
     // AI-verified assessments — Rule 3: AI Peer Review is forbidden from

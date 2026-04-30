@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { createEvidencePackage } from "../_shared/proof-packages.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -247,6 +248,9 @@ async function autoTestTemplateOnTarget(
   let confirmed = false;
   let bestPayload = "";
   let bestEvidence = "";
+  let bestRequest: any = null;
+  let bestBaseline: any = null;
+  let bestMutated: any = null;
 
   for (const ep of endpoints.slice(0, 5)) {
     const params = (ep.parameters || {}) as Record<string, string>;
@@ -289,6 +293,15 @@ async function autoTestTemplateOnTarget(
             confirmed = true;
             bestPayload = payload;
             bestEvidence = `Deterministic proof: baseline(${baseResp.status}, ${baseBody.length}B) vs mutated(${mutResp.status}, ${mutBody.length}B). Delta: ${lenDiff}B.`;
+            bestRequest = {
+              method: "GET",
+              url: url.toString(),
+              headers: { "User-Agent": "CyberScope-Scanner/1.0" },
+              payload,
+              parameter: paramName,
+            };
+            bestBaseline = { status: baseResp.status, body: baseBody, length: baseBody.length };
+            bestMutated = { status: mutResp.status, body: mutBody, length: mutBody.length, headers: Object.fromEntries(mutResp.headers.entries()) };
             break;
           }
 
@@ -318,12 +331,29 @@ async function autoTestTemplateOnTarget(
         ai_verified: true,
         ai_verification_notes: `Auto-tested from intel feed. Differential analysis confirmed vulnerability.`,
         triage_reasoning: `Intel-driven auto-test confirmed via differential analysis`,
+        request_data: bestRequest,
+        baseline_response: bestBaseline,
+        mutated_response: bestMutated,
         evidence: { intelFeedId: feedId, vulnClass, payload: bestPayload, evidence: bestEvidence },
       }).select("id").single();
 
+      if (finding?.id) {
+        await createEvidencePackage(db, {
+          targetId,
+          approvalId: finding.id,
+          title: `Intel-confirmed ${vulnClass.toUpperCase()}`,
+          proofSummary: `${bestEvidence} Intel feed ${feedId} mapped to the target and reproduced with an exploit request.`,
+          request: bestRequest,
+          baselineResponse: bestBaseline,
+          mutatedResponse: bestMutated,
+          validationStatus: "verified",
+          cveIds: [feedId],
+        });
+      }
+
       return { tested: true, confirmed: true, findingId: finding?.id };
     } else {
-      await db.from("vulnerability_findings").insert({
+      const { data: finding } = await db.from("vulnerability_findings").insert({
         target_id: targetId,
         title: `Intel-Confirmed: ${vulnClass.toUpperCase()} (auto-tested)`,
         severity,
@@ -334,7 +364,22 @@ async function autoTestTemplateOnTarget(
         ai_verified: true,
         triage_reasoning: `Intel-driven auto-test. ${bestEvidence}`,
         validation_status: "auto-tested",
-      });
+      }).select("id").single();
+
+      if (finding?.id) {
+        const evidenceId = await createEvidencePackage(db, {
+          targetId,
+          findingId: finding.id,
+          title: `Intel-confirmed ${vulnClass.toUpperCase()}`,
+          proofSummary: `${bestEvidence} Intel feed ${feedId} reproduced with proof on target ${targetId}.`,
+          request: bestRequest,
+          baselineResponse: bestBaseline,
+          mutatedResponse: bestMutated,
+          validationStatus: "verified",
+          cveIds: [feedId],
+        });
+        if (evidenceId) await db.from("vulnerability_findings").update({ evidence_package_id: evidenceId }).eq("id", finding.id);
+      }
 
       return { tested: true, confirmed: true };
     }
