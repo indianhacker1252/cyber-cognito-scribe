@@ -48,9 +48,13 @@ const SSTI_PROBES: Probe[] = [
 ];
 
 // ─── NoSQL Injection (reflected error) ───────────────────
+// Require error markers absent from baseline. Drop the dangerously generic [$ne]=1 heuristic
+// (matched any 200 page mentioning "user|admin|email|token" → massive false positives).
 const NOSQLI_PROBES: Probe[] = [
-  { vulnClass: "nosqli-mongo", severity: "high", payload: "';return(true);var x='", detect: b => ({ hit: /MongoError|BSON|MongoDB|E11000/i.test(b), evidence: "Mongo error leaked", confidence: 88 }) },
-  { vulnClass: "nosqli-mongo", severity: "high", payload: "[$ne]=1", detect: (b, s) => ({ hit: s === 200 && b.length > 50 && /admin|user|email|token/i.test(b.slice(0, 800)), evidence: "$ne operator returned data", confidence: 70 }) },
+  { vulnClass: "nosqli-mongo", severity: "high", payload: "';return(true);var x='", detect: (b, _s, _h, base) => {
+    const re = /MongoError|BSONError|MongoServerError|E11000 duplicate key|MongoNetworkError/i;
+    return { hit: re.test(b) && !re.test(base), evidence: "Mongo error leaked in mutated response only", confidence: 88 };
+  }},
 ];
 
 // ─── Prototype Pollution (reflected on JSON endpoints) ───
