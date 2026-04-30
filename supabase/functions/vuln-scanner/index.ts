@@ -534,7 +534,17 @@ async function runDifferentialTest(
         // Only count as vuln if our exact probe is reflected — no heuristic guessing
       } else if (vulnClass === "open-redirect") {
         const location = trueResp.headers.get("location") || "";
-        if (trueResp.status >= 300 && trueResp.status < 400 && location.includes("safe-test.cyberscope.local")) {
+        // STRICT: Require that the Location header HOST is our attacker-controlled host,
+        // not just that the payload string appears in the URL (which happens when the server
+        // simply echoes the query param back into the canonical Location for trailing-slash redirects).
+        let isAttackerHost = false;
+        try {
+          if (location) {
+            const parsed = new URL(location, trueResp.url);
+            isAttackerHost = parsed.hostname === "safe-test.cyberscope.local";
+          }
+        } catch { /* ignore */ }
+        if (trueResp.status >= 300 && trueResp.status < 400 && isAttackerHost) {
           result.isVulnerable = true;
           result.confidence = "high";
           result.confidenceScore = 90;
