@@ -173,7 +173,7 @@ function generateTemplate(vulnClass: string, payloads: string[], bypasses: strin
     rxss: ["<cyberscope>", '"><svg onload=alert(1)>'],
     ssrf: ["http://127.0.0.1:80", "http://169.254.169.254/latest/meta-data/"],
     cmdi: ["; echo cyberscope", "| echo cyberscope"],
-    ssti: ["{{7*7}}", "${7*7}"],
+    ssti: ["{{1337*2}}", "${1337*2}", "<%= 1337*2 %>"],
     "path-traversal": ["....//....//etc/passwd", "..%2f..%2f..%2fetc/passwd"],
   };
   const allPayloads = [...payloads, ...(classPayloads[vulnClass] || classPayloads.sqli)];
