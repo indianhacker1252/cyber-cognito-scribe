@@ -578,8 +578,13 @@ async function runDifferentialTest(
           }
         }
       } else if (vulnClass === "ssti") {
-        // STRICT: Only flag if "49" appears in mutated but NOT in baseline
-        if (/\b49\b/.test(trueBody) && !/\b49\b/.test(falseBody)) {
+        // STRICT: Require BOTH (a) the eval result "49" appears in mutated, (b) "49" is absent
+        // from baseline, AND (c) the literal probe "{{7*7}}" is NOT reflected verbatim
+        // (verbatim reflection means template engine did NOT evaluate it = false positive).
+        const evalPresent = /\b49\b/.test(trueBody);
+        const evalAbsentInBaseline = !/\b49\b/.test(falseBody);
+        const literalReflected = trueBody.includes("{{7*7}}") || trueBody.includes("{{ 7*7 }}");
+        if (evalPresent && evalAbsentInBaseline && !literalReflected) {
           result.isVulnerable = true;
           result.confidence = "high";
           result.confidenceScore = 88;
