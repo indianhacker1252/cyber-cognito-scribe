@@ -173,7 +173,7 @@ function generateTemplate(vulnClass: string, payloads: string[], bypasses: strin
     rxss: ["<cyberscope>", '"><svg onload=alert(1)>'],
     ssrf: ["http://127.0.0.1:80", "http://169.254.169.254/latest/meta-data/"],
     cmdi: ["; echo cyberscope", "| echo cyberscope"],
-    ssti: ["{{7*7}}", "${7*7}"],
+    ssti: ["{{1337*2}}", "${1337*2}", "<%= 1337*2 %>"],
     "path-traversal": ["....//....//etc/passwd", "..%2f..%2f..%2fetc/passwd"],
   };
   const allPayloads = [...payloads, ...(classPayloads[vulnClass] || classPayloads.sqli)];
@@ -279,7 +279,9 @@ async function autoTestTemplateOnTarget(
           const sqlError = /sql syntax|SQLSTATE|ORA-|pg_query|unclosed quotation/i.test(mutBody) && !/sql syntax|SQLSTATE|ORA-|pg_query|unclosed quotation/i.test(baseBody);
           const xssProof = vulnClass === "rxss" && mutBody.includes("<cyberscope>") && !baseBody.includes("<cyberscope>");
           const cmdProof = vulnClass === "cmdi" && /cyberscope_marker|uid=\d+\(/i.test(mutBody) && !/cyberscope_marker|uid=\d+\(/i.test(baseBody);
-          const sstiProof = vulnClass === "ssti" && /\b2674\b|\b49\b/.test(mutBody) && !/\b2674\b|\b49\b/.test(baseBody);
+          // Use the unique 1337*2=2674 marker (not 7*7=49 which appears in many normal pages),
+          // and require the literal payload is NOT reflected verbatim (verbatim = template not evaluated).
+          const sstiProof = vulnClass === "ssti" && /\b2674\b/.test(mutBody) && !/\b2674\b/.test(baseBody) && !mutBody.includes("{{1337*2}}") && !mutBody.includes("<%= 1337*2 %>");
           const fileProof = vulnClass === "path-traversal" && /root:.*:0:0|\/bin\/bash/i.test(mutBody) && !/root:.*:0:0|\/bin\/bash/i.test(baseBody);
           const hasEvidence = sqlError || xssProof || cmdProof || sstiProof || fileProof;
 

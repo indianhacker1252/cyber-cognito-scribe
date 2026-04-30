@@ -24,39 +24,59 @@ async function safeFetch(url: string, opts: RequestInit = {}, timeoutMs = 7000) 
 
 interface Probe { vulnClass: string; severity: "critical"|"high"|"medium"|"low"; payload: string; detect: (body: string, status: number, headers: Headers, baseline: string) => { hit: boolean; evidence: string; confidence: number } }
 
-function isExternalRedirect(headers: Headers, expectedHost: string) {
+function isExternalRedirect(headers: Headers, expectedHost: string, baseUrl: string) {
   const loc = headers.get("location") || "";
   if (!loc) return false;
   try {
-    const parsed = new URL(loc, "https://placeholder.invalid");
-    return parsed.hostname === expectedHost;
+    const parsed = new URL(loc, baseUrl);
+    // STRICT: Location HOST must equal the attacker host. If it equals the original target host,
+    // the server is just echoing the param back into a canonical redirect — NOT an open redirect.
+    if (parsed.hostname !== expectedHost) return false;
+    const base = new URL(baseUrl);
+    if (parsed.hostname === base.hostname) return false;
+    return true;
   } catch { return false; }
 }
 
 // ─── SSTI ────────────────────────────────────────────────
+// Require: eval result present in mutated, ABSENT in baseline, AND literal payload NOT reflected
+// (verbatim reflection = template engine did not evaluate = false positive).
 const SSTI_PROBES: Probe[] = [
-  { vulnClass: "ssti-jinja", severity: "critical", payload: "{{1337*2}}", detect: (b, _s, _h, base) => ({ hit: /\b2674\b/.test(b) && !/\b2674\b/.test(base) && !b.includes("{{1337*2}}"), evidence: "Jinja-style template evaluated 1337*2=2674", confidence: 95 }) },
-  { vulnClass: "ssti-erb", severity: "critical", payload: "<%= 1337*2 %>", detect: (b, _s, _h, base) => ({ hit: /\b2674\b/.test(b) && !/\b2674\b/.test(base) && !b.includes("<%="), evidence: "ERB-style template evaluated 1337*2=2674", confidence: 92 }) },
-  { vulnClass: "ssti-velocity", severity: "high", payload: "#set($x=1337*2)$x", detect: (b, _s, _h, base) => ({ hit: /\b2674\b/.test(b) && !/\b2674\b/.test(base) && !b.includes("#set"), evidence: "Velocity-style template evaluated 1337*2=2674", confidence: 90 }) },
+  { vulnClass: "ssti-jinja", severity: "critical", payload: "{{1337*2}}", detect: (b, _s, _h, base) => ({ hit: /\b2674\b/.test(b) && !/\b2674\b/.test(base) && !b.includes("{{1337*2}}") && !b.includes("{{ 1337*2 }}"), evidence: "Jinja-style template evaluated 1337*2=2674", confidence: 95 }) },
+  { vulnClass: "ssti-erb", severity: "critical", payload: "<%= 1337*2 %>", detect: (b, _s, _h, base) => ({ hit: /\b2674\b/.test(b) && !/\b2674\b/.test(base) && !b.includes("<%= 1337*2 %>") && !b.includes("<%=1337*2%>"), evidence: "ERB-style template evaluated 1337*2=2674", confidence: 92 }) },
+  { vulnClass: "ssti-velocity", severity: "high", payload: "#set($x=1337*2)$x", detect: (b, _s, _h, base) => ({ hit: /\b2674\b/.test(b) && !/\b2674\b/.test(base) && !b.includes("#set($x=1337*2)"), evidence: "Velocity-style template evaluated 1337*2=2674", confidence: 90 }) },
 ];
 
 // ─── NoSQL Injection (reflected error) ───────────────────
+// Require error markers absent from baseline. Drop the dangerously generic [$ne]=1 heuristic
+// (matched any 200 page mentioning "user|admin|email|token" → massive false positives).
 const NOSQLI_PROBES: Probe[] = [
-  { vulnClass: "nosqli-mongo", severity: "high", payload: "';return(true);var x='", detect: b => ({ hit: /MongoError|BSON|MongoDB|E11000/i.test(b), evidence: "Mongo error leaked", confidence: 88 }) },
-  { vulnClass: "nosqli-mongo", severity: "high", payload: "[$ne]=1", detect: (b, s) => ({ hit: s === 200 && b.length > 50 && /admin|user|email|token/i.test(b.slice(0, 800)), evidence: "$ne operator returned data", confidence: 70 }) },
+  { vulnClass: "nosqli-mongo", severity: "high", payload: "';return(true);var x='", detect: (b, _s, _h, base) => {
+    const re = /MongoError|BSONError|MongoServerError|E11000 duplicate key|MongoNetworkError/i;
+    return { hit: re.test(b) && !re.test(base), evidence: "Mongo error leaked in mutated response only", confidence: 88 };
+  }},
 ];
 
 // ─── Prototype Pollution (reflected on JSON endpoints) ───
+// Require the polluted marker to be absent from baseline (otherwise it's pre-existing JSON).
 const PROTO_PROBES: Probe[] = [
-  { vulnClass: "prototype-pollution", severity: "high", payload: "__proto__[polluted]=cyberscope", detect: b => ({ hit: /"polluted"\s*:\s*"cyberscope"/.test(b), evidence: "__proto__ key reflected in JSON", confidence: 92 }) },
-  { vulnClass: "prototype-pollution", severity: "high", payload: "constructor[prototype][polluted]=cyberscope", detect: b => ({ hit: /"polluted"\s*:\s*"cyberscope"/.test(b), evidence: "constructor.prototype reflected", confidence: 92 }) },
+  { vulnClass: "prototype-pollution", severity: "high", payload: "__proto__[polluted]=cyberscope", detect: (b, _s, _h, base) => ({ hit: /"polluted"\s*:\s*"cyberscope"/.test(b) && !/"polluted"\s*:\s*"cyberscope"/.test(base), evidence: "__proto__ key reflected in JSON", confidence: 92 }) },
+  { vulnClass: "prototype-pollution", severity: "high", payload: "constructor[prototype][polluted]=cyberscope", detect: (b, _s, _h, base) => ({ hit: /"polluted"\s*:\s*"cyberscope"/.test(b) && !/"polluted"\s*:\s*"cyberscope"/.test(base), evidence: "constructor.prototype reflected", confidence: 92 }) },
 ];
 
 // ─── Open Redirect ───────────────────────────────────────
+// STRICT: Only fire when Location HOST equals attacker host AND differs from current host.
+// (If server simply echoes the param into a same-origin canonical Location, it's a false positive.)
 const REDIRECT_PROBES: Probe[] = [
   { vulnClass: "open-redirect", severity: "medium", payload: "https://evil.example.com/", detect: (_b, s, h) => {
     const loc = h.get("location") || "";
-    return { hit: (s === 301 || s === 302 || s === 303 || s === 307 || s === 308) && isExternalRedirect(h, "evil.example.com"), evidence: `External redirect Location host: ${loc}`, confidence: 90 };
+    if (!loc) return { hit: false, evidence: "no Location header", confidence: 0 };
+    if (s < 300 || s >= 400) return { hit: false, evidence: `non-redirect status ${s}`, confidence: 0 };
+    try {
+      const parsed = new URL(loc, "https://placeholder.invalid");
+      const hit = parsed.hostname === "evil.example.com";
+      return { hit, evidence: hit ? `External redirect to attacker host: ${parsed.hostname}` : `Location host is ${parsed.hostname} (not attacker host)`, confidence: 90 };
+    } catch { return { hit: false, evidence: "invalid Location", confidence: 0 }; }
   }},
 ];
 
@@ -66,14 +86,28 @@ const CRLF_PROBES: Probe[] = [
 ];
 
 // ─── SSRF (basic — full OOB requires oob-collector) ──────
+// Require leak markers absent from baseline (otherwise it's static content mentioning these terms).
 const SSRF_PROBES: Probe[] = [
-  { vulnClass: "ssrf", severity: "critical", payload: "http://169.254.169.254/latest/meta-data/", detect: b => ({ hit: /ami-id|instance-id|iam\/security-credentials/.test(b), evidence: "AWS IMDS leaked", confidence: 99 }) },
-  { vulnClass: "ssrf", severity: "critical", payload: "http://metadata.google.internal/computeMetadata/v1/", detect: (b, _s, h) => ({ hit: /Metadata-Flavor:\s*Google|instance\/service-accounts|project\/project-id|numeric-project-id/i.test(b) || h.get("metadata-flavor") === "Google", evidence: "GCP metadata response leaked", confidence: 99 }) },
+  { vulnClass: "ssrf", severity: "critical", payload: "http://169.254.169.254/latest/meta-data/", detect: (b, _s, _h, base) => {
+    const re = /ami-id|instance-id|iam\/security-credentials|hostname.*ip-/i;
+    return { hit: re.test(b) && !re.test(base), evidence: "AWS IMDS data leaked in mutated response only", confidence: 99 };
+  }},
+  { vulnClass: "ssrf", severity: "critical", payload: "http://metadata.google.internal/computeMetadata/v1/", detect: (b, _s, h, base) => {
+    const re = /instance\/service-accounts|project\/project-id|numeric-project-id/i;
+    const headerHit = h.get("metadata-flavor") === "Google";
+    return { hit: (re.test(b) && !re.test(base)) || headerHit, evidence: headerHit ? "GCP Metadata-Flavor header leaked" : "GCP metadata data leaked in mutated response only", confidence: 99 };
+  }},
 ];
 
 // ─── Deserialization markers ─────────────────────────────
+// Require Java deserialization markers absent from baseline (otherwise generic Java error pages match).
 const DESERIAL_PROBES: Probe[] = [
-  { vulnClass: "insecure-deserialization", severity: "critical", payload: "rO0ABXNyABNqYXZhLnV0aWwuQXJyYXlMaXN0eIHSHZnHYZ0DAAFJAARzaXpleHAAAAAAdwQAAAAAeA==", detect: (b, s) => ({ hit: /readObject|ObjectInputStream|InvalidClassException|java\.lang\.Class/i.test(b) || s === 500 && /deserial/i.test(b), evidence: "Java deserialization error", confidence: 80 }) },
+  { vulnClass: "insecure-deserialization", severity: "critical", payload: "rO0ABXNyABNqYXZhLnV0aWwuQXJyYXlMaXN0eIHSHZnHYZ0DAAFJAARzaXpleHAAAAAAdwQAAAAAeA==", detect: (b, s, _h, base) => {
+    const re = /readObject|ObjectInputStream|InvalidClassException/i;
+    const reDeserial = /deserial/i;
+    const hit = (re.test(b) && !re.test(base)) || (s === 500 && reDeserial.test(b) && !reDeserial.test(base));
+    return { hit, evidence: "Java deserialization error in mutated response only", confidence: 80 };
+  }},
 ];
 
 // ─── GraphQL Introspection ───────────────────────────────
