@@ -86,9 +86,17 @@ const CRLF_PROBES: Probe[] = [
 ];
 
 // ─── SSRF (basic — full OOB requires oob-collector) ──────
+// Require leak markers absent from baseline (otherwise it's static content mentioning these terms).
 const SSRF_PROBES: Probe[] = [
-  { vulnClass: "ssrf", severity: "critical", payload: "http://169.254.169.254/latest/meta-data/", detect: b => ({ hit: /ami-id|instance-id|iam\/security-credentials/.test(b), evidence: "AWS IMDS leaked", confidence: 99 }) },
-  { vulnClass: "ssrf", severity: "critical", payload: "http://metadata.google.internal/computeMetadata/v1/", detect: (b, _s, h) => ({ hit: /Metadata-Flavor:\s*Google|instance\/service-accounts|project\/project-id|numeric-project-id/i.test(b) || h.get("metadata-flavor") === "Google", evidence: "GCP metadata response leaked", confidence: 99 }) },
+  { vulnClass: "ssrf", severity: "critical", payload: "http://169.254.169.254/latest/meta-data/", detect: (b, _s, _h, base) => {
+    const re = /ami-id|instance-id|iam\/security-credentials|hostname.*ip-/i;
+    return { hit: re.test(b) && !re.test(base), evidence: "AWS IMDS data leaked in mutated response only", confidence: 99 };
+  }},
+  { vulnClass: "ssrf", severity: "critical", payload: "http://metadata.google.internal/computeMetadata/v1/", detect: (b, _s, h, base) => {
+    const re = /instance\/service-accounts|project\/project-id|numeric-project-id/i;
+    const headerHit = h.get("metadata-flavor") === "Google";
+    return { hit: (re.test(b) && !re.test(base)) || headerHit, evidence: headerHit ? "GCP Metadata-Flavor header leaked" : "GCP metadata data leaked in mutated response only", confidence: 99 };
+  }},
 ];
 
 // ─── Deserialization markers ─────────────────────────────
