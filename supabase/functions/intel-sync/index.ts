@@ -279,7 +279,9 @@ async function autoTestTemplateOnTarget(
           const sqlError = /sql syntax|SQLSTATE|ORA-|pg_query|unclosed quotation/i.test(mutBody) && !/sql syntax|SQLSTATE|ORA-|pg_query|unclosed quotation/i.test(baseBody);
           const xssProof = vulnClass === "rxss" && mutBody.includes("<cyberscope>") && !baseBody.includes("<cyberscope>");
           const cmdProof = vulnClass === "cmdi" && /cyberscope_marker|uid=\d+\(/i.test(mutBody) && !/cyberscope_marker|uid=\d+\(/i.test(baseBody);
-          const sstiProof = vulnClass === "ssti" && /\b2674\b|\b49\b/.test(mutBody) && !/\b2674\b|\b49\b/.test(baseBody);
+          // Use the unique 1337*2=2674 marker (not 7*7=49 which appears in many normal pages),
+          // and require the literal payload is NOT reflected verbatim (verbatim = template not evaluated).
+          const sstiProof = vulnClass === "ssti" && /\b2674\b/.test(mutBody) && !/\b2674\b/.test(baseBody) && !mutBody.includes("{{1337*2}}") && !mutBody.includes("<%= 1337*2 %>");
           const fileProof = vulnClass === "path-traversal" && /root:.*:0:0|\/bin\/bash/i.test(mutBody) && !/root:.*:0:0|\/bin\/bash/i.test(baseBody);
           const hasEvidence = sqlError || xssProof || cmdProof || sstiProof || fileProof;
 
