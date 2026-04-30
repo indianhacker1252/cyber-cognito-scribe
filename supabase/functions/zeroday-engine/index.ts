@@ -100,8 +100,14 @@ const SSRF_PROBES: Probe[] = [
 ];
 
 // ─── Deserialization markers ─────────────────────────────
+// Require Java deserialization markers absent from baseline (otherwise generic Java error pages match).
 const DESERIAL_PROBES: Probe[] = [
-  { vulnClass: "insecure-deserialization", severity: "critical", payload: "rO0ABXNyABNqYXZhLnV0aWwuQXJyYXlMaXN0eIHSHZnHYZ0DAAFJAARzaXpleHAAAAAAdwQAAAAAeA==", detect: (b, s) => ({ hit: /readObject|ObjectInputStream|InvalidClassException|java\.lang\.Class/i.test(b) || s === 500 && /deserial/i.test(b), evidence: "Java deserialization error", confidence: 80 }) },
+  { vulnClass: "insecure-deserialization", severity: "critical", payload: "rO0ABXNyABNqYXZhLnV0aWwuQXJyYXlMaXN0eIHSHZnHYZ0DAAFJAARzaXpleHAAAAAAdwQAAAAAeA==", detect: (b, s, _h, base) => {
+    const re = /readObject|ObjectInputStream|InvalidClassException/i;
+    const reDeserial = /deserial/i;
+    const hit = (re.test(b) && !re.test(base)) || (s === 500 && reDeserial.test(b) && !reDeserial.test(base));
+    return { hit, evidence: "Java deserialization error in mutated response only", confidence: 80 };
+  }},
 ];
 
 // ─── GraphQL Introspection ───────────────────────────────
