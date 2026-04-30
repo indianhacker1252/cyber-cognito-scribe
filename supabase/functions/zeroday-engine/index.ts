@@ -54,9 +54,10 @@ const NOSQLI_PROBES: Probe[] = [
 ];
 
 // ─── Prototype Pollution (reflected on JSON endpoints) ───
+// Require the polluted marker to be absent from baseline (otherwise it's pre-existing JSON).
 const PROTO_PROBES: Probe[] = [
-  { vulnClass: "prototype-pollution", severity: "high", payload: "__proto__[polluted]=cyberscope", detect: b => ({ hit: /"polluted"\s*:\s*"cyberscope"/.test(b), evidence: "__proto__ key reflected in JSON", confidence: 92 }) },
-  { vulnClass: "prototype-pollution", severity: "high", payload: "constructor[prototype][polluted]=cyberscope", detect: b => ({ hit: /"polluted"\s*:\s*"cyberscope"/.test(b), evidence: "constructor.prototype reflected", confidence: 92 }) },
+  { vulnClass: "prototype-pollution", severity: "high", payload: "__proto__[polluted]=cyberscope", detect: (b, _s, _h, base) => ({ hit: /"polluted"\s*:\s*"cyberscope"/.test(b) && !/"polluted"\s*:\s*"cyberscope"/.test(base), evidence: "__proto__ key reflected in JSON", confidence: 92 }) },
+  { vulnClass: "prototype-pollution", severity: "high", payload: "constructor[prototype][polluted]=cyberscope", detect: (b, _s, _h, base) => ({ hit: /"polluted"\s*:\s*"cyberscope"/.test(b) && !/"polluted"\s*:\s*"cyberscope"/.test(base), evidence: "constructor.prototype reflected", confidence: 92 }) },
 ];
 
 // ─── Open Redirect ───────────────────────────────────────
