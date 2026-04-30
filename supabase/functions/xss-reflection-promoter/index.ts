@@ -4,6 +4,7 @@
 // verbatim in the response body. Pure reflection check — no LLM required.
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { createEvidencePackage } from "../_shared/proof-packages.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -33,9 +34,7 @@ function isReflected(body: unknown, payload: string): boolean {
   if (!text) return false;
   // Verbatim reflection — strict to avoid noise
   if (text.includes(payload)) return true;
-  // Also accept the dangerous core (e.g. `<script>alert(1)</script>` minus encoding)
-  const core = payload.replace(/[<>"']/g, "").slice(0, 30);
-  return core.length > 8 && text.includes(core) && /[<>]/.test(text);
+  return false;
 }
 
 serve(async (req) => {
@@ -80,7 +79,7 @@ serve(async (req) => {
         .limit(1);
       if (existing && existing.length > 0) continue;
 
-      const { error: insErr } = await (db as any).from("vulnerability_findings").insert({
+      const findingPayload = {
         target_id: targetId,
         endpoint_id: a.endpoint_id,
         title: `Reflected XSS — verbatim payload reflected in response`,
@@ -95,8 +94,30 @@ serve(async (req) => {
         triage_reasoning: `Strict reflection check passed: payload contains executable XSS sink (script/event-handler/javascript:) and appears unmodified in the response body. Promoted from pending approval ${a.id}.`,
         reachability_status: "reachable",
         remediation: "Apply context-aware output encoding (HTML, attribute, JS) and a strict CSP. Validate and reject reflected user input on the server.",
-      });
+      };
+      const { data: insertedFinding, error: insErr } = await (db as any).from("vulnerability_findings").insert(findingPayload).select("id").single();
       if (insErr) { console.error("insert failed", insErr); continue; }
+
+      const evidenceId = await createEvidencePackage(db, {
+        targetId,
+        findingId: insertedFinding?.id || null,
+        title: findingPayload.title,
+        proofSummary: `Executable XSS payload was reflected verbatim in the mutated response for approval ${a.id}; substring/core matching is not accepted.`,
+        remediation: findingPayload.remediation,
+        request: {
+          method: "GET",
+          url: (a.response_data as any)?.url || (a.evidence as any)?.url || "",
+          headers: { "User-Agent": "CyberScope-XSS-Promoter/1.0" },
+          payload,
+          parameter: a.parameter || "unknown",
+        },
+        baselineResponse: null,
+        mutatedResponse: { status: (a.response_data as any)?.status || 200, body: respBody, bodySnippet: String(respBody).slice(0, 12000), length: String(respBody).length },
+        validationStatus: "verified",
+      });
+      if (insertedFinding?.id && evidenceId) {
+        await (db as any).from("vulnerability_findings").update({ evidence_package_id: evidenceId }).eq("id", insertedFinding.id);
+      }
 
       // mark approval as auto-confirmed
       await (db as any).from("pending_approvals")
