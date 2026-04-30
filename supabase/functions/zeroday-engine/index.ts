@@ -60,10 +60,18 @@ const PROTO_PROBES: Probe[] = [
 ];
 
 // ─── Open Redirect ───────────────────────────────────────
+// STRICT: Only fire when Location HOST equals attacker host AND differs from current host.
+// (If server simply echoes the param into a same-origin canonical Location, it's a false positive.)
 const REDIRECT_PROBES: Probe[] = [
   { vulnClass: "open-redirect", severity: "medium", payload: "https://evil.example.com/", detect: (_b, s, h) => {
     const loc = h.get("location") || "";
-    return { hit: (s === 301 || s === 302 || s === 303 || s === 307 || s === 308) && isExternalRedirect(h, "evil.example.com"), evidence: `External redirect Location host: ${loc}`, confidence: 90 };
+    if (!loc) return { hit: false, evidence: "no Location header", confidence: 0 };
+    if (s < 300 || s >= 400) return { hit: false, evidence: `non-redirect status ${s}`, confidence: 0 };
+    try {
+      const parsed = new URL(loc, "https://placeholder.invalid");
+      const hit = parsed.hostname === "evil.example.com";
+      return { hit, evidence: hit ? `External redirect to attacker host: ${parsed.hostname}` : `Location host is ${parsed.hostname} (not attacker host)`, confidence: 90 };
+    } catch { return { hit: false, evidence: "invalid Location", confidence: 0 }; }
   }},
 ];
 
