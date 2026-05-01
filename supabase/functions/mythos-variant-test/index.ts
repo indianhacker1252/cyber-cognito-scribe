@@ -3,6 +3,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { createEvidencePackage } from "../_shared/proof-packages.ts";
+import { confirmFinding } from "../_shared/ai-confirm-gate.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -69,20 +70,42 @@ serve(async (req) => {
 
     // Auto-promote only deterministic proof. Reflection-only candidates stay in Mythos for review.
     if (result.deterministicProof) {
+      // ── AI confirmation + honeypot trap detector ──
+      const gate = await confirmFinding({
+        vulnClass: vulnClass || "unknown",
+        payload,
+        endpoint,
+        parameter: paramName || "q",
+        baseline: { status: result.baselineStatus, length: result.baselineLen, bodySnippet: "" },
+        mutated: { status: result.status, length: result.bodyLen, bodySnippet: result.bodySnippet || "" },
+        deterministicProof: true,
+        proofType: result.proofType,
+      });
+      if (gate.recommendedAction === "drop_honeypot" || gate.recommendedAction === "drop_false_positive") {
+        await db.from("scan_logs").insert({
+          target_id: targetId, log_type: "info",
+          message: `🍯 variant suppressed by AI gate: ${gate.reasoning}`,
+          metadata: { variant_id: variantId, gate },
+        });
+        return new Response(JSON.stringify({ variantId, status: "suppressed", gate }),
+          { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+
       const findingPayload = {
         target_id: targetId,
         title: `🌀 0-Day Variant: ${vulnClass || "unknown"} via mutated payload`,
         severity: result.errorSig ? "critical" : "high",
         payload,
         cvss_score: result.errorSig ? 8.8 : 7.5,
-        description: `Variant payload triggered deterministic proof (${result.proofType}) on ${endpoint}. Baseline ${result.baselineStatus}/${result.baselineLen}b → mutated ${result.status}/${result.bodyLen}b. Generated from CVE root-cause pattern.`,
+        description: `Variant payload triggered deterministic proof (${result.proofType}) on ${endpoint}. Baseline ${result.baselineStatus}/${result.baselineLen}b → mutated ${result.status}/${result.bodyLen}b.\n\n**AI confirmation:** ${gate.reasoning}`,
         remediation: `Apply context-aware sanitization on parameter "${paramName || "q"}". Validate against schema/allowlist.`,
-        confidence_score: 92,
+        confidence_score: gate.confidence,
         confidence_level: "high",
-        validation_status: "verified",
+        validation_status: "ai_confirmed",
         ai_verified: true,
         reachability_status: "reachable",
         poc: `curl '${endpoint}?${paramName || "q"}=${encodeURIComponent(payload)}'`,
+        triage_reasoning: `AI gate (${gate.proofType}): ${gate.reasoning}`,
       };
 
       const { data: insertedFinding } = await db.from("vulnerability_findings").insert(findingPayload).select("id").single();

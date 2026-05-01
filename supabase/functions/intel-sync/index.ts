@@ -1,6 +1,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { createEvidencePackage } from "../_shared/proof-packages.ts";
+import { confirmFinding } from "../_shared/ai-confirm-gate.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -314,6 +315,27 @@ async function autoTestTemplateOnTarget(
   }
 
   if (confirmed) {
+    // ── AI confirmation + honeypot trap detector before insert ──
+    const gate = await confirmFinding({
+      vulnClass,
+      payload: bestPayload,
+      endpoint: bestRequest.url,
+      parameter: bestRequest.parameter,
+      baseline: { status: bestBaseline?.status || 0, length: bestBaseline?.length || 0, bodySnippet: (bestBaseline as any)?.body?.slice?.(0, 1500) || "" },
+      mutated: { status: bestMutated?.status || 0, length: bestMutated?.length || 0, bodySnippet: (bestMutated as any)?.body?.slice?.(0, 1500) || "" },
+      deterministicProof: true,
+      proofType: "intel_reproduction",
+      cveIds: [feedId],
+    });
+    if (gate.recommendedAction === "drop_honeypot" || gate.recommendedAction === "drop_false_positive") {
+      await db.from("scan_logs").insert({
+        target_id: targetId, log_type: "info",
+        message: `🍯 intel-sync gate suppressed CVE ${feedId}: ${gate.reasoning}`,
+        metadata: { feedId, vulnClass, gate },
+      });
+      return { tested: true, confirmed: false, suppressedByGate: true, gate };
+    }
+
     // Create finding in pending_approvals for high/critical or auto-accept
     const severity = vulnClass === "sqli" || vulnClass === "cmdi" || vulnClass === "ssrf" ? "high" : "medium";
     const isHighSev = severity === "high" || severity === "critical";
@@ -324,13 +346,13 @@ async function autoTestTemplateOnTarget(
         finding_type: `intel-auto-test-${vulnClass}`,
         severity,
         title: `🔴 Intel-Confirmed: ${vulnClass.toUpperCase()} (auto-tested from disclosure)`,
-        description: `Automatically tested from intel feed and CONFIRMED.\n\n**Evidence:** ${bestEvidence}\n\n**Payload:** \`${bestPayload}\`\n\n**Source:** Intel Feed ${feedId}`,
+        description: `Automatically tested from intel feed and CONFIRMED.\n\n**Evidence:** ${bestEvidence}\n\n**Payload:** \`${bestPayload}\`\n\n**Source:** Intel Feed ${feedId}\n\n**AI confirmation:** ${gate.reasoning}`,
         payload_used: bestPayload,
         confidence_level: "high",
-        confidence_score: 85,
+        confidence_score: gate.confidence,
         ai_verified: true,
-        ai_verification_notes: `Auto-tested from intel feed. Differential analysis confirmed vulnerability.`,
-        triage_reasoning: `Intel-driven auto-test confirmed via differential analysis`,
+        ai_verification_notes: `AI gate (${gate.proofType}): ${gate.reasoning}`,
+        triage_reasoning: `AI gate (${gate.proofType}) intel reproduction: ${gate.reasoning}`,
         request_data: bestRequest,
         baseline_response: bestBaseline,
         mutated_response: bestMutated,
@@ -357,13 +379,13 @@ async function autoTestTemplateOnTarget(
         target_id: targetId,
         title: `Intel-Confirmed: ${vulnClass.toUpperCase()} (auto-tested)`,
         severity,
-        description: `Auto-tested from intel feed.\n\n**Evidence:** ${bestEvidence}\n\n**Payload:** \`${bestPayload}\``,
+        description: `Auto-tested from intel feed.\n\n**Evidence:** ${bestEvidence}\n\n**Payload:** \`${bestPayload}\`\n\n**AI confirmation:** ${gate.reasoning}`,
         payload: bestPayload,
-        confidence_score: 75,
-        confidence_level: "medium",
+        confidence_score: gate.confidence,
+        confidence_level: gate.confidence >= 90 ? "high" : "medium",
         ai_verified: true,
-        triage_reasoning: `Intel-driven auto-test. ${bestEvidence}`,
-        validation_status: "auto-tested",
+        triage_reasoning: `AI gate (${gate.proofType}): ${gate.reasoning}`,
+        validation_status: "ai_confirmed",
       }).select("id").single();
 
       if (finding?.id) {

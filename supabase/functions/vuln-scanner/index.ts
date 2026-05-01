@@ -9,6 +9,7 @@ import {
   browserHeaders,
 } from "../_shared/security-gates.ts";
 import { createEvidencePackage } from "../_shared/proof-packages.ts";
+import { confirmFinding } from "../_shared/ai-confirm-gate.ts";
 
 // ─── GLOBAL TIMEOUT HELPER ─────────────────────────────
 const SCAN_START = Date.now();
@@ -1930,6 +1931,28 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
       const fullDescription = `Parameter "${matchingCheck?.paramName}" showed differential response behavior indicating possible ${diff.vulnClass}.${diff.adaptationUsed ? `\n\nAdaptive mutation "${diff.adaptationUsed}" was used.` : ""}${diff.intruderResults ? `\n\n**Intruder Results:** ${diff.intruderResults.length} payloads tested, ${diff.intruderResults.filter(i => i.status === 200).length} returned 200 OK.` : ""}${proofNote}${peerNote}`;
       const triageNote = `Gauntlet: PROVEN (${proof?.proofType || "verified"}). Peer: ${peer?.verdict || "N/A"} (skeptic: ${peer?.skepticScore || 0})`;
 
+      // ── AI Confirmation Gate (honeypot + deterministic-proof + LLM verdict) ──
+      const baseSnippet = typeof diff.baseline === "string" ? diff.baseline : JSON.stringify(diff.baseline || "").slice(0, 1500);
+      const mutSnippet = typeof diff.mutated === "string" ? diff.mutated : JSON.stringify(diff.mutated || "").slice(0, 1500);
+      const aiGate = await confirmFinding({
+        vulnClass: diff.vulnClass,
+        payload: diff.truePayload || "",
+        endpoint: matchingCheck?.url || "",
+        parameter: matchingCheck?.paramName,
+        baseline: { status: 0, length: baseSnippet.length, bodySnippet: baseSnippet },
+        mutated: { status: 0, length: mutSnippet.length, bodySnippet: mutSnippet },
+        deterministicProof: !!proof?.proven,
+        proofType: proof?.proofType || "differential",
+      });
+      if (aiGate.recommendedAction === "drop_honeypot") {
+        await log(db, targetId, taskId, "info", `🍯 honeypot trap suppressed ${diff.vulnClass}: ${aiGate.reasoning}`);
+        continue;
+      }
+      if (aiGate.recommendedAction === "drop_false_positive") {
+        await log(db, targetId, taskId, "info", `🛑 AI rejected ${diff.vulnClass} (conf ${aiGate.confidence}): ${aiGate.reasoning}`);
+        continue;
+      }
+
       // Route by severity: high/critical → approvals, others → auto-accept
       if (effectiveSeverity === "high" || effectiveSeverity === "critical") {
         await db.from("pending_approvals").insert({
@@ -1938,7 +1961,7 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
           finding_type: `active-${diff.vulnClass}`,
           severity: effectiveSeverity,
           title: `${proof?.proven ? "✅" : "⚠️"} ${diff.vulnClass.toUpperCase()} [${diff.owaspCategory}]`,
-          description: fullDescription,
+          description: `${fullDescription}\n\n**AI Gate:** ${aiGate.reasoning}`,
           parameter: matchingCheck?.paramName,
           payload_used: diff.truePayload,
           baseline_response: diff.baseline,
@@ -1946,17 +1969,15 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
           request_data: diff.requestData,
           response_data: diff.responseData,
           confidence_level: confidenceLabel,
-          confidence_score: Math.round(effectiveConfidence),
-          ai_verified: proof?.proven || false,
-          ai_verification_notes: proof?.proven
-            ? `Deterministic proof: ${proof.proofType}. ${proof.mathematicalBasis}. Peer review: ${peer?.verdict || "pending"}`
-            : `Unproven — awaiting manual verification. Peer review: ${peer?.verdict || "pending"}`,
-          triage_reasoning: triageNote,
+          confidence_score: aiGate.confidence,
+          ai_verified: true,
+          ai_verification_notes: `AI gate (${aiGate.proofType}): ${aiGate.reasoning}`,
+          triage_reasoning: `${triageNote}. AI gate (${aiGate.proofType}): ${aiGate.reasoning}`,
           evidence: {
-            vulnClass: diff.vulnClass, confidence: diff.confidence, confidenceScore: effectiveConfidence,
+            vulnClass: diff.vulnClass, confidence: diff.confidence, confidenceScore: aiGate.confidence,
             url: matchingCheck?.url, owaspCategory: diff.owaspCategory,
             adaptationUsed: diff.adaptationUsed || null, intruderResults: diff.intruderResults || null,
-            gauntletProof: proof || null, peerReview: peer || null,
+            gauntletProof: proof || null, peerReview: peer || null, aiGate,
             payloadsTested: attemptedCount, gauntletVerdict: gauntletGate.gauntlet_verdict,
           },
         });
@@ -1967,12 +1988,12 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
           endpoint_id: matchingCheck?.endpointId || null,
           title: `${diff.vulnClass.toUpperCase()} [${diff.owaspCategory}]`,
           severity: effectiveSeverity,
-          description: fullDescription,
+          description: `${fullDescription}\n\n**AI Gate:** ${aiGate.reasoning}`,
           payload: diff.truePayload,
-          confidence_score: Math.round(effectiveConfidence),
+          confidence_score: aiGate.confidence,
           confidence_level: confidenceLabel,
-          ai_verified: proof?.proven || false,
-          triage_reasoning: triageNote,
+          ai_verified: true,
+          triage_reasoning: `${triageNote}. AI gate (${aiGate.proofType}): ${aiGate.reasoning}`,
         });
       }
     }

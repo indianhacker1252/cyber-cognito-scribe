@@ -5,6 +5,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { createEvidencePackage } from "../_shared/proof-packages.ts";
+import { confirmFinding } from "../_shared/ai-confirm-gate.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -79,19 +80,40 @@ serve(async (req) => {
         .limit(1);
       if (existing && existing.length > 0) continue;
 
+      // ── AI confirmation + honeypot trap detector ──
+      const respText = typeof respBody === "string" ? respBody : JSON.stringify(respBody);
+      const gate = await confirmFinding({
+        vulnClass: "rxss",
+        payload,
+        endpoint: (a.response_data as any)?.url || "",
+        parameter: a.parameter || "unknown",
+        baseline: { status: 200, length: 0, bodySnippet: "" },
+        mutated: { status: (a.response_data as any)?.status || 200, length: respText.length, bodySnippet: respText.slice(0, 1500) },
+        deterministicProof: true,
+        proofType: "reflected_sink",
+      });
+      if (gate.recommendedAction === "drop_honeypot" || gate.recommendedAction === "drop_false_positive") {
+        await (db as any).from("scan_logs").insert({
+          target_id: targetId, log_type: "info",
+          message: `🍯 XSS gate suppressed approval ${a.id}: ${gate.reasoning}`,
+          metadata: { approvalId: a.id, gate },
+        });
+        continue;
+      }
+
       const findingPayload = {
         target_id: targetId,
         endpoint_id: a.endpoint_id,
         title: `Reflected XSS — verbatim payload reflected in response`,
         severity: "high",
         cvss_score: 7.4,
-        confidence_score: 92,
+        confidence_score: gate.confidence,
         confidence_level: "high",
-        validation_status: "auto_confirmed_reflection",
-        ai_verified: false,
+        validation_status: "ai_confirmed_reflection",
+        ai_verified: true,
         payload,
-        description: `Payload "${payload.slice(0, 120)}" was reflected verbatim in the response body of the target. Auto-promoted by reflection-based detector (no LLM required).`,
-        triage_reasoning: `Strict reflection check passed: payload contains executable XSS sink (script/event-handler/javascript:) and appears unmodified in the response body. Promoted from pending approval ${a.id}.`,
+        description: `Payload "${payload.slice(0, 120)}" was reflected verbatim in the response body.\n\n**AI confirmation:** ${gate.reasoning}`,
+        triage_reasoning: `AI gate (${gate.proofType}): ${gate.reasoning}. Promoted from approval ${a.id}.`,
         reachability_status: "reachable",
         remediation: "Apply context-aware output encoding (HTML, attribute, JS) and a strict CSP. Validate and reject reflected user input on the server.",
       };

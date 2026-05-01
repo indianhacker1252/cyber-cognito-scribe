@@ -6,6 +6,7 @@
 // medium-confidence to pending_approvals.
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { confirmFinding } from "../_shared/ai-confirm-gate.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -183,16 +184,35 @@ async function runProbeSet(endpoint: string, paramName: string, db: any, targetI
       const locationChanged = (r.headers.get("location") || "") !== baselineLocation;
       if (det.hit && (body !== baseline || r.status !== baselineStatus || locationChanged)) {
         await log(`🚨 ${p.vulnClass}: ${det.evidence}`, { url: u.toString(), confidence: det.confidence });
-        if (det.confidence >= 85) {
+        // ── AI Confirmation Gate (honeypot + deterministic-proof + LLM verdict) ──
+        const gate = await confirmFinding({
+          vulnClass: p.vulnClass,
+          payload: p.payload,
+          endpoint: u.toString(),
+          parameter: paramName,
+          baseline: { status: baselineStatus, length: baseline.length, bodySnippet: baseline.slice(0, 1500) },
+          mutated: { status: r.status, length: body.length, bodySnippet: body.slice(0, 1500), headers: Object.fromEntries(r.headers.entries()) },
+          deterministicProof: true,
+          proofType: det.evidence,
+        });
+        if (gate.recommendedAction === "drop_honeypot") {
+          await log(`🍯 honeypot trap suppressed (${p.vulnClass}): ${gate.reasoning}`, { url: u.toString() });
+          continue;
+        }
+        if (gate.recommendedAction === "drop_false_positive") {
+          await log(`🛑 AI rejected ${p.vulnClass} (conf ${gate.confidence}): ${gate.reasoning}`, { url: u.toString() });
+          continue;
+        }
+        if (gate.recommendedAction === "insert_finding") {
           await db.from("vulnerability_findings").insert({
             target_id: targetId, title: `${p.vulnClass} on ${u.pathname}?${paramName}`,
             severity: p.severity, payload: p.payload,
             cvss_score: det.confidence >= 95 ? 9.1 : (p.severity === "critical" ? 8.5 : 7.2),
-            description: `${det.evidence}. Param: ${paramName}.`,
+            description: `${det.evidence}. Param: ${paramName}.\n\n**AI confirmation:** ${gate.reasoning}`,
             remediation: `Sanitize/escape ${paramName} before use. Apply context-aware encoding.`,
-            confidence_score: det.confidence, confidence_level: "high",
-            validation_status: "verified", ai_verified: true, reachability_status: "reachable",
-            triage_reasoning: `Deterministic 0-day probe proof: ${det.evidence}. Baseline status ${baselineStatus}, mutated status ${r.status}.`,
+            confidence_score: gate.confidence, confidence_level: "high",
+            validation_status: "ai_confirmed", ai_verified: true, reachability_status: "reachable",
+            triage_reasoning: `AI gate (${gate.proofType}): ${gate.reasoning}`,
             poc: `curl '${u.toString()}'`,
           });
         } else {
@@ -200,13 +220,14 @@ async function runProbeSet(endpoint: string, paramName: string, db: any, targetI
             target_id: targetId, title: `${p.vulnClass} suspected on ${u.pathname}`,
             severity: p.severity === "critical" ? "high" : p.severity,
             finding_type: p.vulnClass, parameter: paramName, payload_used: p.payload,
-            confidence_score: det.confidence, confidence_level: "medium",
-            evidence: { evidence: det.evidence, body_snippet: body.slice(0, 400), status: r.status },
-            description: det.evidence, triage_reasoning: `Zero-day engine probe: ${p.vulnClass}`,
-            reachability_status: "reachable",
+            confidence_score: gate.confidence, confidence_level: "medium",
+            evidence: { evidence: det.evidence, body_snippet: body.slice(0, 400), status: r.status, ai_reasoning: gate.reasoning },
+            description: `${det.evidence}\n\nAI gate: ${gate.reasoning}`,
+            triage_reasoning: `AI gate (${gate.proofType}): ${gate.reasoning}`,
+            reachability_status: "reachable", ai_verified: true,
           });
         }
-        results.push({ vulnClass: p.vulnClass, evidence: det.evidence, confidence: det.confidence });
+        results.push({ vulnClass: p.vulnClass, evidence: det.evidence, confidence: gate.confidence, aiProofType: gate.proofType });
       }
     } catch { /* keep scanning */ }
   }
