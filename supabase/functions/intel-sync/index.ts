@@ -1,6 +1,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { createEvidencePackage } from "../_shared/proof-packages.ts";
+import { confirmFinding } from "../_shared/ai-confirm-gate.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -314,6 +315,27 @@ async function autoTestTemplateOnTarget(
   }
 
   if (confirmed) {
+    // ── AI confirmation + honeypot trap detector before insert ──
+    const gate = await confirmFinding({
+      vulnClass,
+      payload: bestPayload,
+      endpoint: bestRequest.url,
+      parameter: bestRequest.parameter,
+      baseline: { status: bestBaseline?.status || 0, length: bestBaseline?.length || 0, bodySnippet: (bestBaseline as any)?.body?.slice?.(0, 1500) || "" },
+      mutated: { status: bestMutated?.status || 0, length: bestMutated?.length || 0, bodySnippet: (bestMutated as any)?.body?.slice?.(0, 1500) || "" },
+      deterministicProof: true,
+      proofType: "intel_reproduction",
+      cveIds: [feedId],
+    });
+    if (gate.recommendedAction === "drop_honeypot" || gate.recommendedAction === "drop_false_positive") {
+      await db.from("scan_logs").insert({
+        target_id: targetId, log_type: "info",
+        message: `🍯 intel-sync gate suppressed CVE ${feedId}: ${gate.reasoning}`,
+        metadata: { feedId, vulnClass, gate },
+      });
+      return { tested: true, confirmed: false, suppressedByGate: true, gate };
+    }
+
     // Create finding in pending_approvals for high/critical or auto-accept
     const severity = vulnClass === "sqli" || vulnClass === "cmdi" || vulnClass === "ssrf" ? "high" : "medium";
     const isHighSev = severity === "high" || severity === "critical";
