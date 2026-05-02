@@ -2196,6 +2196,23 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
         },
         body: JSON.stringify({ targetId }),
       }).catch((e) => console.error("zeroday-engine dispatch failed:", e));
+
+      // ── Deep attack modules (safe-by-default, no user context required) ──
+      const baseUrl = (target as any)?.domain ? `https://${(target as any).domain}` : null;
+      if (baseUrl) {
+        const auth = { Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}`, "Content-Type": "application/json" };
+        const fnUrl = (n: string) => `${Deno.env.get("SUPABASE_URL")}/functions/v1/${n}`;
+        for (const [name, body] of [
+          ["recon-deep",    { targetId, baseUrl }],
+          ["bac-tester",    { targetId, baseUrl }],
+          ["smuggler",      { targetId, baseUrl }],
+          ["cache-attack",  { targetId, baseUrl }],
+          ["graphql-attack",{ targetId, endpoint: `${baseUrl}/graphql` }],
+        ] as const) {
+          fetch(fnUrl(name), { method: "POST", headers: auth, body: JSON.stringify(body) })
+            .catch(e => console.error(`${name} dispatch failed:`, e));
+        }
+      }
     } catch (e) {
       console.error("post-scan auto-trigger failed:", e);
     }
