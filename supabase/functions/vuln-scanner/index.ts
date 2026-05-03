@@ -2202,15 +2202,63 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
       if (baseUrl) {
         const auth = { Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}`, "Content-Type": "application/json" };
         const fnUrl = (n: string) => `${Deno.env.get("SUPABASE_URL")}/functions/v1/${n}`;
-        for (const [name, body] of [
-          ["recon-deep",    { targetId, baseUrl }],
-          ["bac-tester",    { targetId, baseUrl }],
-          ["smuggler",      { targetId, baseUrl }],
-          ["cache-attack",  { targetId, baseUrl }],
-          ["graphql-attack",{ targetId, endpoint: `${baseUrl}/graphql` }],
-        ] as const) {
+        const dispatch = (name: string, body: any) =>
           fetch(fnUrl(name), { method: "POST", headers: auth, body: JSON.stringify(body) })
             .catch(e => console.error(`${name} dispatch failed:`, e));
+
+        // 1. URL-only deep modules (always safe)
+        for (const [name, body] of [
+          ["recon-deep",     { targetId, baseUrl }],
+          ["bac-tester",     { targetId, baseUrl }],
+          ["smuggler",       { targetId, baseUrl }],
+          ["cache-attack",   { targetId, baseUrl }],
+          ["graphql-attack", { targetId, endpoint: `${baseUrl}/graphql` }],
+          ["live-cve-runner",{ targetId, baseUrl }],
+        ] as const) {
+          dispatch(name, body);
+        }
+
+        // 2. SSRF-deep — fan out per endpoint+param that smells like a URL/path/redirect
+        try {
+          const { data: eps } = await db.from("discovered_endpoints")
+            .select("url, parameters").eq("target_id", targetId).limit(40);
+          const ssrfParamRx = /^(url|uri|redirect|redirect_uri|next|return|return_to|callback|dest|destination|target|continue|image|img|src|file|path|fetch|domain|host|proxy|out|to|u|link)$/i;
+          let ssrfQueued = 0;
+          for (const ep of (eps || [])) {
+            const params = (ep.parameters as Record<string, string>) || {};
+            for (const pk of Object.keys(params)) {
+              if (!ssrfParamRx.test(pk)) continue;
+              dispatch("ssrf-deep", { targetId, endpointUrl: ep.url, paramName: pk });
+              if (++ssrfQueued >= 12) break;
+            }
+            if (ssrfQueued >= 12) break;
+          }
+
+          // 3. Upload-fuzzer — endpoints whose path screams upload
+          const uploadRx = /(upload|files?|attachment|avatar|image|media|import)\b/i;
+          let upQueued = 0;
+          for (const ep of (eps || [])) {
+            try {
+              const u = new URL(ep.url);
+              if (!uploadRx.test(u.pathname)) continue;
+              dispatch("upload-fuzzer", { targetId, uploadUrl: ep.url, fileField: "file" });
+              if (++upQueued >= 4) break;
+            } catch {}
+          }
+
+          // 4. Race-runner — endpoints with POST/PUT for race-prone actions
+          const raceRx = /(coupon|redeem|withdraw|transfer|purchase|order|vote|like|follow|claim)\b/i;
+          let raceQueued = 0;
+          for (const ep of (eps || [])) {
+            try {
+              const u = new URL(ep.url);
+              if (!raceRx.test(u.pathname)) continue;
+              dispatch("race-runner", { targetId, url: ep.url, method: "POST", parallel: 20 });
+              if (++raceQueued >= 3) break;
+            } catch {}
+          }
+        } catch (e) {
+          console.error("deep-module fanout failed:", e);
         }
       }
     } catch (e) {
