@@ -12,6 +12,7 @@ import { toast } from "sonner";
 import {
   Key, Sparkles, ShieldCheck, Trash2, Save, Container, Globe, Radio, CheckCircle2, XCircle, Loader2, Activity, Brain, Zap,
 } from "lucide-react";
+import { ExternalDbSettings } from "@/components/ExternalDbSettings";
 
 // ──────────────────────────────────────────────────────────────────────────
 // AI provider section (existing)
@@ -152,6 +153,8 @@ export default function Settings() {
     <div className="space-y-8 max-w-3xl pb-12">
       {/* ── Readiness Dashboard ── */}
       <ReadinessDashboard providers={configs || []} infraRows={infraRows || []} />
+
+      <ExternalDbSettings />
 
       {/* ── AI Provider Settings ── */}
       <div>
