@@ -12,6 +12,7 @@ import FindingDetailsDialog from "@/components/FindingDetailsDialog";
 import { FileText } from "lucide-react";
 import { markAsFalsePositive } from "@/services/LearningService";
 import { triageFinding } from "@/services/TriageBrain";
+import { generateFindingPdf, generateBulkPdf } from "@/services/PdfReport";
 
 const severityBadge: Record<string, string> = {
   critical: "bg-cyber-red/20 text-cyber-red border-cyber-red/30",
@@ -296,6 +297,9 @@ export default function Findings() {
                       </Button>
                       <Button variant="outline" size="sm" className="font-mono text-[10px] gap-1 border-cyber-red/30 text-cyber-red hover:bg-cyber-red/10" onClick={() => handleFalsePositive(f)}>
                         <Ban className="h-3 w-3" /> FP
+                      </Button>
+                      <Button variant="outline" size="sm" className="font-mono text-[10px] gap-1 border-cyber-cyan/30 text-cyber-cyan hover:bg-cyber-cyan/10" onClick={() => generateFindingPdf(f).catch(e => toast.error(e.message))}>
+                        <FileDown className="h-3 w-3" /> PDF
                       </Button>
                       <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" onClick={() => deleteFinding.mutate(f.id)}>
                         <Trash2 className="h-3 w-3" />
