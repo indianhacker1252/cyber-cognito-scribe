@@ -148,7 +148,21 @@ export default function Targets() {
            m.includes("network") || m.includes("load failed") || m.includes("context canceled");
   };
 
+  const consumeCredit = async (targetId: string, scanType: string): Promise<boolean> => {
+    const { data, error } = await supabase.rpc("consume_scan_credit" as any, { _target_id: targetId, _scan_type: scanType });
+    if (error) { toast.error(`Credit error: ${error.message}`); return false; }
+    const r = data as any;
+    if (!r?.ok) {
+      if (r?.error === "no_credits") toast.error("Out of scan credits — ask an admin to grant more");
+      else toast.error(`Cannot scan: ${r?.error || "unknown"}`);
+      return false;
+    }
+    if (!r.admin) toast.info(`Scan credit used (${r.remaining} left)`);
+    return true;
+  };
+
   const startRecon = async (targetId: string) => {
+    if (!(await consumeCredit(targetId, "recon"))) return;
     setScanningTargets((prev) => new Set(prev).add(targetId));
     toast.info("Recon pipeline started — Pro-Fuzz + Drift Reval will auto-chain after recon");
     let reconOk = false;
@@ -224,6 +238,7 @@ export default function Targets() {
   };
 
   const startVulnScan = async (targetId: string) => {
+    if (!(await consumeCredit(targetId, "vuln-scan"))) return;
     setVulnScanTargets((prev) => new Set(prev).add(targetId));
     toast.info("Vuln scan started — findings will appear in Approvals queue (watch Neural Log)");
     try {
@@ -254,6 +269,7 @@ export default function Targets() {
   };
 
   const startDeepAudit = async (targetId: string, targetDomain: string) => {
+    if (!(await consumeCredit(targetId, "deep-audit"))) return;
     setDeepAuditTargets((prev) => new Set(prev).add(targetId));
     toast.info("Deep Audit initiated — Twin-Test differential analysis running");
     try {

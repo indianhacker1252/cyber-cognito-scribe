@@ -668,6 +668,36 @@ export type Database = {
         }
         Relationships: []
       }
+      external_db_config: {
+        Row: {
+          enabled: boolean
+          last_error: string | null
+          last_test_at: string | null
+          last_test_ok: boolean | null
+          pg_connection_string: string | null
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          enabled?: boolean
+          last_error?: string | null
+          last_test_at?: string | null
+          last_test_ok?: boolean | null
+          pg_connection_string?: string | null
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          enabled?: boolean
+          last_error?: string | null
+          last_test_at?: string | null
+          last_test_ok?: boolean | null
+          pg_connection_string?: string | null
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
       external_infra_config: {
         Row: {
           auth_token: string | null
@@ -1381,6 +1411,54 @@ export type Database = {
           },
         ]
       }
+      profiles: {
+        Row: {
+          created_at: string
+          display_name: string | null
+          email: string | null
+          id: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          display_name?: string | null
+          email?: string | null
+          id: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          display_name?: string | null
+          email?: string | null
+          id?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      scan_credits: {
+        Row: {
+          remaining: number
+          total_granted: number
+          total_used: number
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          remaining?: number
+          total_granted?: number
+          total_used?: number
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          remaining?: number
+          total_granted?: number
+          total_used?: number
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
       scan_jobs: {
         Row: {
           attempts: number
@@ -1476,6 +1554,33 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      scan_usage: {
+        Row: {
+          consumed: number
+          created_at: string
+          id: string
+          scan_type: string
+          target_id: string | null
+          user_id: string
+        }
+        Insert: {
+          consumed?: number
+          created_at?: string
+          id?: string
+          scan_type: string
+          target_id?: string | null
+          user_id: string
+        }
+        Update: {
+          consumed?: number
+          created_at?: string
+          id?: string
+          scan_type?: string
+          target_id?: string | null
+          user_id?: string
+        }
+        Relationships: []
       }
       strategy_weights: {
         Row: {
@@ -1590,6 +1695,27 @@ export type Database = {
         }
         Relationships: []
       }
+      user_roles: {
+        Row: {
+          created_at: string
+          id: string
+          role: Database["public"]["Enums"]["app_role"]
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          role: Database["public"]["Enums"]["app_role"]
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          role?: Database["public"]["Enums"]["app_role"]
+          user_id?: string
+        }
+        Relationships: []
+      }
       vulnerability_findings: {
         Row: {
           ai_verified: boolean | null
@@ -1680,9 +1806,24 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      consume_scan_credit: {
+        Args: { _scan_type: string; _target_id: string }
+        Returns: Json
+      }
+      grant_scan_credits: {
+        Args: { _amount: number; _user_id: string }
+        Returns: Json
+      }
+      has_role: {
+        Args: {
+          _role: Database["public"]["Enums"]["app_role"]
+          _user_id: string
+        }
+        Returns: boolean
+      }
     }
     Enums: {
+      app_role: "admin" | "user"
       approval_status: "pending" | "approved" | "rejected" | "escalated"
       log_type: "thought" | "action" | "result" | "error" | "info"
       severity_level: "critical" | "high" | "medium" | "low" | "info"
@@ -1815,6 +1956,7 @@ export type CompositeTypes<
 export const Constants = {
   public: {
     Enums: {
+      app_role: ["admin", "user"],
       approval_status: ["pending", "approved", "rejected", "escalated"],
       log_type: ["thought", "action", "result", "error", "info"],
       severity_level: ["critical", "high", "medium", "low", "info"],
