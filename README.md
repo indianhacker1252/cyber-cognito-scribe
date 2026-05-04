@@ -439,3 +439,36 @@ Private / Internal Tool
 ---
 
 *Built with [Lovable](https://lovable.dev) • Powered by Supabase Edge Functions*
+
+---
+
+## 🔐 Auth, Roles & Scan Credits
+
+CyberScope now ships with built-in authentication and a credit system:
+
+- **Sign in** at `/auth` (email/password or Google).
+- Every new user gets **3 free target scans**. Each `Recon`, `OWASP Vuln-Scan`, or `Deep Audit` consumes **1 credit**.
+- **Admins** have **unlimited** scans and an `/admin` panel to grant credits to users or promote other users to admin.
+- Bootstrapping the first admin: open the backend SQL editor and run
+  `insert into public.user_roles(user_id, role) values ('<your-auth-uid>', 'admin');`
+
+## 🗄️ External Database (BYO Postgres)
+
+If you want to keep a local/private copy of all findings, plug in any Postgres URL in **Settings → External Database**:
+
+```
+postgres://user:password@host:5432/dbname
+```
+
+Click **Test & Init Schema** — the `cyberscope_findings` table is created automatically. Compatible with Neon, RDS, self-hosted Supabase, or local Docker:
+
+```bash
+docker run -d --name cyberscope-db -e POSTGRES_PASSWORD=secret -p 5432:5432 postgres:16
+# then use: postgres://postgres:secret@host.docker.internal:5432/postgres
+```
+
+Use the edge function `external-db-mirror` with `{ action: "mirror", userId }` to push findings into your DB on demand.
+
+## 📄 VAPT PDF Reports
+
+From **Findings** click **PDF** on any row to download a per-finding professional report (PoC, affected endpoint, remediation, CVSS, AI triage). Click **Export Report** to download a full multi-finding VAPT bundle.
