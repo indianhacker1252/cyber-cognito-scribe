@@ -35,6 +35,8 @@ export default function Findings() {
   const [selectedFinding, setSelectedFinding] = useState<any>(null);
   const [adaptiveFinding, setAdaptiveFinding] = useState<any>(null);
   const [detailsFinding, setDetailsFinding] = useState<any>(null);
+  const [bountyFinding, setBountyFinding] = useState<any>(null);
+  const [sandboxFinding, setSandboxFinding] = useState<any>(null);
   const [triaging, setTriaging] = useState<string | null>(null);
   const [activeTargetFilter, setActiveTargetFilter] = useState<string | null>(null);
 
