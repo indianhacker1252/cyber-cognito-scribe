@@ -19,6 +19,7 @@ import Settings from "./pages/Settings";
 import FalsePositives from "./pages/FalsePositives";
 import AttackVisualization from "./pages/AttackVisualization";
 import MythosResults from "./pages/MythosResults";
+import AppPackages from "./pages/AppPackages";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
