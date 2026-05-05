@@ -13,6 +13,7 @@ import {
   Key, Sparkles, ShieldCheck, Trash2, Save, Container, Globe, Radio, CheckCircle2, XCircle, Loader2, Activity, Brain, Zap,
 } from "lucide-react";
 import { ExternalDbSettings } from "@/components/ExternalDbSettings";
+import BugBountySettings from "@/components/BugBountySettings";
 
 // ──────────────────────────────────────────────────────────────────────────
 // AI provider section (existing)
