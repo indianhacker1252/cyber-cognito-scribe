@@ -156,6 +156,7 @@ export default function Settings() {
       <ReadinessDashboard providers={configs || []} infraRows={infraRows || []} />
 
       <ExternalDbSettings />
+      <BugBountySettings />
 
       {/* ── AI Provider Settings ── */}
       <div>
