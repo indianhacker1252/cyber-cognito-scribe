@@ -26,6 +26,7 @@ const navItems = [
   { title: "False Positives", url: "/false-positives", icon: ShieldOff },
   { title: "Attack Viz", url: "/attack-viz", icon: Swords },
   { title: "Mythos Results", url: "/mythos", icon: Brain },
+  { title: "App Packages", url: "/app-packages", icon: Package },
   { title: "Settings", url: "/settings", icon: Settings },
 ];
 
