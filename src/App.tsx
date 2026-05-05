@@ -49,6 +49,7 @@ const App = () => (
                     <Route path="/false-positives" element={<FalsePositives />} />
                     <Route path="/attack-viz" element={<AttackVisualization />} />
                     <Route path="/mythos" element={<MythosResults />} />
+                    <Route path="/app-packages" element={<AppPackages />} />
                     <Route path="*" element={<NotFound />} />
                   </Routes>
                 </Layout>
