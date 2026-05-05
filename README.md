@@ -472,3 +472,11 @@ Use the edge function `external-db-mirror` with `{ action: "mirror", userId }` t
 ## 📄 VAPT PDF Reports
 
 From **Findings** click **PDF** on any row to download a per-finding professional report (PoC, affected endpoint, remediation, CVSS, AI triage). Click **Export Report** to download a full multi-finding VAPT bundle.
+
+## New Modules (v1.2)
+
+- **Bug Bounty Submission** — Findings page → "Submit" button. Add HackerOne username + API token and/or Bugcrowd token in Settings → Bug Bounty. If tokens are missing, submission falls back to a perfectly formatted Markdown export you can paste manually.
+- **Sandboxed Exploit Worker** — Findings page → "Sandbox" button. Tries your Docker worker first (`POST /sandbox`) and falls back to the edge sandbox automatically. Configure the worker in Settings → External Infrastructure.
+- **DOM-Fuzz (Playwright)** — Auto-dispatched on every full scan. Uses worker `POST /playwright` if available, else falls back to the edge headless-browser DOM watcher.
+- **Application Package Scanner** — New "App Packages" page in the sidebar. Upload `.apk / .exe / .ipa / .zip / .jar`, AI audits manifests, source files, secrets, and configuration.
+- **Extended Docker Worker** — `docker-worker-reference/` now ships with `apktool`, `jadx`, and Playwright/Chromium so all the new endpoints work end-to-end.
