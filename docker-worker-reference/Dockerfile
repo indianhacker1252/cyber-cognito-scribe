@@ -1,33 +1,45 @@
-# CyberScope External Tool Worker — Reference Dockerfile
+# CyberScope External Tool Worker — Extended Dockerfile
 #
-# Builds a single container that runs nuclei, ffuf, and sqlmap, exposes a
-# tiny HTTP server on :8080 that the Lovable edge function `docker-worker-dispatch`
-# calls. Output of each tool is streamed line-by-line back to the caller so
-# the Live Neural Log shows real tool output in real time.
+# Now includes:
+#   - nuclei, ffuf, sqlmap (existing)
+#   - Playwright (Chromium) for DOM XSS fuzzing  -> POST /playwright
+#   - apktool + jadx for deep APK analysis        -> POST /apkscan
+#   - Sandbox exec endpoint for finding payloads  -> POST /sandbox
 #
 # DEPLOY:
 #   docker build -t cyberscope-worker .
 #   docker run -d -p 8080:8080 -e WORKER_TOKEN=$(openssl rand -hex 24) cyberscope-worker
-#   # Then in CyberScope → Settings → External Infrastructure paste:
+#   # In CyberScope → Settings → External Infrastructure paste:
 #   #   endpoint_url = https://your-host:8080
-#   #   auth_token   = <the WORKER_TOKEN you generated>
-#
-# PROTOCOL:
-#   POST /run     Authorization: Bearer <token>
-#                 { "tool": "nuclei"|"ffuf"|"sqlmap", "target": "...", "args": [...] }
-#                 -> chunked text/plain stream of stdout lines
-#   GET  /health  -> {"ok":true,"tools":["nuclei","ffuf","sqlmap"]}
+#   #   auth_token   = <WORKER_TOKEN>
 
 FROM golang:1.22-alpine AS gobuild
 RUN apk add --no-cache git
 RUN go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
 RUN go install -v github.com/ffuf/ffuf/v2@latest
 
-FROM python:3.12-alpine
-RUN apk add --no-cache git curl bash
+FROM python:3.12-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      git curl bash openjdk-17-jre-headless wget unzip ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
 # sqlmap
 RUN git clone --depth 1 https://github.com/sqlmapproject/sqlmap.git /opt/sqlmap \
  && ln -s /opt/sqlmap/sqlmap.py /usr/local/bin/sqlmap
+
+# apktool + jadx
+RUN curl -L -o /usr/local/bin/apktool https://raw.githubusercontent.com/iBotPeaches/Apktool/master/scripts/linux/apktool \
+ && curl -L -o /opt/apktool.jar https://bitbucket.org/iBotPeaches/apktool/downloads/apktool_2.9.3.jar \
+ && sed -i 's|/usr/local/bin/apktool.jar|/opt/apktool.jar|g' /usr/local/bin/apktool \
+ && chmod +x /usr/local/bin/apktool
+RUN wget -q https://github.com/skylot/jadx/releases/download/v1.5.0/jadx-1.5.0.zip -O /tmp/jadx.zip \
+ && unzip -q /tmp/jadx.zip -d /opt/jadx && ln -s /opt/jadx/bin/jadx /usr/local/bin/jadx \
+ && rm /tmp/jadx.zip
+
+# Playwright + Chromium
+RUN pip install --no-cache-dir playwright==1.49.0 \
+ && playwright install --with-deps chromium
+
 COPY --from=gobuild /go/bin/nuclei /usr/local/bin/nuclei
 COPY --from=gobuild /go/bin/ffuf   /usr/local/bin/ffuf
 RUN nuclei -update-templates -silent || true
