@@ -164,6 +164,116 @@ export type Database = {
         }
         Relationships: []
       }
+      app_package_findings: {
+        Row: {
+          ai_reasoning: string | null
+          created_at: string
+          cvss_score: number | null
+          description: string | null
+          file_path: string | null
+          id: string
+          line_start: number | null
+          package_id: string
+          remediation: string | null
+          severity: string
+          snippet: string | null
+          title: string
+          user_id: string
+          vuln_class: string
+        }
+        Insert: {
+          ai_reasoning?: string | null
+          created_at?: string
+          cvss_score?: number | null
+          description?: string | null
+          file_path?: string | null
+          id?: string
+          line_start?: number | null
+          package_id: string
+          remediation?: string | null
+          severity?: string
+          snippet?: string | null
+          title: string
+          user_id: string
+          vuln_class: string
+        }
+        Update: {
+          ai_reasoning?: string | null
+          created_at?: string
+          cvss_score?: number | null
+          description?: string | null
+          file_path?: string | null
+          id?: string
+          line_start?: number | null
+          package_id?: string
+          remediation?: string | null
+          severity?: string
+          snippet?: string | null
+          title?: string
+          user_id?: string
+          vuln_class?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "app_package_findings_package_id_fkey"
+            columns: ["package_id"]
+            isOneToOne: false
+            referencedRelation: "app_packages"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      app_packages: {
+        Row: {
+          ai_summary: string | null
+          created_at: string
+          error_message: string | null
+          extracted_strings_count: number | null
+          filename: string
+          id: string
+          manifest: Json | null
+          package_type: string
+          size_bytes: number | null
+          status: string
+          storage_path: string
+          target_id: string | null
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          ai_summary?: string | null
+          created_at?: string
+          error_message?: string | null
+          extracted_strings_count?: number | null
+          filename: string
+          id?: string
+          manifest?: Json | null
+          package_type?: string
+          size_bytes?: number | null
+          status?: string
+          storage_path: string
+          target_id?: string | null
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          ai_summary?: string | null
+          created_at?: string
+          error_message?: string | null
+          extracted_strings_count?: number | null
+          filename?: string
+          id?: string
+          manifest?: Json | null
+          package_type?: string
+          size_bytes?: number | null
+          status?: string
+          storage_path?: string
+          target_id?: string | null
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
       auth_profiles: {
         Row: {
           auth_type: string
@@ -218,6 +328,87 @@ export type Database = {
           session_extract_regex?: string | null
           target_id?: string
           updated_at?: string
+        }
+        Relationships: []
+      }
+      bug_bounty_submissions: {
+        Row: {
+          created_at: string
+          error_message: string | null
+          finding_id: string | null
+          id: string
+          platform: string
+          program_handle: string | null
+          remote_id: string | null
+          request_payload: Json | null
+          response_payload: Json | null
+          severity: string | null
+          status: string
+          target_id: string | null
+          title: string | null
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          error_message?: string | null
+          finding_id?: string | null
+          id?: string
+          platform: string
+          program_handle?: string | null
+          remote_id?: string | null
+          request_payload?: Json | null
+          response_payload?: Json | null
+          severity?: string | null
+          status?: string
+          target_id?: string | null
+          title?: string | null
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          error_message?: string | null
+          finding_id?: string | null
+          id?: string
+          platform?: string
+          program_handle?: string | null
+          remote_id?: string | null
+          request_payload?: Json | null
+          response_payload?: Json | null
+          severity?: string | null
+          status?: string
+          target_id?: string | null
+          title?: string | null
+          user_id?: string
+        }
+        Relationships: []
+      }
+      bug_bounty_tokens: {
+        Row: {
+          bc_api_token: string | null
+          bc_program_handle: string | null
+          h1_api_token: string | null
+          h1_program_handle: string | null
+          h1_username: string | null
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          bc_api_token?: string | null
+          bc_program_handle?: string | null
+          h1_api_token?: string | null
+          h1_program_handle?: string | null
+          h1_username?: string | null
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          bc_api_token?: string | null
+          bc_program_handle?: string | null
+          h1_api_token?: string | null
+          h1_program_handle?: string | null
+          h1_username?: string | null
+          updated_at?: string
+          user_id?: string
         }
         Relationships: []
       }
@@ -1432,6 +1623,60 @@ export type Database = {
           email?: string | null
           id?: string
           updated_at?: string
+        }
+        Relationships: []
+      }
+      sandbox_executions: {
+        Row: {
+          created_at: string
+          duration_ms: number | null
+          evidence: Json | null
+          executor: string | null
+          exit_code: number | null
+          finding_id: string | null
+          id: string
+          language: string | null
+          mode: string
+          output: string | null
+          proven: boolean | null
+          script: string | null
+          status: string
+          target_id: string | null
+          user_id: string | null
+        }
+        Insert: {
+          created_at?: string
+          duration_ms?: number | null
+          evidence?: Json | null
+          executor?: string | null
+          exit_code?: number | null
+          finding_id?: string | null
+          id?: string
+          language?: string | null
+          mode?: string
+          output?: string | null
+          proven?: boolean | null
+          script?: string | null
+          status?: string
+          target_id?: string | null
+          user_id?: string | null
+        }
+        Update: {
+          created_at?: string
+          duration_ms?: number | null
+          evidence?: Json | null
+          executor?: string | null
+          exit_code?: number | null
+          finding_id?: string | null
+          id?: string
+          language?: string | null
+          mode?: string
+          output?: string | null
+          proven?: boolean | null
+          script?: string | null
+          status?: string
+          target_id?: string | null
+          user_id?: string | null
         }
         Relationships: []
       }
