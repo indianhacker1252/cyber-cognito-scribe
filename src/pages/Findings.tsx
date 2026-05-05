@@ -343,6 +343,12 @@ export default function Findings() {
         onOpenChange={(open) => { if (!open) setDetailsFinding(null); }}
         finding={detailsFinding}
       />
+      {bountyFinding && (
+        <SubmitBountyDialog open={!!bountyFinding} onOpenChange={(o) => { if (!o) setBountyFinding(null); }} finding={bountyFinding} />
+      )}
+      {sandboxFinding && (
+        <SandboxRunDialog open={!!sandboxFinding} onOpenChange={(o) => { if (!o) setSandboxFinding(null); }} finding={sandboxFinding} />
+      )}
     </div>
   );
 }
