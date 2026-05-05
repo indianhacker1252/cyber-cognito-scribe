@@ -4,11 +4,13 @@ import { supabase } from "@/integrations/supabase/client";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { ShieldAlert, Shield, Trash2, BrainCircuit, Gauge, Ban, Filter, X, FileDown } from "lucide-react";
+import { ShieldAlert, Shield, Trash2, BrainCircuit, Gauge, Ban, Filter, X, FileDown, Send, Box } from "lucide-react";
 import { toast } from "sonner";
 import ValidationModal from "@/components/ValidationModal";
 import AdaptiveValidationModal from "@/components/AdaptiveValidationModal";
 import FindingDetailsDialog from "@/components/FindingDetailsDialog";
+import SubmitBountyDialog from "@/components/SubmitBountyDialog";
+import SandboxRunDialog from "@/components/SandboxRunDialog";
 import { FileText } from "lucide-react";
 import { markAsFalsePositive } from "@/services/LearningService";
 import { triageFinding } from "@/services/TriageBrain";
@@ -33,6 +35,8 @@ export default function Findings() {
   const [selectedFinding, setSelectedFinding] = useState<any>(null);
   const [adaptiveFinding, setAdaptiveFinding] = useState<any>(null);
   const [detailsFinding, setDetailsFinding] = useState<any>(null);
+  const [bountyFinding, setBountyFinding] = useState<any>(null);
+  const [sandboxFinding, setSandboxFinding] = useState<any>(null);
   const [triaging, setTriaging] = useState<string | null>(null);
   const [activeTargetFilter, setActiveTargetFilter] = useState<string | null>(null);
 
@@ -288,6 +292,12 @@ export default function Findings() {
                       <Button variant="outline" size="sm" className="font-mono text-[10px] gap-1 border-cyber-cyan/30 text-cyber-cyan hover:bg-cyber-cyan/10" onClick={() => generateFindingPdf(f).catch(e => toast.error(e.message))}>
                         <FileDown className="h-3 w-3" /> PDF
                       </Button>
+                      <Button variant="outline" size="sm" className="font-mono text-[10px] gap-1 border-cyber-green/30 text-cyber-green hover:bg-cyber-green/10" onClick={() => setSandboxFinding(f)}>
+                        <Box className="h-3 w-3" /> Sandbox
+                      </Button>
+                      <Button variant="outline" size="sm" className="font-mono text-[10px] gap-1 border-orange-500/30 text-orange-400 hover:bg-orange-500/10" onClick={() => setBountyFinding(f)}>
+                        <Send className="h-3 w-3" /> Submit
+                      </Button>
                       <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" onClick={() => deleteFinding.mutate(f.id)}>
                         <Trash2 className="h-3 w-3" />
                       </Button>
@@ -333,6 +343,12 @@ export default function Findings() {
         onOpenChange={(open) => { if (!open) setDetailsFinding(null); }}
         finding={detailsFinding}
       />
+      {bountyFinding && (
+        <SubmitBountyDialog open={!!bountyFinding} onOpenChange={(o) => { if (!o) setBountyFinding(null); }} finding={bountyFinding} />
+      )}
+      {sandboxFinding && (
+        <SandboxRunDialog open={!!sandboxFinding} onOpenChange={(o) => { if (!o) setSandboxFinding(null); }} finding={sandboxFinding} />
+      )}
     </div>
   );
 }

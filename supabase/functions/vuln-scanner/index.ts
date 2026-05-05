@@ -2215,6 +2215,7 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
           ["graphql-attack", { targetId, endpoint: `${baseUrl}/graphql` }],
           ["live-cve-runner",{ targetId, baseUrl }],
           ["web-attack-suite",{ targetId, baseUrl }],
+          ["dom-fuzz",        { targetId, url: baseUrl }],
         ] as const) {
           dispatch(name, body);
         }
