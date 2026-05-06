@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { ExternalDbSettings } from "@/components/ExternalDbSettings";
 import BugBountySettings from "@/components/BugBountySettings";
+import AiTutorPanel from "@/components/AiTutorPanel";
 
 // ──────────────────────────────────────────────────────────────────────────
 // AI provider section (existing)
@@ -157,6 +158,7 @@ export default function Settings() {
 
       <ExternalDbSettings />
       <BugBountySettings />
+      <AiTutorPanel />
 
       {/* ── AI Provider Settings ── */}
       <div>
