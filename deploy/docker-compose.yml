@@ -1,0 +1,75 @@
+version: "3.9"
+
+# CyberScope Self-Hosted Stack (Kali / Linux)
+#  - postgres   : local DB (mirror target for findings)
+#  - ollama     : local LLM runtime (llama3.1:8b + qwen2.5-coder:7b)
+#  - worker     : CyberScope tool worker (nuclei/ffuf/sqlmap/playwright/apktool/jadx + /sandbox)
+#  - ollama-init: pulls the two models on first boot
+#
+# Quickstart:
+#   cd deploy
+#   ./install.sh           # idempotent installer (installs docker if missing, then `docker compose up -d`)
+#
+# Then in CyberScope → Settings → External Infrastructure paste:
+#   Docker Worker endpoint = http://<your-kali-ip>:8080
+#   Docker Worker token    = $(cat .worker_token)
+#   External DB            = postgres://cyberscope:cyberscope@<your-kali-ip>:5544/cyberscope
+#   Local AI base URL      = http://<your-kali-ip>:11434/v1   (OpenAI-compatible)
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: cs-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: cyberscope
+      POSTGRES_PASSWORD: cyberscope
+      POSTGRES_DB: cyberscope
+    ports: ["5544:5432"]
+    volumes:
+      - cs_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cyberscope"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: cs-ollama
+    restart: unless-stopped
+    ports: ["11434:11434"]
+    volumes:
+      - cs_ollama:/root/.ollama
+    # GPU (optional): uncomment if you have NVIDIA + nvidia-container-toolkit
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices: [{ driver: nvidia, count: all, capabilities: [gpu] }]
+
+  ollama-init:
+    image: ollama/ollama:latest
+    container_name: cs-ollama-init
+    depends_on: [ollama]
+    entrypoint: /bin/sh
+    command: >
+      -c "sleep 6;
+          OLLAMA_HOST=http://ollama:11434 ollama pull llama3.1:8b || true;
+          OLLAMA_HOST=http://ollama:11434 ollama pull qwen2.5-coder:7b || true;
+          echo 'models pulled'"
+    restart: "no"
+
+  worker:
+    build:
+      context: ../docker-worker-reference
+      dockerfile: Dockerfile
+    container_name: cs-worker
+    restart: unless-stopped
+    environment:
+      WORKER_TOKEN: ${WORKER_TOKEN:-changeme-please-rotate}
+    ports: ["8080:8080"]
+    depends_on: [postgres, ollama]
+
+volumes:
+  cs_pgdata:
+  cs_ollama:
