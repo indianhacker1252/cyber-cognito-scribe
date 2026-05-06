@@ -164,6 +164,39 @@ export type Database = {
         }
         Relationships: []
       }
+      ai_tutoring_sessions: {
+        Row: {
+          created_at: string
+          delta_score: number | null
+          finding_id: string | null
+          gemini_correction: string | null
+          id: string
+          local_model_output: string | null
+          saved_to_corpus: boolean | null
+          target_id: string | null
+        }
+        Insert: {
+          created_at?: string
+          delta_score?: number | null
+          finding_id?: string | null
+          gemini_correction?: string | null
+          id?: string
+          local_model_output?: string | null
+          saved_to_corpus?: boolean | null
+          target_id?: string | null
+        }
+        Update: {
+          created_at?: string
+          delta_score?: number | null
+          finding_id?: string | null
+          gemini_correction?: string | null
+          id?: string
+          local_model_output?: string | null
+          saved_to_corpus?: boolean | null
+          target_id?: string | null
+        }
+        Relationships: []
+      }
       app_package_findings: {
         Row: {
           ai_reasoning: string | null
@@ -692,6 +725,7 @@ export type Database = {
           poc_script: string | null
           report_markdown: string | null
           script_language: string | null
+          sensitive: boolean
           target_id: string
           terminal_output: string | null
           validated_at: string | null
@@ -709,6 +743,7 @@ export type Database = {
           poc_script?: string | null
           report_markdown?: string | null
           script_language?: string | null
+          sensitive?: boolean
           target_id: string
           terminal_output?: string | null
           validated_at?: string | null
@@ -726,6 +761,7 @@ export type Database = {
           poc_script?: string | null
           report_markdown?: string | null
           script_language?: string | null
+          sensitive?: boolean
           target_id?: string
           terminal_output?: string | null
           validated_at?: string | null
@@ -1626,6 +1662,39 @@ export type Database = {
         }
         Relationships: []
       }
+      rag_corpus: {
+        Row: {
+          content: string
+          created_at: string
+          id: string
+          phase: string | null
+          source: string
+          tags: Json | null
+          topic: string
+          vuln_class: string | null
+        }
+        Insert: {
+          content: string
+          created_at?: string
+          id?: string
+          phase?: string | null
+          source?: string
+          tags?: Json | null
+          topic: string
+          vuln_class?: string | null
+        }
+        Update: {
+          content?: string
+          created_at?: string
+          id?: string
+          phase?: string | null
+          source?: string
+          tags?: Json | null
+          topic?: string
+          vuln_class?: string | null
+        }
+        Relationships: []
+      }
       sandbox_executions: {
         Row: {
           created_at: string
@@ -1640,6 +1709,7 @@ export type Database = {
           output: string | null
           proven: boolean | null
           script: string | null
+          sensitive: boolean
           status: string
           target_id: string | null
           user_id: string | null
@@ -1657,6 +1727,7 @@ export type Database = {
           output?: string | null
           proven?: boolean | null
           script?: string | null
+          sensitive?: boolean
           status?: string
           target_id?: string | null
           user_id?: string | null
@@ -1674,6 +1745,7 @@ export type Database = {
           output?: string | null
           proven?: boolean | null
           script?: string | null
+          sensitive?: boolean
           status?: string
           target_id?: string | null
           user_id?: string | null
@@ -1971,11 +2043,14 @@ export type Database = {
           description: string | null
           endpoint_id: string | null
           evidence_package_id: string | null
+          hard_evidence: Json | null
           id: string
           payload: string | null
           poc: string | null
+          proof_tier: string
           reachability_status: string | null
           remediation: string | null
+          sensitive: boolean
           severity: Database["public"]["Enums"]["severity_level"]
           target_id: string
           title: string
@@ -1991,11 +2066,14 @@ export type Database = {
           description?: string | null
           endpoint_id?: string | null
           evidence_package_id?: string | null
+          hard_evidence?: Json | null
           id?: string
           payload?: string | null
           poc?: string | null
+          proof_tier?: string
           reachability_status?: string | null
           remediation?: string | null
+          sensitive?: boolean
           severity?: Database["public"]["Enums"]["severity_level"]
           target_id: string
           title: string
@@ -2011,11 +2089,14 @@ export type Database = {
           description?: string | null
           endpoint_id?: string | null
           evidence_package_id?: string | null
+          hard_evidence?: Json | null
           id?: string
           payload?: string | null
           poc?: string | null
+          proof_tier?: string
           reachability_status?: string | null
           remediation?: string | null
+          sensitive?: boolean
           severity?: Database["public"]["Enums"]["severity_level"]
           target_id?: string
           title?: string
@@ -2051,6 +2132,10 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      assert_finding_submittable: {
+        Args: { _finding_id: string }
+        Returns: boolean
+      }
       consume_scan_credit: {
         Args: { _scan_type: string; _target_id: string }
         Returns: Json

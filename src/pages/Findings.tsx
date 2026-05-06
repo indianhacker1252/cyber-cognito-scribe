@@ -4,7 +4,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { ShieldAlert, Shield, Trash2, BrainCircuit, Gauge, Ban, Filter, X, FileDown, Send, Box } from "lucide-react";
+import { ShieldAlert, Shield, Trash2, BrainCircuit, Gauge, Ban, Filter, X, FileDown, Send, Box, Crosshair, EyeOff } from "lucide-react";
 import { toast } from "sonner";
 import ValidationModal from "@/components/ValidationModal";
 import AdaptiveValidationModal from "@/components/AdaptiveValidationModal";
@@ -117,6 +117,22 @@ export default function Findings() {
     }
   };
 
+  const handleProve = async (f: any) => {
+    toast.info(`Proof Engine running on "${f.title.slice(0,40)}"...`);
+    try {
+      const { data, error } = await supabase.functions.invoke("proof-engine", { body: { findingId: f.id } });
+      if (error) throw error;
+      if (!data?.ok) throw new Error(data?.error || "proof failed");
+      queryClient.invalidateQueries({ queryKey: ["findings"] });
+      toast.success(`Proof tier: ${data.proof_tier}${data.sensitive ? " (sensitive — admin only)" : ""}`);
+    } catch (e: any) { toast.error(`Proof engine: ${e.message}`); }
+  };
+
+  const proofTierBadge = (t?: string) =>
+    t === "exploited" ? "bg-cyber-red/20 text-cyber-red border-cyber-red/40"
+    : t === "reflected" ? "bg-cyber-amber/20 text-cyber-amber border-cyber-amber/40"
+    : "bg-muted/30 text-muted-foreground border-muted/40";
+
   const getConfidenceColor = (score: number | null | undefined) => {
     if (!score) return "text-muted-foreground";
     if (score >= 90) return "text-cyber-green";
@@ -224,6 +240,7 @@ export default function Findings() {
                 <TableHead className="font-mono text-[10px] uppercase text-muted-foreground">Confidence</TableHead>
                 <TableHead className="font-mono text-[10px] uppercase text-muted-foreground">Target</TableHead>
                 <TableHead className="font-mono text-[10px] uppercase text-muted-foreground">Status</TableHead>
+                <TableHead className="font-mono text-[10px] uppercase text-muted-foreground">Proof</TableHead>
                 <TableHead className="font-mono text-[10px] uppercase text-muted-foreground">Actions</TableHead>
               </TableRow>
             </TableHeader>
@@ -273,6 +290,14 @@ export default function Findings() {
                     </Badge>
                   </TableCell>
                   <TableCell>
+                    <div className="flex items-center gap-1">
+                      <Badge variant="outline" className={`text-[9px] font-mono ${proofTierBadge(f.proof_tier)}`}>
+                        {f.proof_tier || "signal"}
+                      </Badge>
+                      {f.sensitive && <EyeOff className="h-3 w-3 text-cyber-red" aria-label="sensitive — admin only" />}
+                    </div>
+                  </TableCell>
+                  <TableCell>
                     <div className="flex gap-1">
                       <Button variant="outline" size="sm" className="font-mono text-[10px] gap-1 border-cyber-green/30 text-cyber-green hover:bg-cyber-green/10" onClick={() => setDetailsFinding(f)}>
                         <FileText className="h-3 w-3" /> Details
@@ -295,7 +320,15 @@ export default function Findings() {
                       <Button variant="outline" size="sm" className="font-mono text-[10px] gap-1 border-cyber-green/30 text-cyber-green hover:bg-cyber-green/10" onClick={() => setSandboxFinding(f)}>
                         <Box className="h-3 w-3" /> Sandbox
                       </Button>
-                      <Button variant="outline" size="sm" className="font-mono text-[10px] gap-1 border-orange-500/30 text-orange-400 hover:bg-orange-500/10" onClick={() => setBountyFinding(f)}>
+                      <Button variant="outline" size="sm" className="font-mono text-[10px] gap-1 border-fuchsia-500/30 text-fuchsia-400 hover:bg-fuchsia-500/10" onClick={() => handleProve(f)}>
+                        <Crosshair className="h-3 w-3" /> Prove
+                      </Button>
+                      <Button
+                        variant="outline" size="sm"
+                        className="font-mono text-[10px] gap-1 border-orange-500/30 text-orange-400 hover:bg-orange-500/10 disabled:opacity-50"
+                        title={f.proof_tier !== "exploited" ? "Run Prove first — only exploited findings can be submitted" : ""}
+                        disabled={f.proof_tier !== "exploited"}
+                        onClick={() => setBountyFinding(f)}>
                         <Send className="h-3 w-3" /> Submit
                       </Button>
                       <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" onClick={() => deleteFinding.mutate(f.id)}>

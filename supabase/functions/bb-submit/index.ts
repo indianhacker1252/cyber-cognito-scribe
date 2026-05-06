@@ -130,6 +130,14 @@ Deno.serve(async (req) => {
       return new Response(JSON.stringify({ ok: false, error: "finding not found" }),
         { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
+    // PROOF GATE — only "exploited" tier may be submitted to live platforms.
+    if (body.platform !== "export" && (f as any).proof_tier !== "exploited") {
+      return new Response(JSON.stringify({
+        ok: false,
+        error: "proof_gate_blocked",
+        message: `This finding is at proof_tier="${(f as any).proof_tier || "signal"}". Run the Proof Engine and capture an OOB callback, sandbox-proven RCE, or data-exfil artifact before submitting to ${body.platform}. You can still export Markdown.`,
+      }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
     const { data: target } = await supa.from("target_workspaces").select("*").eq("id", f.target_id).maybeSingle();
     const { data: tokens } = await supa.from("bug_bounty_tokens").select("*").eq("user_id", user.id).maybeSingle();
 

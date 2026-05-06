@@ -1,0 +1,51 @@
+# CyberScope Self-Host Ansible Playbook (Kali / Debian / Ubuntu)
+# Usage:
+#   ansible-playbook -i 'localhost,' -c local deploy/ansible/playbook.yml
+#
+# Power-user alternative to install.sh: idempotent, also installs native Kali
+# pentest tools (nmap, nuclei, sqlmap, ffuf) so the worker container can
+# fall back to host binaries.
+---
+- hosts: all
+  become: true
+  vars:
+    cs_root: "{{ playbook_dir }}/../.."
+    worker_token_file: "{{ cs_root }}/deploy/.worker_token"
+  tasks:
+    - name: Ensure base packages
+      apt:
+        name:
+          - docker.io
+          - docker-compose
+          - openssl
+          - curl
+          - git
+          - nmap
+          - sqlmap
+          - ffuf
+        state: present
+        update_cache: true
+
+    - name: Make sure docker is running
+      service: { name: docker, state: started, enabled: true }
+
+    - name: Generate worker token if missing
+      shell: 'openssl rand -hex 24 > {{ worker_token_file }}'
+      args: { creates: "{{ worker_token_file }}" }
+
+    - name: Read worker token
+      slurp: { src: "{{ worker_token_file }}" }
+      register: tok
+
+    - name: Compose up
+      shell: |
+        export WORKER_TOKEN="{{ tok.content | b64decode | trim }}"
+        docker compose -f {{ cs_root }}/deploy/docker-compose.yml up -d --build
+      args: { chdir: "{{ cs_root }}/deploy" }
+
+    - name: Pull local AI models (best-effort)
+      shell: |
+        docker exec cs-ollama ollama pull llama3.1:8b || true
+        docker exec cs-ollama ollama pull qwen2.5-coder:7b || true
+      register: pulls
+      changed_when: false
