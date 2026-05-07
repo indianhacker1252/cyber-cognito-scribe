@@ -151,21 +151,21 @@ export default function NeuralLog() {
     let reconnectTimer: number | null = null;
 
     const subscribe = () => {
-      channel = supabase
-        .channel(`scan-logs-realtime-${Date.now()}`)
-        .on("postgres_changes", { event: "INSERT", schema: "public", table: "scan_logs" }, (payload) => {
-          if (!paused) setLogs(prev => [...prev, payload.new as ScanLog].slice(-1000));
-        })
-        .subscribe((status) => {
-          if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
-            // Reconnect after 2s
-            if (reconnectTimer) clearTimeout(reconnectTimer);
-            reconnectTimer = setTimeout(() => {
-              if (channel) supabase.removeChannel(channel);
-              subscribe();
-            }, 2000) as unknown as number;
-          }
-        });
+      // Build the channel and register listeners BEFORE calling subscribe()
+      const ch = supabase.channel(`scan-logs-realtime-${Date.now()}`);
+      ch.on("postgres_changes", { event: "INSERT", schema: "public", table: "scan_logs" }, (payload) => {
+        if (!paused) setLogs(prev => [...prev, payload.new as ScanLog].slice(-1000));
+      });
+      ch.subscribe((status) => {
+        if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
+          if (reconnectTimer) clearTimeout(reconnectTimer);
+          reconnectTimer = setTimeout(() => {
+            if (channel) supabase.removeChannel(channel);
+            subscribe();
+          }, 2000) as unknown as number;
+        }
+      });
+      channel = ch;
     };
 
     // Re-subscribe when tab becomes visible again (long-poll resilience)
