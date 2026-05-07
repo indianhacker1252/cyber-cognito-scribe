@@ -60,18 +60,18 @@ async function callAi(prompt: string): Promise<any> {
 async function unzipText(bytes: Uint8Array, maxFiles = 200, maxBytesPerFile = 200_000): Promise<Array<{ path: string; content: string }>> {
   const out: Array<{ path: string; content: string }> = [];
   try {
-    const reader = new zip.ZipReader(new zip.Uint8ArrayReader(bytes));
+    const blob = new Blob([bytes]);
+    const reader = new zip.ZipReader(new zip.BlobReader(blob));
     const entries = await reader.getEntries();
     for (const e of entries.slice(0, maxFiles)) {
       if (e.directory) continue;
-      if (!TEXT_EXT.test(e.filename) && !e.filename.toLowerCase().includes("manifest")) continue;
+      const name = e.filename || "";
+      if (!TEXT_EXT.test(name) && !name.toLowerCase().includes("manifest")) continue;
       try {
-        const writer = new zip.Uint8ArrayWriter();
-        const data: Uint8Array = await e.getData!(writer);
-        const slice = data.slice(0, maxBytesPerFile);
-        const text = new TextDecoder("utf-8", { fatal: false }).decode(slice);
-        out.push({ path: e.filename, content: text });
-      } catch { /* skip */ }
+        const writer = new zip.TextWriter();
+        const text: string = await (e as any).getData(writer);
+        out.push({ path: name, content: (text || "").slice(0, maxBytesPerFile) });
+      } catch (err) { console.error("entry err", name, err); }
     }
     await reader.close();
   } catch (err) {
