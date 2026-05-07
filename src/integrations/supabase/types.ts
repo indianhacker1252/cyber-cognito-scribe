@@ -895,6 +895,99 @@ export type Database = {
         }
         Relationships: []
       }
+      exploit_runs: {
+        Row: {
+          created_at: string
+          duration_ms: number | null
+          evidence: Json | null
+          exploit_ref: string | null
+          exploit_source: string
+          finding_id: string | null
+          id: string
+          output: string | null
+          proof_tier: string | null
+          sensitive: boolean
+          status: string
+          target_id: string | null
+          user_id: string | null
+        }
+        Insert: {
+          created_at?: string
+          duration_ms?: number | null
+          evidence?: Json | null
+          exploit_ref?: string | null
+          exploit_source?: string
+          finding_id?: string | null
+          id?: string
+          output?: string | null
+          proof_tier?: string | null
+          sensitive?: boolean
+          status?: string
+          target_id?: string | null
+          user_id?: string | null
+        }
+        Update: {
+          created_at?: string
+          duration_ms?: number | null
+          evidence?: Json | null
+          exploit_ref?: string | null
+          exploit_source?: string
+          finding_id?: string | null
+          id?: string
+          output?: string | null
+          proof_tier?: string | null
+          sensitive?: boolean
+          status?: string
+          target_id?: string | null
+          user_id?: string | null
+        }
+        Relationships: []
+      }
+      exploitdb_index: {
+        Row: {
+          created_at: string
+          cve: string | null
+          cwe: string | null
+          edb_id: string | null
+          exploit_code: string | null
+          id: string
+          platform: string | null
+          source_url: string | null
+          tags: Json | null
+          title: string
+          type: string | null
+          vuln_class: string | null
+        }
+        Insert: {
+          created_at?: string
+          cve?: string | null
+          cwe?: string | null
+          edb_id?: string | null
+          exploit_code?: string | null
+          id?: string
+          platform?: string | null
+          source_url?: string | null
+          tags?: Json | null
+          title: string
+          type?: string | null
+          vuln_class?: string | null
+        }
+        Update: {
+          created_at?: string
+          cve?: string | null
+          cwe?: string | null
+          edb_id?: string | null
+          exploit_code?: string | null
+          id?: string
+          platform?: string | null
+          source_url?: string | null
+          tags?: Json | null
+          title?: string
+          type?: string | null
+          vuln_class?: string | null
+        }
+        Relationships: []
+      }
       external_db_config: {
         Row: {
           enabled: boolean
@@ -1692,6 +1785,45 @@ export type Database = {
           tags?: Json | null
           topic?: string
           vuln_class?: string | null
+        }
+        Relationships: []
+      }
+      request_replays: {
+        Row: {
+          created_at: string
+          diff: Json | null
+          finding_id: string | null
+          id: string
+          is_interesting: boolean
+          label: string | null
+          request: Json
+          response: Json | null
+          target_id: string | null
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          diff?: Json | null
+          finding_id?: string | null
+          id?: string
+          is_interesting?: boolean
+          label?: string | null
+          request?: Json
+          response?: Json | null
+          target_id?: string | null
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          diff?: Json | null
+          finding_id?: string | null
+          id?: string
+          is_interesting?: boolean
+          label?: string | null
+          request?: Json
+          response?: Json | null
+          target_id?: string | null
+          user_id?: string
         }
         Relationships: []
       }
