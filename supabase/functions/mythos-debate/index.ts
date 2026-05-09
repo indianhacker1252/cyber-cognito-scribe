@@ -40,7 +40,31 @@ async function callAgent(role: "A" | "B", systemPrompt: string, userMsg: string,
   }
 }
 
-async function probe(url: string, paramName: string, payload: string): Promise<{ status: number; bodyLen: number; bodySnippet: string; reflected: boolean; errorSig: boolean }> {
+// SAFETY GATE — never execute destructive payloads on a live target.
+// Bug bounty programs ban for DROP/DELETE/TRUNCATE/SHUTDOWN even on test data.
+const DESTRUCTIVE_TOKENS = [
+  "DROP TABLE", "DROP DATABASE", "DROP SCHEMA", "DROP ",
+  "DELETE FROM", "TRUNCATE", "UPDATE SET", "INSERT INTO",
+  "SHUTDOWN", "ALTER TABLE", "GRANT ", "REVOKE ",
+  "EXEC(", "EVAL(", "SYSTEM(", "XP_CMDSHELL",
+  "RM -RF", "FORMAT C:", "MKFS", "DD IF=",
+  "; END;", "WAITFOR DELAY",
+];
+function isSafePayload(payload: string): { ok: boolean; matched?: string } {
+  if (!payload) return { ok: true };
+  const upper = payload.toUpperCase();
+  for (const t of DESTRUCTIVE_TOKENS) {
+    if (upper.includes(t)) return { ok: false, matched: t };
+  }
+  return { ok: true };
+}
+
+async function probe(url: string, paramName: string, payload: string): Promise<{ status: number; bodyLen: number; bodySnippet: string; reflected: boolean; errorSig: boolean; blocked?: boolean }> {
+  // Hard block: never send destructive operations to a live target.
+  const safe = isSafePayload(payload);
+  if (!safe.ok) {
+    return { status: 0, bodyLen: 0, bodySnippet: `BLOCKED_BY_SAFETY:${safe.matched}`, reflected: false, errorSig: false, blocked: true };
+  }
   try {
     const u = new URL(url);
     u.searchParams.set(paramName, payload);
@@ -51,12 +75,14 @@ async function probe(url: string, paramName: string, payload: string): Promise<{
       bodyLen: body.length,
       bodySnippet: body.slice(0, 400),
       reflected: body.includes(payload),
-      errorSig: /SQL syntax|mysql_|pg_query|SQLSTATE|ORA-|stack trace|TypeError|undefined method|fatal error/i.test(body),
+      errorSig: /SQL syntax|mysql_|pg_query|SQLSTATE|ORA-|stack trace|TypeError|undefined method|fatal error|unclosed quotation/i.test(body),
     };
   } catch {
     return { status: 0, bodyLen: 0, bodySnippet: "", reflected: false, errorSig: false };
   }
 }
+
+const SQL_ERROR_RX = /SQL syntax|mysql_|pg_query|SQLSTATE|ORA-\d+|unclosed quotation|syntax error.*SQL|psql:|sqlite_/i;
 
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
