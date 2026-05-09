@@ -213,19 +213,47 @@ serve(async (req) => {
       { target_id: targetId, log_type: fpVerdict === "true_positive" ? "result" : "info", message: `🧐 Verdict: ${fpVerdict} (${confidence}% conf)`, metadata: { run_id: runId, debate_id: debateRow?.id, phase: "debate-verdict" } },
     ]);
 
-    // If true positive, persist as a low-confidence finding for triage
-    if (fpVerdict === "true_positive" && debateRow?.id) {
-      await db.from("vulnerability_findings").insert({
+    // True positive escalation pipeline.
+    // - confidence >= 75 → insert finding + trigger exploit-engine immediately
+    // - confidence 55-74 → insert finding as "needs_review" (UI shows orange badge)
+    // - confidence < 55 → no finding, just keep the debate row
+    if (fpVerdict === "true_positive" && debateRow?.id && confidence >= 55) {
+      const validationStatus = confidence >= 75 ? "debate_confirmed" : "needs_review";
+      const title = `Debate-confirmed: ${vulnClassHint || "potential"} via ${paramName}`;
+      const { data: finding } = await db.from("vulnerability_findings").insert({
         target_id: targetId,
-        title: `[Debate] ${vulnClassHint || "potential"} via ${paramName}`,
-        severity: "medium",
-        description: `Two agents debated and agreed: ${a2}`,
+        title,
+        severity: confidence >= 75 ? "medium" : "low",
+        description: `Two-agent debate verdict: ${fpVerdict} (${confidence}% conf)\n\n**Agent A**: ${a2}\n\n**Agent B**: ${b2}`,
         payload: proposedPayload,
         confidence_score: confidence,
-        confidence_level: confidence >= 70 ? "high" : "medium",
+        confidence_level: confidence >= 75 ? "high" : "medium",
         triage_reasoning: `Agent A: ${a1}\nAgent B: ${b1}\nResult: ${JSON.stringify(probe1)}\nDebate: ${a2} | ${b2}`,
-        validation_status: "debate_confirmed",
-      });
+        validation_status: validationStatus,
+      }).select("id").single();
+
+      if (confidence >= 75 && finding?.id) {
+        fetch(`${SUPABASE_URL}/functions/v1/exploit-engine`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${SERVICE_KEY}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ findingId: finding.id, targetId }),
+        }).catch((e) => console.error("exploit-engine dispatch failed:", e));
+        await db.from("scan_jobs").insert({
+          target_id: targetId, job_type: "exploit", priority: 9,
+          payload: { findingId: finding.id },
+        });
+        await db.from("scan_logs").insert({
+          target_id: targetId, log_type: "result",
+          message: `🚀 Escalating true_positive to exploit engine: ${title} (${confidence}% conf)`,
+          metadata: { run_id: runId, debate_id: debateRow.id, finding_id: finding.id, phase: "debate-escalate" },
+        });
+      } else if (finding?.id) {
+        await db.from("scan_logs").insert({
+          target_id: targetId, log_type: "info",
+          message: `🟧 needs_review: ${title} (${confidence}% conf — below auto-escalate threshold)`,
+          metadata: { run_id: runId, debate_id: debateRow.id, finding_id: finding.id, phase: "debate-needs-review" },
+        });
+      }
     }
 
     return new Response(JSON.stringify({
