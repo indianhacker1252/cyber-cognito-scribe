@@ -1886,7 +1886,7 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
       confidence_level?: string; ai_verified?: boolean; triage_reasoning?: string;
       cvss_score?: number; reachability_status?: string;
     }) {
-      await db.from("vulnerability_findings").insert({
+      const { data: inserted } = await db.from("vulnerability_findings").insert({
         target_id: finding.target_id,
         endpoint_id: finding.endpoint_id || null,
         title: finding.title,
@@ -1900,8 +1900,18 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
         cvss_score: finding.cvss_score || null,
         reachability_status: finding.reachability_status || "unknown",
         validation_status: "auto-accepted",
-      });
+      }).select("id").single();
       autoAcceptedCount++;
+      // Bug #1 fix — every accepted finding goes through exploit-engine for verification.
+      if (inserted?.id) {
+        triggerExploitEngine(inserted.id, finding.target_id);
+        await db.from("scan_jobs").insert({
+          target_id: finding.target_id,
+          job_type: "exploit",
+          priority: 9,
+          payload: { findingId: inserted.id },
+        });
+      }
     }
 
     // Passive findings → auto-accept (all are low/medium/info)
