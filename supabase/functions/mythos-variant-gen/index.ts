@@ -94,19 +94,38 @@ Given a known CVE, identify its ROOT-CAUSE PATTERN, then return 3-5 novel varian
     if (!aiResp.ok) throw new Error(`AI ${aiResp.status}`);
     const aiData = await aiResp.json();
     const args = JSON.parse(aiData.choices?.[0]?.message?.tool_calls?.[0]?.function?.arguments || "{}");
-    // Bug #5 fix — drop LLM hallucinations that came back as prose/pseudocode.
-    const isValidPayload = (p: unknown): p is string => {
+    // Drop shell commands, prose, pseudocode, and oversized blobs.
+    const isValidVariantPayload = (p: unknown): p is string => {
       if (typeof p !== "string") return false;
       const s = p.trim();
-      if (!s || s.length >= 500) return false;
-      if (/^(an?\s|the\s)/i.test(s)) return false;
-      if (/\battempts to\b|\bwill\s|\bshould\s|\bcan\s/i.test(s)) return false;
-      if (/create_symlink|pseudocode/i.test(s)) return false;
-      if (s.split(/\s+/).length > 12 && /[a-z]\s+[a-z]+\s+[a-z]+/i.test(s) && !/[<>'"`{}\\;|&=]/.test(s)) return false;
+      if (!s || s.length > 300) return false;
+      // Shell command prefixes
+      if (/^(ln\s|cp\s|mv\s|rm\s|cat\s|sudo\s|bash\s|sh\s|chmod\s|chown\s|wget\s|curl\s)/i.test(s)) return false;
+      // Prose starters
+      if (/^(an?\s|the\s|this\s|that\s|when\s|if\s)/i.test(s)) return false;
+      // Action verbs in prose
+      if (/\battempts to\b|\bwill\s|\bshould\s|\bcan\s|\bwould\s/i.test(s)) return false;
+      // Filesystem write hints
+      if (s.includes("/tmp/") || s.includes("/var/www/") || s.includes("/var/backups/")) return false;
+      // Pseudocode markers
+      if (/copyfile|create_symlink|pseudocode/i.test(s)) return false;
+      // Long natural-language sentences without injection-like punctuation
+      const words = s.split(/\s+/);
+      const hasInjectionChars = /[<>'"`{}\\;|&=()$]|%[0-9a-f]{2}|\.\.\//i.test(s);
+      if (words.length > 8 && !hasInjectionChars) return false;
       return true;
     };
-    const rawVariants = (args.variants || []).filter((v: any) => isValidPayload(v?.variant_payload));
+    const rawVariants = (args.variants || []).filter((v: any) => isValidVariantPayload(v?.variant_payload));
+    const dropped = (args.variants || []).length - rawVariants.length;
+    if (dropped > 0) {
+      await db.from("scan_logs").insert({
+        target_id: targetId, log_type: "info",
+        message: `🛡️ Variant filter dropped ${dropped} invalid LLM outputs (prose/shell/oversize)`,
+        metadata: { phase: "variant-filter", run_id: runId, dropped },
+      });
+    }
     const variants = rawVariants.slice(0, 8);
+
 
     // Insert variants as "queued" — actual testing is queued as scan_jobs
     const variantRecords: any[] = [];
