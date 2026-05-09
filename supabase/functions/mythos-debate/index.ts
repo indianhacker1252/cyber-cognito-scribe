@@ -40,7 +40,31 @@ async function callAgent(role: "A" | "B", systemPrompt: string, userMsg: string,
   }
 }
 
-async function probe(url: string, paramName: string, payload: string): Promise<{ status: number; bodyLen: number; bodySnippet: string; reflected: boolean; errorSig: boolean }> {
+// SAFETY GATE — never execute destructive payloads on a live target.
+// Bug bounty programs ban for DROP/DELETE/TRUNCATE/SHUTDOWN even on test data.
+const DESTRUCTIVE_TOKENS = [
+  "DROP TABLE", "DROP DATABASE", "DROP SCHEMA", "DROP ",
+  "DELETE FROM", "TRUNCATE", "UPDATE SET", "INSERT INTO",
+  "SHUTDOWN", "ALTER TABLE", "GRANT ", "REVOKE ",
+  "EXEC(", "EVAL(", "SYSTEM(", "XP_CMDSHELL",
+  "RM -RF", "FORMAT C:", "MKFS", "DD IF=",
+  "; END;", "WAITFOR DELAY",
+];
+function isSafePayload(payload: string): { ok: boolean; matched?: string } {
+  if (!payload) return { ok: true };
+  const upper = payload.toUpperCase();
+  for (const t of DESTRUCTIVE_TOKENS) {
+    if (upper.includes(t)) return { ok: false, matched: t };
+  }
+  return { ok: true };
+}
+
+async function probe(url: string, paramName: string, payload: string): Promise<{ status: number; bodyLen: number; bodySnippet: string; reflected: boolean; errorSig: boolean; blocked?: boolean }> {
+  // Hard block: never send destructive operations to a live target.
+  const safe = isSafePayload(payload);
+  if (!safe.ok) {
+    return { status: 0, bodyLen: 0, bodySnippet: `BLOCKED_BY_SAFETY:${safe.matched}`, reflected: false, errorSig: false, blocked: true };
+  }
   try {
     const u = new URL(url);
     u.searchParams.set(paramName, payload);
@@ -51,12 +75,14 @@ async function probe(url: string, paramName: string, payload: string): Promise<{
       bodyLen: body.length,
       bodySnippet: body.slice(0, 400),
       reflected: body.includes(payload),
-      errorSig: /SQL syntax|mysql_|pg_query|SQLSTATE|ORA-|stack trace|TypeError|undefined method|fatal error/i.test(body),
+      errorSig: /SQL syntax|mysql_|pg_query|SQLSTATE|ORA-|stack trace|TypeError|undefined method|fatal error|unclosed quotation/i.test(body),
     };
   } catch {
     return { status: 0, bodyLen: 0, bodySnippet: "", reflected: false, errorSig: false };
   }
 }
+
+const SQL_ERROR_RX = /SQL syntax|mysql_|pg_query|SQLSTATE|ORA-\d+|unclosed quotation|syntax error.*SQL|psql:|sqlite_/i;
 
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
@@ -77,11 +103,37 @@ serve(async (req) => {
     history.push({ role: "user", content: `Agent A says: ${a1}` });
 
     // Round 2: B proposes payload
-    const b1 = await callAgent("B", sysB, `Agent A analysis: ${a1}\n\nPropose ONE concrete payload to test. Output ONLY the raw payload on the first line, then 1-line rationale.`, []);
+    let b1 = await callAgent("B", sysB, `Agent A analysis: ${a1}\n\nPropose ONE concrete READ-ONLY payload to test. Output ONLY the raw payload on the first line, then 1-line rationale.\n\nSAFETY RULES (mandatory):\n- READ-ONLY only. NEVER use DROP, DELETE, TRUNCATE, UPDATE, INSERT, SHUTDOWN, GRANT, REVOKE, ALTER, EXEC, xp_cmdshell, rm -rf, format, mkfs.\n- Prefer error-based / boolean-based / reflection probes (e.g. ' OR 1=1--, <svg onload=alert(1)>, ../../../etc/passwd, {{7*7}}).`, []);
     transcript.push({ agent: "B", round: 2, msg: b1 });
-    const proposedPayload = b1.split("\n")[0].trim().replace(/^[`"']|[`"']$/g, "");
+    let proposedPayload = b1.split("\n")[0].trim().replace(/^[`"']|[`"']$/g, "");
 
-    // Execute the agreed payload
+    // Safety re-prompt: if Agent B proposed a destructive payload, ask once for a read-only alternative.
+    let safetyCheck = isSafePayload(proposedPayload);
+    if (!safetyCheck.ok) {
+      await db.from("scan_logs").insert({
+        target_id: targetId, log_type: "info",
+        message: `🛡️ Safety filter blocked destructive payload: ${proposedPayload.slice(0, 50)} (${safetyCheck.matched})`,
+        metadata: { run_id: runId, phase: "debate-safety-block" },
+      });
+      const b1retry = await callAgent("B", sysB, `Your previous payload "${proposedPayload.slice(0, 60)}" contains destructive operations (${safetyCheck.matched}) and was BLOCKED. Propose a READ-ONLY test payload that cannot modify data. Output ONLY the raw payload on the first line.`, []);
+      transcript.push({ agent: "B", round: 2.5, msg: `[retry after safety block] ${b1retry}` });
+      const retryPayload = b1retry.split("\n")[0].trim().replace(/^[`"']|[`"']$/g, "");
+      if (isSafePayload(retryPayload).ok) {
+        proposedPayload = retryPayload;
+        b1 = b1retry;
+      } else {
+        // Two strikes — abort this debate. Do NOT execute.
+        await db.from("scan_logs").insert({
+          target_id: targetId, log_type: "info",
+          message: `🛡️ Safety: Agent B proposed destructive payload twice — debate aborted`,
+          metadata: { run_id: runId, phase: "debate-safety-abort" },
+        });
+        return new Response(JSON.stringify({ aborted: "safety", fpVerdict: "inconclusive", confidence: 0 }),
+          { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+    }
+
+    // Execute the agreed (safe) payload
     const probe1 = await probe(endpointUrl, paramName, proposedPayload);
     transcript.push({ agent: "system", round: 3, msg: `EXECUTED: status=${probe1.status} len=${probe1.bodyLen} reflected=${probe1.reflected} errSig=${probe1.errorSig}` });
 
@@ -96,20 +148,36 @@ serve(async (req) => {
     // Final FP verdict (heuristic + agent consensus)
     const aSaysFP = /false positive|not a bug|FP|not vulnerable|no vuln/i.test(a2);
     const bSaysFP = /false positive|not a bug|FP|agree.*FP|agree.*false/i.test(b2);
+    const aSaysTP = /true positive|real bug|exploitable|vulnerable|confirmed/i.test(a2);
+    const bSaysTP = /agree|true positive|real bug|exploitable|confirmed/i.test(b2) && !bSaysFP;
     const bothAgreeFP = aSaysFP && bSaysFP;
-    const strongSignal = probe1.errorSig || (probe1.reflected && /<|script|onerror|alert/i.test(proposedPayload));
+    const bothAgreeTP = aSaysTP && bSaysTP;
+    const sqlErrorHit = SQL_ERROR_RX.test(probe1.bodySnippet);
+    const reflectionHit = probe1.reflected && /<|script|onerror|onload|alert|javascript:/i.test(proposedPayload);
+    const strongSignal = probe1.errorSig || sqlErrorHit || reflectionHit;
 
     let fpVerdict: "true_positive" | "false_positive" | "inconclusive";
     let confidence: number;
-    if (bothAgreeFP && !strongSignal) {
+    // Hard rule: 5xx + SQL error keywords → high-confidence TP regardless of agent votes.
+    if (probe1.status >= 500 && sqlErrorHit) {
+      fpVerdict = "true_positive";
+      confidence = 85;
+    } else if (bothAgreeFP && !strongSignal) {
       fpVerdict = "false_positive";
       confidence = 85;
-    } else if (strongSignal && !bothAgreeFP) {
+    } else if (bothAgreeTP && strongSignal) {
       fpVerdict = "true_positive";
       confidence = 80;
+    } else if (strongSignal && !bothAgreeFP) {
+      fpVerdict = "true_positive";
+      confidence = bothAgreeTP ? 80 : 70;
     } else if (probe1.status === 0) {
       fpVerdict = "inconclusive";
       confidence = 30;
+    } else if (aSaysTP || bSaysTP) {
+      // Only one agent voted TP without strong signal — low trust.
+      fpVerdict = "true_positive";
+      confidence = 60;
     } else {
       fpVerdict = aSaysFP || bSaysFP ? "inconclusive" : "true_positive";
       confidence = 55;
@@ -145,19 +213,47 @@ serve(async (req) => {
       { target_id: targetId, log_type: fpVerdict === "true_positive" ? "result" : "info", message: `🧐 Verdict: ${fpVerdict} (${confidence}% conf)`, metadata: { run_id: runId, debate_id: debateRow?.id, phase: "debate-verdict" } },
     ]);
 
-    // If true positive, persist as a low-confidence finding for triage
-    if (fpVerdict === "true_positive" && debateRow?.id) {
-      await db.from("vulnerability_findings").insert({
+    // True positive escalation pipeline.
+    // - confidence >= 75 → insert finding + trigger exploit-engine immediately
+    // - confidence 55-74 → insert finding as "needs_review" (UI shows orange badge)
+    // - confidence < 55 → no finding, just keep the debate row
+    if (fpVerdict === "true_positive" && debateRow?.id && confidence >= 55) {
+      const validationStatus = confidence >= 75 ? "debate_confirmed" : "needs_review";
+      const title = `Debate-confirmed: ${vulnClassHint || "potential"} via ${paramName}`;
+      const { data: finding } = await db.from("vulnerability_findings").insert({
         target_id: targetId,
-        title: `[Debate] ${vulnClassHint || "potential"} via ${paramName}`,
-        severity: "medium",
-        description: `Two agents debated and agreed: ${a2}`,
+        title,
+        severity: confidence >= 75 ? "medium" : "low",
+        description: `Two-agent debate verdict: ${fpVerdict} (${confidence}% conf)\n\n**Agent A**: ${a2}\n\n**Agent B**: ${b2}`,
         payload: proposedPayload,
         confidence_score: confidence,
-        confidence_level: confidence >= 70 ? "high" : "medium",
+        confidence_level: confidence >= 75 ? "high" : "medium",
         triage_reasoning: `Agent A: ${a1}\nAgent B: ${b1}\nResult: ${JSON.stringify(probe1)}\nDebate: ${a2} | ${b2}`,
-        validation_status: "debate_confirmed",
-      });
+        validation_status: validationStatus,
+      }).select("id").single();
+
+      if (confidence >= 75 && finding?.id) {
+        fetch(`${SUPABASE_URL}/functions/v1/exploit-engine`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${SERVICE_KEY}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ findingId: finding.id, targetId }),
+        }).catch((e) => console.error("exploit-engine dispatch failed:", e));
+        await db.from("scan_jobs").insert({
+          target_id: targetId, job_type: "exploit", priority: 9,
+          payload: { findingId: finding.id },
+        });
+        await db.from("scan_logs").insert({
+          target_id: targetId, log_type: "result",
+          message: `🚀 Escalating true_positive to exploit engine: ${title} (${confidence}% conf)`,
+          metadata: { run_id: runId, debate_id: debateRow.id, finding_id: finding.id, phase: "debate-escalate" },
+        });
+      } else if (finding?.id) {
+        await db.from("scan_logs").insert({
+          target_id: targetId, log_type: "info",
+          message: `🟧 needs_review: ${title} (${confidence}% conf — below auto-escalate threshold)`,
+          metadata: { run_id: runId, debate_id: debateRow.id, finding_id: finding.id, phase: "debate-needs-review" },
+        });
+      }
     }
 
     return new Response(JSON.stringify({
