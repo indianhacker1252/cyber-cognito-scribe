@@ -94,7 +94,19 @@ Given a known CVE, identify its ROOT-CAUSE PATTERN, then return 3-5 novel varian
     if (!aiResp.ok) throw new Error(`AI ${aiResp.status}`);
     const aiData = await aiResp.json();
     const args = JSON.parse(aiData.choices?.[0]?.message?.tool_calls?.[0]?.function?.arguments || "{}");
-    const variants = (args.variants || []).slice(0, 8);
+    // Bug #5 fix — drop LLM hallucinations that came back as prose/pseudocode.
+    const isValidPayload = (p: unknown): p is string => {
+      if (typeof p !== "string") return false;
+      const s = p.trim();
+      if (!s || s.length >= 500) return false;
+      if (/^(an?\s|the\s)/i.test(s)) return false;
+      if (/\battempts to\b|\bwill\s|\bshould\s|\bcan\s/i.test(s)) return false;
+      if (/create_symlink|pseudocode/i.test(s)) return false;
+      if (s.split(/\s+/).length > 12 && /[a-z]\s+[a-z]+\s+[a-z]+/i.test(s) && !/[<>'"`{}\\;|&=]/.test(s)) return false;
+      return true;
+    };
+    const rawVariants = (args.variants || []).filter((v: any) => isValidPayload(v?.variant_payload));
+    const variants = rawVariants.slice(0, 8);
 
     // Insert variants as "queued" — actual testing is queued as scan_jobs
     const variantRecords: any[] = [];
