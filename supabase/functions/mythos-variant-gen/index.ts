@@ -48,7 +48,16 @@ serve(async (req) => {
       body: JSON.stringify({
         model: "google/gemini-2.5-flash",
         messages: [
-          { role: "system", content: "You are a zero-day researcher. Given a known CVE, identify its ROOT-CAUSE PATTERN (not the specific payload), then generate 3-5 *novel variant payloads* targeting the same root cause class. These variants should bypass naive patches and find UNDISCLOSED bugs in similar code paths." },
+          { role: "system", content: `You are a zero-day researcher. Generate variant payloads as CONCRETE HTTP ATTACK STRINGS ONLY.
+
+Rules:
+- variant_payload MUST be a raw injectable string, never a sentence or pseudocode.
+- Valid examples: '../../../etc/passwd', '<svg onload=alert(1)>', "' OR 1=1--", '{{7*7}}', 'http://169.254.169.254/'
+- Invalid: any sentence, any prose description, any pseudocode like create_symlink(...).
+- If the attack cannot be expressed as a raw injectable string, skip it.
+- variant_payload max length: 500 chars.
+
+Given a known CVE, identify its ROOT-CAUSE PATTERN, then return 3-5 novel variant payloads targeting the same root cause class.` },
           { role: "user", content: `Known intel:\n${JSON.stringify(intel).slice(0, 4000)}\n\nGenerate variants.` },
         ],
         tools: [{
