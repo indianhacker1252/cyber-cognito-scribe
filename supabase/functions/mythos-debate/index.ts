@@ -103,11 +103,37 @@ serve(async (req) => {
     history.push({ role: "user", content: `Agent A says: ${a1}` });
 
     // Round 2: B proposes payload
-    const b1 = await callAgent("B", sysB, `Agent A analysis: ${a1}\n\nPropose ONE concrete payload to test. Output ONLY the raw payload on the first line, then 1-line rationale.`, []);
+    let b1 = await callAgent("B", sysB, `Agent A analysis: ${a1}\n\nPropose ONE concrete READ-ONLY payload to test. Output ONLY the raw payload on the first line, then 1-line rationale.\n\nSAFETY RULES (mandatory):\n- READ-ONLY only. NEVER use DROP, DELETE, TRUNCATE, UPDATE, INSERT, SHUTDOWN, GRANT, REVOKE, ALTER, EXEC, xp_cmdshell, rm -rf, format, mkfs.\n- Prefer error-based / boolean-based / reflection probes (e.g. ' OR 1=1--, <svg onload=alert(1)>, ../../../etc/passwd, {{7*7}}).`, []);
     transcript.push({ agent: "B", round: 2, msg: b1 });
-    const proposedPayload = b1.split("\n")[0].trim().replace(/^[`"']|[`"']$/g, "");
+    let proposedPayload = b1.split("\n")[0].trim().replace(/^[`"']|[`"']$/g, "");
 
-    // Execute the agreed payload
+    // Safety re-prompt: if Agent B proposed a destructive payload, ask once for a read-only alternative.
+    let safetyCheck = isSafePayload(proposedPayload);
+    if (!safetyCheck.ok) {
+      await db.from("scan_logs").insert({
+        target_id: targetId, log_type: "info",
+        message: `🛡️ Safety filter blocked destructive payload: ${proposedPayload.slice(0, 50)} (${safetyCheck.matched})`,
+        metadata: { run_id: runId, phase: "debate-safety-block" },
+      });
+      const b1retry = await callAgent("B", sysB, `Your previous payload "${proposedPayload.slice(0, 60)}" contains destructive operations (${safetyCheck.matched}) and was BLOCKED. Propose a READ-ONLY test payload that cannot modify data. Output ONLY the raw payload on the first line.`, []);
+      transcript.push({ agent: "B", round: 2.5, msg: `[retry after safety block] ${b1retry}` });
+      const retryPayload = b1retry.split("\n")[0].trim().replace(/^[`"']|[`"']$/g, "");
+      if (isSafePayload(retryPayload).ok) {
+        proposedPayload = retryPayload;
+        b1 = b1retry;
+      } else {
+        // Two strikes — abort this debate. Do NOT execute.
+        await db.from("scan_logs").insert({
+          target_id: targetId, log_type: "info",
+          message: `🛡️ Safety: Agent B proposed destructive payload twice — debate aborted`,
+          metadata: { run_id: runId, phase: "debate-safety-abort" },
+        });
+        return new Response(JSON.stringify({ aborted: "safety", fpVerdict: "inconclusive", confidence: 0 }),
+          { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+    }
+
+    // Execute the agreed (safe) payload
     const probe1 = await probe(endpointUrl, paramName, proposedPayload);
     transcript.push({ agent: "system", round: 3, msg: `EXECUTED: status=${probe1.status} len=${probe1.bodyLen} reflected=${probe1.reflected} errSig=${probe1.errorSig}` });
 
@@ -122,20 +148,36 @@ serve(async (req) => {
     // Final FP verdict (heuristic + agent consensus)
     const aSaysFP = /false positive|not a bug|FP|not vulnerable|no vuln/i.test(a2);
     const bSaysFP = /false positive|not a bug|FP|agree.*FP|agree.*false/i.test(b2);
+    const aSaysTP = /true positive|real bug|exploitable|vulnerable|confirmed/i.test(a2);
+    const bSaysTP = /agree|true positive|real bug|exploitable|confirmed/i.test(b2) && !bSaysFP;
     const bothAgreeFP = aSaysFP && bSaysFP;
-    const strongSignal = probe1.errorSig || (probe1.reflected && /<|script|onerror|alert/i.test(proposedPayload));
+    const bothAgreeTP = aSaysTP && bSaysTP;
+    const sqlErrorHit = SQL_ERROR_RX.test(probe1.bodySnippet);
+    const reflectionHit = probe1.reflected && /<|script|onerror|onload|alert|javascript:/i.test(proposedPayload);
+    const strongSignal = probe1.errorSig || sqlErrorHit || reflectionHit;
 
     let fpVerdict: "true_positive" | "false_positive" | "inconclusive";
     let confidence: number;
-    if (bothAgreeFP && !strongSignal) {
+    // Hard rule: 5xx + SQL error keywords → high-confidence TP regardless of agent votes.
+    if (probe1.status >= 500 && sqlErrorHit) {
+      fpVerdict = "true_positive";
+      confidence = 85;
+    } else if (bothAgreeFP && !strongSignal) {
       fpVerdict = "false_positive";
       confidence = 85;
-    } else if (strongSignal && !bothAgreeFP) {
+    } else if (bothAgreeTP && strongSignal) {
       fpVerdict = "true_positive";
       confidence = 80;
+    } else if (strongSignal && !bothAgreeFP) {
+      fpVerdict = "true_positive";
+      confidence = bothAgreeTP ? 80 : 70;
     } else if (probe1.status === 0) {
       fpVerdict = "inconclusive";
       confidence = 30;
+    } else if (aSaysTP || bSaysTP) {
+      // Only one agent voted TP without strong signal — low trust.
+      fpVerdict = "true_positive";
+      confidence = 60;
     } else {
       fpVerdict = aSaysFP || bSaysFP ? "inconclusive" : "true_positive";
       confidence = 55;
