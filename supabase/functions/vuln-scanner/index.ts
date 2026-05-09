@@ -12,10 +12,29 @@ import { createEvidencePackage } from "../_shared/proof-packages.ts";
 import { confirmFinding } from "../_shared/ai-confirm-gate.ts";
 
 // ─── GLOBAL TIMEOUT HELPER ─────────────────────────────
-const SCAN_START = Date.now();
-const MAX_SCAN_MS = 50000; // 50s hard limit (edge fn = 60s)
+// SCAN_START is reset at the top of each request so we get the full edge-fn
+// budget per scan instead of inheriting cold-start time. Heavy phases that
+// don't fit within the budget are now queued via scan_jobs (see end of run).
+let SCAN_START = Date.now();
+const MAX_SCAN_MS = 55000; // 55s soft budget (edge fn = 60s); over-budget phases get queued
 function timeLeft(): number { return MAX_SCAN_MS - (Date.now() - SCAN_START); }
 function isTimedOut(): boolean { return timeLeft() <= 0; }
+
+// Fire-and-forget call to exploit-engine for every accepted finding.
+// Never throws — exploit failures must not break finding insertion.
+async function triggerExploitEngine(findingId: string, targetId: string) {
+  try {
+    const url = `${Deno.env.get("SUPABASE_URL")}/functions/v1/exploit-engine`;
+    fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ findingId, targetId }),
+    }).catch((e) => console.error("exploit-engine dispatch failed:", e));
+  } catch (e) { console.error("exploit-engine trigger error:", e); }
+}
 
 async function safeFetch(url: string, opts: RequestInit = {}, timeoutMs = 8000): Promise<Response> {
   const ctrl = new AbortController();
