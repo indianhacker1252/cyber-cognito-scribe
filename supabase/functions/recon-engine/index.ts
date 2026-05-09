@@ -741,6 +741,39 @@ serve(async (req) => {
     allJsFiles = [...new Set(allJsFiles)];
     allSpiderUrls = [...new Set(allSpiderUrls)];
 
+    // Bug #4 fix — if HTTP spider found almost nothing, target is likely an SPA.
+    // Fall back to headless-browser to render JS and harvest real links/forms.
+    if (allSpiderUrls.length < 5) {
+      await log(db, targetId, taskId, "thought", `🌐 SPA suspected — only ${allSpiderUrls.length} static links. Switching to headless browser`);
+      try {
+        const hbRes = await safeFetch(
+          `${Deno.env.get("SUPABASE_URL")}/functions/v1/headless-browser`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ targetId, url: `${SCHEME}://${domain}` }),
+          },
+          25000,
+        );
+        if (hbRes.ok) {
+          const hbData: any = await hbRes.json().catch(() => ({}));
+          const hbUrls: string[] = Array.isArray(hbData?.urls) ? hbData.urls : [];
+          const hbForms: any[] = Array.isArray(hbData?.forms) ? hbData.forms : [];
+          allSpiderUrls.push(...hbUrls);
+          allForms.push(...hbForms);
+          allSpiderUrls = [...new Set(allSpiderUrls)];
+          await log(db, targetId, taskId, "result", `🌐 Headless browser added ${hbUrls.length} URLs, ${hbForms.length} forms`);
+        } else {
+          await log(db, targetId, taskId, "info", `headless-browser returned ${hbRes.status}`);
+        }
+      } catch (e) {
+        await log(db, targetId, taskId, "error", `headless-browser fallback failed: ${(e as Error).message}`);
+      }
+    }
+
     await log(db, targetId, taskId, "result", `🕷️ Spider found ${allSpiderUrls.length} links, ${allForms.length} forms, ${allJsFiles.length} JS files across ${spiderTargets.length} targets`);
 
     // ── Step 5: JS File Analysis — Extract secrets, API endpoints, hidden params ──

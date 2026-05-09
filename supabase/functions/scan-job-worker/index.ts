@@ -25,6 +25,8 @@ const JOB_ROUTES: Record<string, string> = {
   variant_test: "mythos-variant-test",
   debate: "mythos-debate",
   patch_validate: "mythos-patch-validate",
+  exploit: "exploit-engine",
+  proof: "proof-engine",
 };
 
 async function runJob(job: any): Promise<{ ok: boolean; result?: any; error?: string }> {

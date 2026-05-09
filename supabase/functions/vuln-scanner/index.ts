@@ -12,10 +12,29 @@ import { createEvidencePackage } from "../_shared/proof-packages.ts";
 import { confirmFinding } from "../_shared/ai-confirm-gate.ts";
 
 // ─── GLOBAL TIMEOUT HELPER ─────────────────────────────
-const SCAN_START = Date.now();
-const MAX_SCAN_MS = 50000; // 50s hard limit (edge fn = 60s)
+// SCAN_START is reset at the top of each request so we get the full edge-fn
+// budget per scan instead of inheriting cold-start time. Heavy phases that
+// don't fit within the budget are now queued via scan_jobs (see end of run).
+let SCAN_START = Date.now();
+const MAX_SCAN_MS = 55000; // 55s soft budget (edge fn = 60s); over-budget phases get queued
 function timeLeft(): number { return MAX_SCAN_MS - (Date.now() - SCAN_START); }
 function isTimedOut(): boolean { return timeLeft() <= 0; }
+
+// Fire-and-forget call to exploit-engine for every accepted finding.
+// Never throws — exploit failures must not break finding insertion.
+async function triggerExploitEngine(findingId: string, targetId: string) {
+  try {
+    const url = `${Deno.env.get("SUPABASE_URL")}/functions/v1/exploit-engine`;
+    fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ findingId, targetId }),
+    }).catch((e) => console.error("exploit-engine dispatch failed:", e));
+  } catch (e) { console.error("exploit-engine trigger error:", e); }
+}
 
 async function safeFetch(url: string, opts: RequestInit = {}, timeoutMs = 8000): Promise<Response> {
   const ctrl = new AbortController();
@@ -946,6 +965,8 @@ For each finding, verify it and provide:
 
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
+  // Reset scan budget at request entry — never inherit cold-start time.
+  SCAN_START = Date.now();
 
   try {
     const { targetId } = await req.json();
@@ -1119,20 +1140,46 @@ serve(async (req) => {
       (techStack.poweredBy || "").split("/")[0].toLowerCase(),
     ].filter(Boolean).join(":") || "unknown";
 
-    const { data: strategyWeights } = await db
-      .from("strategy_weights")
-      .select("*")
-      .eq("tech_stack_key", techStackKey);
+    // Protected vuln classes can NEVER be disabled by strategy weights —
+    // they are too high-impact to skip even if past runs were unlucky.
+    const PROTECTED_CLASSES = new Set([
+      "sqli", "rxss", "ssrf", "auth-bypass",
+      "idor", "stored-xss", "ssti", "nosqli",
+    ]);
 
-    const disabledClasses = new Set(
-      (strategyWeights || [])
-        .filter((w: any) => (w.success_count + w.failure_count) >= 5 && w.effectiveness_pct < 10)
-        .map((w: any) => w.vuln_class)
-    );
+    let disabledClasses = new Set<string>();
+    const isUnknownStack =
+      !techStackKey || techStackKey === "unknown" || /^:+$/.test(techStackKey);
 
-    if (disabledClasses.size > 0) {
-      await log(db, targetId, taskId, "info", `⚡ Strategy engine disabled ${disabledClasses.size} low-yield classes for ${techStackKey}: ${[...disabledClasses].join(", ")}`);
+    if (isUnknownStack) {
+      await log(db, targetId, taskId, "info",
+        `⚡ Strategy engine: unknown tech stack — testing ALL classes (no disable)`);
+    } else {
+      const { data: strategyWeights } = await db
+        .from("strategy_weights")
+        .select("*")
+        .eq("tech_stack_key", techStackKey);
+
+      disabledClasses = new Set(
+        (strategyWeights || [])
+          .filter((w: any) => (w.success_count + w.failure_count) >= 5 && w.effectiveness_pct < 10)
+          .map((w: any) => w.vuln_class)
+      );
+
+      // Override: never let strategy disable protected classes.
+      for (const cls of PROTECTED_CLASSES) {
+        if (disabledClasses.has(cls)) {
+          disabledClasses.delete(cls);
+          await log(db, targetId, taskId, "info",
+            `🚫 Strategy engine tried to disable protected ${cls} — OVERRIDDEN`);
+        }
+      }
+
+      if (disabledClasses.size > 0) {
+        await log(db, targetId, taskId, "info", `⚡ Strategy engine disabled ${disabledClasses.size} low-yield classes for ${techStackKey}: ${[...disabledClasses].join(", ")}`);
+      }
     }
+
 
     // Get best-performing payloads from experience vault
     const { data: pastExperiences } = await db
@@ -1839,7 +1886,7 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
       confidence_level?: string; ai_verified?: boolean; triage_reasoning?: string;
       cvss_score?: number; reachability_status?: string;
     }) {
-      await db.from("vulnerability_findings").insert({
+      const { data: inserted } = await db.from("vulnerability_findings").insert({
         target_id: finding.target_id,
         endpoint_id: finding.endpoint_id || null,
         title: finding.title,
@@ -1853,8 +1900,18 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
         cvss_score: finding.cvss_score || null,
         reachability_status: finding.reachability_status || "unknown",
         validation_status: "auto-accepted",
-      });
+      }).select("id").single();
       autoAcceptedCount++;
+      // Bug #1 fix — every accepted finding goes through exploit-engine for verification.
+      if (inserted?.id) {
+        triggerExploitEngine(inserted.id, finding.target_id);
+        await db.from("scan_jobs").insert({
+          target_id: finding.target_id,
+          job_type: "exploit",
+          priority: 9,
+          payload: { findingId: inserted.id },
+        });
+      }
     }
 
     // Passive findings → auto-accept (all are low/medium/info)

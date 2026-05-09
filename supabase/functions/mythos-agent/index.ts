@@ -83,11 +83,22 @@ serve(async (req) => {
       // Debate phase: pick top N suspicious params and run two-agent debate
       await append(`iter-${i}-debate`, `🥷 Two-agent black-hat debate on top params`);
       const { data: eps } = await db.from("discovered_endpoints")
-        .select("url,parameters").eq("target_id", targetId).limit(8);
+        .select("url,parameters").eq("target_id", targetId).limit(50);
       let debatesRun = 0, fpEliminated = 0, tpConfirmed = 0;
+      const COMMON_PARAMS = ["q", "id", "search", "query", "email", "user", "page", "url", "redirect"];
       for (const ep of (eps || [])) {
-        const params = (ep.parameters as Record<string, string>) || {};
-        const paramKeys = Object.keys(params).slice(0, 1);
+        // Bug #3 fix — accept stored params, URL params, then common-name fallbacks.
+        let params = (ep.parameters as Record<string, string>) || {};
+        if (Object.keys(params).length === 0) {
+          try {
+            const urlParams = new URL(ep.url).searchParams;
+            params = Object.fromEntries(urlParams);
+          } catch { /* ignore parse errors */ }
+        }
+        if (Object.keys(params).length === 0) {
+          params = Object.fromEntries(COMMON_PARAMS.map((p) => [p, "test"]));
+        }
+        const paramKeys = Object.keys(params).slice(0, 3);
         for (const pk of paramKeys) {
           const dRes = await call("mythos-debate", {
             targetId, runId, endpointUrl: ep.url, paramName: pk,
@@ -98,9 +109,9 @@ serve(async (req) => {
             if (dRes.data.fpVerdict === "false_positive") fpEliminated++;
             if (dRes.data.fpVerdict === "true_positive") tpConfirmed++;
           }
-          if (debatesRun >= 4) break;
+          if (debatesRun >= 20) break;
         }
-        if (debatesRun >= 4) break;
+        if (debatesRun >= 20) break;
       }
       await append(`iter-${i}-debate`, `Debates: ${debatesRun} run, ${tpConfirmed} TP, ${fpEliminated} FP eliminated`, { debatesRun, tpConfirmed, fpEliminated });
 

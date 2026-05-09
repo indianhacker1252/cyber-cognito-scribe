@@ -48,7 +48,16 @@ serve(async (req) => {
       body: JSON.stringify({
         model: "google/gemini-2.5-flash",
         messages: [
-          { role: "system", content: "You are a zero-day researcher. Given a known CVE, identify its ROOT-CAUSE PATTERN (not the specific payload), then generate 3-5 *novel variant payloads* targeting the same root cause class. These variants should bypass naive patches and find UNDISCLOSED bugs in similar code paths." },
+          { role: "system", content: `You are a zero-day researcher. Generate variant payloads as CONCRETE HTTP ATTACK STRINGS ONLY.
+
+Rules:
+- variant_payload MUST be a raw injectable string, never a sentence or pseudocode.
+- Valid examples: '../../../etc/passwd', '<svg onload=alert(1)>', "' OR 1=1--", '{{7*7}}', 'http://169.254.169.254/'
+- Invalid: any sentence, any prose description, any pseudocode like create_symlink(...).
+- If the attack cannot be expressed as a raw injectable string, skip it.
+- variant_payload max length: 500 chars.
+
+Given a known CVE, identify its ROOT-CAUSE PATTERN, then return 3-5 novel variant payloads targeting the same root cause class.` },
           { role: "user", content: `Known intel:\n${JSON.stringify(intel).slice(0, 4000)}\n\nGenerate variants.` },
         ],
         tools: [{
@@ -85,7 +94,19 @@ serve(async (req) => {
     if (!aiResp.ok) throw new Error(`AI ${aiResp.status}`);
     const aiData = await aiResp.json();
     const args = JSON.parse(aiData.choices?.[0]?.message?.tool_calls?.[0]?.function?.arguments || "{}");
-    const variants = (args.variants || []).slice(0, 8);
+    // Bug #5 fix — drop LLM hallucinations that came back as prose/pseudocode.
+    const isValidPayload = (p: unknown): p is string => {
+      if (typeof p !== "string") return false;
+      const s = p.trim();
+      if (!s || s.length >= 500) return false;
+      if (/^(an?\s|the\s)/i.test(s)) return false;
+      if (/\battempts to\b|\bwill\s|\bshould\s|\bcan\s/i.test(s)) return false;
+      if (/create_symlink|pseudocode/i.test(s)) return false;
+      if (s.split(/\s+/).length > 12 && /[a-z]\s+[a-z]+\s+[a-z]+/i.test(s) && !/[<>'"`{}\\;|&=]/.test(s)) return false;
+      return true;
+    };
+    const rawVariants = (args.variants || []).filter((v: any) => isValidPayload(v?.variant_payload));
+    const variants = rawVariants.slice(0, 8);
 
     // Insert variants as "queued" — actual testing is queued as scan_jobs
     const variantRecords: any[] = [];
