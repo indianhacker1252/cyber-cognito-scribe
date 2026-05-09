@@ -1140,20 +1140,46 @@ serve(async (req) => {
       (techStack.poweredBy || "").split("/")[0].toLowerCase(),
     ].filter(Boolean).join(":") || "unknown";
 
-    const { data: strategyWeights } = await db
-      .from("strategy_weights")
-      .select("*")
-      .eq("tech_stack_key", techStackKey);
+    // Protected vuln classes can NEVER be disabled by strategy weights —
+    // they are too high-impact to skip even if past runs were unlucky.
+    const PROTECTED_CLASSES = new Set([
+      "sqli", "rxss", "ssrf", "auth-bypass",
+      "idor", "stored-xss", "ssti", "nosqli",
+    ]);
 
-    const disabledClasses = new Set(
-      (strategyWeights || [])
-        .filter((w: any) => (w.success_count + w.failure_count) >= 5 && w.effectiveness_pct < 10)
-        .map((w: any) => w.vuln_class)
-    );
+    let disabledClasses = new Set<string>();
+    const isUnknownStack =
+      !techStackKey || techStackKey === "unknown" || /^:+$/.test(techStackKey);
 
-    if (disabledClasses.size > 0) {
-      await log(db, targetId, taskId, "info", `⚡ Strategy engine disabled ${disabledClasses.size} low-yield classes for ${techStackKey}: ${[...disabledClasses].join(", ")}`);
+    if (isUnknownStack) {
+      await log(db, targetId, taskId, "info",
+        `⚡ Strategy engine: unknown tech stack — testing ALL classes (no disable)`);
+    } else {
+      const { data: strategyWeights } = await db
+        .from("strategy_weights")
+        .select("*")
+        .eq("tech_stack_key", techStackKey);
+
+      disabledClasses = new Set(
+        (strategyWeights || [])
+          .filter((w: any) => (w.success_count + w.failure_count) >= 5 && w.effectiveness_pct < 10)
+          .map((w: any) => w.vuln_class)
+      );
+
+      // Override: never let strategy disable protected classes.
+      for (const cls of PROTECTED_CLASSES) {
+        if (disabledClasses.has(cls)) {
+          disabledClasses.delete(cls);
+          await log(db, targetId, taskId, "info",
+            `🚫 Strategy engine tried to disable protected ${cls} — OVERRIDDEN`);
+        }
+      }
+
+      if (disabledClasses.size > 0) {
+        await log(db, targetId, taskId, "info", `⚡ Strategy engine disabled ${disabledClasses.size} low-yield classes for ${techStackKey}: ${[...disabledClasses].join(", ")}`);
+      }
     }
+
 
     // Get best-performing payloads from experience vault
     const { data: pastExperiences } = await db
