@@ -965,6 +965,8 @@ For each finding, verify it and provide:
 
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
+  // Reset scan budget at request entry — never inherit cold-start time.
+  SCAN_START = Date.now();
 
   try {
     const { targetId } = await req.json();
