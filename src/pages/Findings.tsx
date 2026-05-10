@@ -66,9 +66,29 @@ export default function Findings() {
 
   const filteredFindings = useMemo(() => {
     if (!findings) return [];
-    if (!activeTargetFilter) return findings;
-    return findings.filter((f: any) => f.target_id === activeTargetFilter);
-  }, [findings, activeTargetFilter]);
+    let out = findings as any[];
+    if (activeTargetFilter) out = out.filter((f: any) => f.target_id === activeTargetFilter);
+    if (statusFilter !== "all") {
+      out = out.filter((f: any) => {
+        const s = (f.validation_status || "inconclusive") as string;
+        if (statusFilter === "inconclusive") return s === "inconclusive" || s === "unverified" || !f.validation_status;
+        return s === statusFilter;
+      });
+    }
+    return out;
+  }, [findings, activeTargetFilter, statusFilter]);
+
+  const statusCounts = useMemo(() => {
+    const base = { confirmed: 0, needs_review: 0, inconclusive: 0 };
+    if (!findings) return base;
+    for (const f of findings as any[]) {
+      const s = f.validation_status;
+      if (s === "confirmed") base.confirmed++;
+      else if (s === "needs_review") base.needs_review++;
+      else base.inconclusive++;
+    }
+    return base;
+  }, [findings]);
 
   const deleteFinding = useMutation({
     mutationFn: async (id: string) => {
