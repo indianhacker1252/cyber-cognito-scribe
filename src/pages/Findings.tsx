@@ -404,6 +404,15 @@ export default function Findings() {
                       <Button variant="outline" size="sm" className="font-mono text-[10px] gap-1 border-cyber-green/30 text-cyber-green hover:bg-cyber-green/10" onClick={() => setSandboxFinding(f)}>
                         <Box className="h-3 w-3" /> Sandbox
                       </Button>
+                      <Button
+                        variant="outline" size="sm"
+                        className="font-mono text-[10px] gap-1 border-cyber-green/40 text-cyber-green hover:bg-cyber-green/10 disabled:opacity-50"
+                        onClick={() => handleTripleVerify(f)}
+                        disabled={verifying === f.id}
+                        title="Run triple-verification (baseline → mutated → rebaseline → replay)"
+                      >
+                        <ShieldCheck className="h-3 w-3" /> {verifying === f.id ? "..." : "Re-Verify"}
+                      </Button>
                       <Button variant="outline" size="sm" className="font-mono text-[10px] gap-1 border-fuchsia-500/30 text-fuchsia-400 hover:bg-fuchsia-500/10" onClick={() => handleProve(f)}>
                         <Crosshair className="h-3 w-3" /> Prove
                       </Button>
