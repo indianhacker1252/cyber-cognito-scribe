@@ -4,7 +4,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { ShieldAlert, Shield, Trash2, BrainCircuit, Gauge, Ban, Filter, X, FileDown, Send, Box, Crosshair, EyeOff } from "lucide-react";
+import { ShieldAlert, Shield, Trash2, BrainCircuit, Gauge, Ban, Filter, X, FileDown, Send, Box, Crosshair, EyeOff, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
 import ValidationModal from "@/components/ValidationModal";
 import AdaptiveValidationModal from "@/components/AdaptiveValidationModal";
@@ -39,6 +39,8 @@ export default function Findings() {
   const [sandboxFinding, setSandboxFinding] = useState<any>(null);
   const [triaging, setTriaging] = useState<string | null>(null);
   const [activeTargetFilter, setActiveTargetFilter] = useState<string | null>(null);
+  const [statusFilter, setStatusFilter] = useState<"all" | "confirmed" | "needs_review" | "inconclusive">("all");
+  const [verifying, setVerifying] = useState<string | null>(null);
 
   const { data: findings, isLoading } = useQuery({
     queryKey: ["findings"],
@@ -64,9 +66,29 @@ export default function Findings() {
 
   const filteredFindings = useMemo(() => {
     if (!findings) return [];
-    if (!activeTargetFilter) return findings;
-    return findings.filter((f: any) => f.target_id === activeTargetFilter);
-  }, [findings, activeTargetFilter]);
+    let out = findings as any[];
+    if (activeTargetFilter) out = out.filter((f: any) => f.target_id === activeTargetFilter);
+    if (statusFilter !== "all") {
+      out = out.filter((f: any) => {
+        const s = (f.validation_status || "inconclusive") as string;
+        if (statusFilter === "inconclusive") return s === "inconclusive" || s === "unverified" || !f.validation_status;
+        return s === statusFilter;
+      });
+    }
+    return out;
+  }, [findings, activeTargetFilter, statusFilter]);
+
+  const statusCounts = useMemo(() => {
+    const base = { confirmed: 0, needs_review: 0, inconclusive: 0 };
+    if (!findings) return base;
+    for (const f of findings as any[]) {
+      const s = f.validation_status;
+      if (s === "confirmed") base.confirmed++;
+      else if (s === "needs_review") base.needs_review++;
+      else base.inconclusive++;
+    }
+    return base;
+  }, [findings]);
 
   const deleteFinding = useMutation({
     mutationFn: async (id: string) => {
@@ -139,6 +161,33 @@ export default function Findings() {
     if (score >= 85) return "text-cyber-cyan";
     if (score >= 50) return "text-cyber-amber";
     return "text-cyber-red";
+  };
+
+  const handleTripleVerify = async (f: any) => {
+    setVerifying(f.id);
+    try {
+      const { data, error } = await supabase.functions.invoke("triple-verify", { body: { findingId: f.id } });
+      if (error) throw error;
+      if (!data?.ok) throw new Error(data?.error || "verify failed");
+      queryClient.invalidateQueries({ queryKey: ["findings"] });
+      const tier = data.tier as string;
+      const conf = data.confidence as number;
+      if (tier === "confirmed") toast.success(`✅ CONFIRMED — ${conf}% confidence`);
+      else if (tier === "needs_review") toast.info(`⚠️ Needs Review — ${conf}% confidence`);
+      else toast.warning(`Inconclusive — ${conf}% confidence`);
+    } catch (e: any) {
+      toast.error(`Triple-verify: ${e.message}`);
+    } finally {
+      setVerifying(null);
+    }
+  };
+
+  const statusBadgeClass = (s?: string) => {
+    if (s === "confirmed") return "bg-cyber-green/20 text-cyber-green border-cyber-green/40";
+    if (s === "needs_review") return "bg-cyber-amber/20 text-cyber-amber border-cyber-amber/40";
+    if (s === "inconclusive") return "bg-muted/30 text-muted-foreground border-muted/40";
+    if (s === "verified" || s === "validated") return "bg-cyber-green/20 text-cyber-green border-cyber-green/30";
+    return "text-muted-foreground border-muted/40";
   };
 
   const exportPdfReport = useCallback(async () => {
@@ -226,6 +275,34 @@ export default function Findings() {
         </div>
       )}
 
+      {/* Verification Status Filter (triple-verify) */}
+      {findings && findings.length > 0 && (
+        <div className="flex items-center gap-2 flex-wrap">
+          <ShieldCheck className="h-3.5 w-3.5 text-muted-foreground" />
+          <span className="text-[10px] font-mono text-muted-foreground">Verification:</span>
+          {([
+            ["all", `All (${findings.length})`],
+            ["confirmed", `✓ Confirmed (${statusCounts.confirmed})`],
+            ["needs_review", `⚠ Needs Review (${statusCounts.needs_review})`],
+            ["inconclusive", `Inconclusive (${statusCounts.inconclusive})`],
+          ] as const).map(([key, label]) => (
+            <button
+              key={key}
+              onClick={() => setStatusFilter(key as any)}
+              className={`px-2 py-1 rounded text-[10px] font-mono border transition-all ${
+                statusFilter === key
+                  ? "bg-primary/20 border-primary text-primary"
+                  : key === "confirmed" ? "border-cyber-green/30 text-cyber-green hover:border-cyber-green"
+                  : key === "needs_review" ? "border-cyber-amber/30 text-cyber-amber hover:border-cyber-amber"
+                  : "border-border text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+
       {isLoading ? (
         <p className="text-xs font-mono text-muted-foreground">Loading findings...</p>
       ) : filteredFindings.length > 0 ? (
@@ -285,8 +362,15 @@ export default function Findings() {
                     </button>
                   </TableCell>
                   <TableCell>
-                    <Badge variant="outline" className={`text-[9px] font-mono ${f.validation_status === "verified" ? "text-cyber-green border-cyber-green/30" : "text-muted-foreground"}`}>
-                      {f.validation_status || "unverified"}
+                    <Badge
+                      variant="outline"
+                      className={`text-[9px] font-mono ${statusBadgeClass(f.validation_status)}`}
+                      title={f.triage_reasoning || "Run Re-Verify to validate"}
+                    >
+                      {f.validation_status === "confirmed" ? "✓ confirmed"
+                        : f.validation_status === "needs_review" ? "⚠ needs review"
+                        : f.validation_status === "inconclusive" ? "inconclusive"
+                        : f.validation_status || "unverified"}
                     </Badge>
                   </TableCell>
                   <TableCell>
@@ -319,6 +403,15 @@ export default function Findings() {
                       </Button>
                       <Button variant="outline" size="sm" className="font-mono text-[10px] gap-1 border-cyber-green/30 text-cyber-green hover:bg-cyber-green/10" onClick={() => setSandboxFinding(f)}>
                         <Box className="h-3 w-3" /> Sandbox
+                      </Button>
+                      <Button
+                        variant="outline" size="sm"
+                        className="font-mono text-[10px] gap-1 border-cyber-green/40 text-cyber-green hover:bg-cyber-green/10 disabled:opacity-50"
+                        onClick={() => handleTripleVerify(f)}
+                        disabled={verifying === f.id}
+                        title="Run triple-verification (baseline → mutated → rebaseline → replay)"
+                      >
+                        <ShieldCheck className="h-3 w-3" /> {verifying === f.id ? "..." : "Re-Verify"}
                       </Button>
                       <Button variant="outline" size="sm" className="font-mono text-[10px] gap-1 border-fuchsia-500/30 text-fuchsia-400 hover:bg-fuchsia-500/10" onClick={() => handleProve(f)}>
                         <Crosshair className="h-3 w-3" /> Prove

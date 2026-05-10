@@ -132,7 +132,18 @@ export async function generateFindingPdf(f: Finding) {
   doc.save(`cyberscope-${f.id.slice(0, 8)}-${(f.title || "finding").replace(/[^a-z0-9]+/gi, "-").slice(0, 40)}.pdf`);
 }
 
-export async function generateBulkPdf(findings: Finding[], targetName: string) {
+export async function generateBulkPdf(
+  findings: Finding[],
+  targetName: string,
+  opts: { includeNeedsReview?: boolean } = {},
+) {
+  const includeNeedsReview = opts.includeNeedsReview !== false;
+
+  // Gate: only confirmed (and optionally needs_review) ship in the report
+  const allowed = new Set(includeNeedsReview ? ["confirmed", "needs_review"] : ["confirmed"]);
+  const reportFindings = findings.filter(f => allowed.has((f.validation_status || "").toLowerCase()));
+  const excludedCount = findings.length - reportFindings.length;
+
   const doc = new jsPDF({ unit: "mm", format: "a4" });
   addHeader(doc, targetName);
   doc.setTextColor(20, 20, 20);
@@ -143,18 +154,63 @@ export async function generateBulkPdf(findings: Finding[], targetName: string) {
   doc.setFont("helvetica", "normal");
   doc.setTextColor(80, 80, 80);
   doc.text(`Target: ${targetName}`, 14, 50);
-  doc.text(`Findings: ${findings.length}`, 14, 56);
+  doc.text(`Findings (in report): ${reportFindings.length}`, 14, 56);
   doc.text(`Generated: ${new Date().toLocaleString()}`, 14, 62);
+  if (excludedCount > 0) {
+    doc.setTextColor(140, 140, 140);
+    doc.setFontSize(9);
+    doc.text(`(${excludedCount} inconclusive finding${excludedCount === 1 ? "" : "s"} excluded by triple-verification gate)`, 14, 68);
+  }
 
-  const counts = findings.reduce<Record<string, number>>((a, f) => { a[f.severity] = (a[f.severity] || 0) + 1; return a; }, {});
+  const sevCounts = reportFindings.reduce<Record<string, number>>((a, f) => { a[f.severity] = (a[f.severity] || 0) + 1; return a; }, {});
+  const statusCounts = reportFindings.reduce<Record<string, number>>((a, f) => {
+    const s = (f.validation_status || "unverified").toLowerCase();
+    a[s] = (a[s] || 0) + 1; return a;
+  }, {});
+
   autoTable(doc, {
-    startY: 72,
+    startY: 76,
     head: [["Severity", "Count"]],
-    body: ["critical", "high", "medium", "low", "info"].map(s => [s.toUpperCase(), counts[s] || 0]),
+    body: ["critical", "high", "medium", "low", "info"].map(s => [s.toUpperCase(), sevCounts[s] || 0]),
+    headStyles: { fillColor: [22, 22, 26], textColor: [34, 197, 94] },
+  });
+  const sy = (doc as any).lastAutoTable.finalY + 4;
+  autoTable(doc, {
+    startY: sy,
+    head: [["Verification Status", "Count"]],
+    body: [
+      ["✓ CONFIRMED", statusCounts["confirmed"] || 0],
+      ["⚠ NEEDS REVIEW", statusCounts["needs_review"] || 0],
+    ],
     headStyles: { fillColor: [22, 22, 26], textColor: [34, 197, 94] },
   });
 
-  for (const f of findings) {
+  if (reportFindings.length === 0) {
+    doc.addPage();
+    addHeader(doc, targetName);
+    doc.setFontSize(14);
+    doc.setTextColor(60, 60, 60);
+    doc.text("No findings passed the triple-verification gate.", 14, 50);
+    doc.setFontSize(10);
+    doc.text("Re-Verify candidate findings or lower the inclusion threshold to populate this report.", 14, 60);
+    addFooter(doc);
+    doc.save(`cyberscope-vapt-${targetName.replace(/[^a-z0-9]+/gi, "-")}-${Date.now()}.pdf`);
+    return;
+  }
+
+  const statusPill = (doc: jsPDF, status: string, x: number, y: number) => {
+    const conf = status === "confirmed";
+    const c: [number, number, number] = conf ? [22, 163, 74] : [217, 119, 6];
+    const label = conf ? "CONFIRMED" : "NEEDS REVIEW";
+    doc.setFillColor(c[0], c[1], c[2]);
+    doc.roundedRect(x, y - 5, 32, 6, 1, 1, "F");
+    doc.setTextColor(255, 255, 255);
+    doc.setFontSize(8);
+    doc.setFont("helvetica", "bold");
+    doc.text(label, x + 16, y - 1, { align: "center" });
+  };
+
+  for (const f of reportFindings) {
     doc.addPage();
     addHeader(doc, targetName);
     let y = 32;
@@ -164,10 +220,11 @@ export async function generateBulkPdf(findings: Finding[], targetName: string) {
     doc.text(f.title, 14, y);
     y += 7;
     severityBox(doc, f.severity || "info", 14, y);
+    statusPill(doc, (f.validation_status || "needs_review").toLowerCase(), 40, y);
     doc.setFont("helvetica", "normal");
     doc.setFontSize(9);
     doc.setTextColor(60, 60, 60);
-    doc.text(`CVSS ${f.cvss_score ?? "—"}  •  Confidence ${f.confidence_score ?? 0}%  •  ${f.validation_status ?? "unverified"}`, 40, y - 1);
+    doc.text(`CVSS ${f.cvss_score ?? "—"}  •  Confidence ${f.confidence_score ?? 0}%`, 76, y - 1);
     y += 6;
 
     const ep = await fetchEndpoint(f.endpoint_id);
@@ -180,6 +237,11 @@ export async function generateBulkPdf(findings: Finding[], targetName: string) {
       doc.text(lines, 14, y); y += lines.length * 4 + 3;
     };
     block("Endpoint", ep ? `${ep.method} ${ep.url}` : "—");
+    if ((f.validation_status || "").toLowerCase() === "needs_review") {
+      block("⚠ Why flagged for review", f.triage_reasoning || "Confidence below auto-confirm threshold (95%). Manual auditor verification recommended.");
+    } else {
+      block("Verification", f.triage_reasoning || "Triple-verification passed (baseline → mutated → rebaseline → replay).");
+    }
     block("Description", f.description || "—");
     block("Proof of Concept", f.poc || f.payload || "—");
     block("Remediation", f.remediation || "Apply standard OWASP remediation guidance for this vulnerability class.");
