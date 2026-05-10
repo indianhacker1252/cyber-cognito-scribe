@@ -362,8 +362,15 @@ export default function Findings() {
                     </button>
                   </TableCell>
                   <TableCell>
-                    <Badge variant="outline" className={`text-[9px] font-mono ${f.validation_status === "verified" ? "text-cyber-green border-cyber-green/30" : "text-muted-foreground"}`}>
-                      {f.validation_status || "unverified"}
+                    <Badge
+                      variant="outline"
+                      className={`text-[9px] font-mono ${statusBadgeClass(f.validation_status)}`}
+                      title={f.triage_reasoning || "Run Re-Verify to validate"}
+                    >
+                      {f.validation_status === "confirmed" ? "✓ confirmed"
+                        : f.validation_status === "needs_review" ? "⚠ needs review"
+                        : f.validation_status === "inconclusive" ? "inconclusive"
+                        : f.validation_status || "unverified"}
                     </Badge>
                   </TableCell>
                   <TableCell>
