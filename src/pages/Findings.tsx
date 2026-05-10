@@ -39,6 +39,8 @@ export default function Findings() {
   const [sandboxFinding, setSandboxFinding] = useState<any>(null);
   const [triaging, setTriaging] = useState<string | null>(null);
   const [activeTargetFilter, setActiveTargetFilter] = useState<string | null>(null);
+  const [statusFilter, setStatusFilter] = useState<"all" | "confirmed" | "needs_review" | "inconclusive">("all");
+  const [verifying, setVerifying] = useState<string | null>(null);
 
   const { data: findings, isLoading } = useQuery({
     queryKey: ["findings"],
