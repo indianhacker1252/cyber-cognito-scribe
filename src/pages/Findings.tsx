@@ -163,6 +163,33 @@ export default function Findings() {
     return "text-cyber-red";
   };
 
+  const handleTripleVerify = async (f: any) => {
+    setVerifying(f.id);
+    try {
+      const { data, error } = await supabase.functions.invoke("triple-verify", { body: { findingId: f.id } });
+      if (error) throw error;
+      if (!data?.ok) throw new Error(data?.error || "verify failed");
+      queryClient.invalidateQueries({ queryKey: ["findings"] });
+      const tier = data.tier as string;
+      const conf = data.confidence as number;
+      if (tier === "confirmed") toast.success(`✅ CONFIRMED — ${conf}% confidence`);
+      else if (tier === "needs_review") toast.info(`⚠️ Needs Review — ${conf}% confidence`);
+      else toast.warning(`Inconclusive — ${conf}% confidence`);
+    } catch (e: any) {
+      toast.error(`Triple-verify: ${e.message}`);
+    } finally {
+      setVerifying(null);
+    }
+  };
+
+  const statusBadgeClass = (s?: string) => {
+    if (s === "confirmed") return "bg-cyber-green/20 text-cyber-green border-cyber-green/40";
+    if (s === "needs_review") return "bg-cyber-amber/20 text-cyber-amber border-cyber-amber/40";
+    if (s === "inconclusive") return "bg-muted/30 text-muted-foreground border-muted/40";
+    if (s === "verified" || s === "validated") return "bg-cyber-green/20 text-cyber-green border-cyber-green/30";
+    return "text-muted-foreground border-muted/40";
+  };
+
   const exportPdfReport = useCallback(async () => {
     if (!filteredFindings || filteredFindings.length === 0) {
       toast.error("No findings to export");
