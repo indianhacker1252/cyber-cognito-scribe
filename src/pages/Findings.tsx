@@ -275,6 +275,34 @@ export default function Findings() {
         </div>
       )}
 
+      {/* Verification Status Filter (triple-verify) */}
+      {findings && findings.length > 0 && (
+        <div className="flex items-center gap-2 flex-wrap">
+          <ShieldCheck className="h-3.5 w-3.5 text-muted-foreground" />
+          <span className="text-[10px] font-mono text-muted-foreground">Verification:</span>
+          {([
+            ["all", `All (${findings.length})`],
+            ["confirmed", `✓ Confirmed (${statusCounts.confirmed})`],
+            ["needs_review", `⚠ Needs Review (${statusCounts.needs_review})`],
+            ["inconclusive", `Inconclusive (${statusCounts.inconclusive})`],
+          ] as const).map(([key, label]) => (
+            <button
+              key={key}
+              onClick={() => setStatusFilter(key as any)}
+              className={`px-2 py-1 rounded text-[10px] font-mono border transition-all ${
+                statusFilter === key
+                  ? "bg-primary/20 border-primary text-primary"
+                  : key === "confirmed" ? "border-cyber-green/30 text-cyber-green hover:border-cyber-green"
+                  : key === "needs_review" ? "border-cyber-amber/30 text-cyber-amber hover:border-cyber-amber"
+                  : "border-border text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+
       {isLoading ? (
         <p className="text-xs font-mono text-muted-foreground">Loading findings...</p>
       ) : filteredFindings.length > 0 ? (
