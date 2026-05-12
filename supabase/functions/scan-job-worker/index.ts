@@ -18,6 +18,7 @@ const JOB_ROUTES: Record<string, string> = {
   fuzz: "advanced-fuzzer",
   oob: "oob-collector",
   browser: "headless-browser",
+  browser_exploit: "browser-exploit",
   chain: "exploit-chain-runner",
   drift_canary: "canary-drift-monitor",
   json_fuzz: "json-fuzzer",
@@ -27,6 +28,7 @@ const JOB_ROUTES: Record<string, string> = {
   patch_validate: "mythos-patch-validate",
   exploit: "exploit-engine",
   proof: "proof-engine",
+  mythos_step: "mythos-orchestrator",
 };
 
 async function runJob(job: any): Promise<{ ok: boolean; result?: any; error?: string }> {
