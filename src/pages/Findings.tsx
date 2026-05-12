@@ -172,8 +172,21 @@ export default function Findings() {
       queryClient.invalidateQueries({ queryKey: ["findings"] });
       const tier = data.tier as string;
       const conf = data.confidence as number;
-      if (tier === "confirmed") toast.success(`✅ CONFIRMED — ${conf}% confidence`);
-      else if (tier === "needs_review") toast.info(`⚠️ Needs Review — ${conf}% confidence`);
+      if (tier === "confirmed") {
+        toast.success(`✅ CONFIRMED — ${conf}% confidence`);
+        if (data.exploit?.ran) {
+          toast.info("⚡ Exploit verification: running...");
+          // exploit-engine already finished server-side, but invalidate again to pick up proof_tier
+          setTimeout(() => queryClient.invalidateQueries({ queryKey: ["findings"] }), 500);
+          if (data.exploit.proven) {
+            toast.success(`💀 EXPLOITED ✓ — ready for submission`);
+          } else if (data.exploit.error) {
+            toast.warning(`Exploit chain error: ${data.exploit.error}`);
+          } else {
+            toast.info(`Reproduced only — exploit ran but no proven evidence`);
+          }
+        }
+      } else if (tier === "needs_review") toast.info(`⚠️ Needs Review — ${conf}% confidence`);
       else toast.warning(`Inconclusive — ${conf}% confidence`);
     } catch (e: any) {
       toast.error(`Triple-verify: ${e.message}`);
