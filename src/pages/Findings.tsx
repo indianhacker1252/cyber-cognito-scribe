@@ -387,10 +387,17 @@ export default function Findings() {
                     </Badge>
                   </TableCell>
                   <TableCell>
-                    <div className="flex items-center gap-1">
+                    <div className="flex items-center gap-1 flex-wrap">
                       <Badge variant="outline" className={`text-[9px] font-mono ${proofTierBadge(f.proof_tier)}`}>
-                        {f.proof_tier || "signal"}
+                        {f.proof_tier === "exploited" ? "💀 Exploited ✓"
+                          : f.validation_status === "confirmed" && f.proof_tier !== "exploited" ? "Reproduced only"
+                          : (f.proof_tier || "signal")}
                       </Badge>
+                      {f.proof_tier === "exploited" && (
+                        <Badge variant="outline" className="text-[9px] font-mono bg-orange-500/20 text-orange-400 border-orange-500/40">
+                          Ready for submission
+                        </Badge>
+                      )}
                       {f.sensitive && <EyeOff className="h-3 w-3 text-cyber-red" aria-label="sensitive — admin only" />}
                     </div>
                   </TableCell>
