@@ -97,7 +97,33 @@ Deno.serve(async (req) => {
       metadata: { findingId, summary: verifyRes.summary, signals: verifyRes.signals },
     });
 
-    return ok({ ok: true, ...verifyRes });
+    // ── Level 2 chaining: when confidence ≥95, automatically invoke exploit-engine ──
+    let exploit: { ran: boolean; proven?: boolean; tier?: string; runId?: string; error?: string } = { ran: false };
+    if (verifyRes.tier === "confirmed" && verifyRes.confidence >= 95) {
+      await db.from("scan_logs").insert({
+        target_id: f.target_id,
+        log_type: "action",
+        message: `🔗 Auto-chaining to Exploit Engine (confidence=${verifyRes.confidence}% ≥ 95) — "${f.title}"`,
+        metadata: { findingId },
+      });
+      try {
+        const r = await fetch(`${SUPABASE_URL}/functions/v1/exploit-engine`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${SERVICE_KEY}`,
+          },
+          body: JSON.stringify({ findingId }),
+          signal: AbortSignal.timeout(45000),
+        });
+        const j = await r.json().catch(() => ({}));
+        exploit = { ran: true, proven: !!j.proven, tier: j.tier, runId: j.runId, error: j.error };
+      } catch (e) {
+        exploit = { ran: true, error: e instanceof Error ? e.message : String(e) };
+      }
+    }
+
+    return ok({ ok: true, ...verifyRes, exploit });
   } catch (e) {
     return ok({ ok: false, error: e instanceof Error ? e.message : String(e) });
   }
