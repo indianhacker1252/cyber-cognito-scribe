@@ -8,7 +8,8 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
+  "Access-Control-Allow-Headers":
+    "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
@@ -23,11 +24,7 @@ async function callAgent(role: "A" | "B", systemPrompt: string, userMsg: string,
       headers: { Authorization: `Bearer ${LOVABLE_API_KEY}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         model: "google/gemini-2.5-flash",
-        messages: [
-          { role: "system", content: systemPrompt },
-          ...history,
-          { role: "user", content: userMsg },
-        ],
+        messages: [{ role: "system", content: systemPrompt }, ...history, { role: "user", content: userMsg }],
         max_tokens: 400,
       }),
       signal: AbortSignal.timeout(15000),
@@ -40,15 +37,30 @@ async function callAgent(role: "A" | "B", systemPrompt: string, userMsg: string,
   }
 }
 
-// SAFETY GATE — never execute destructive payloads on a live target.
-// Bug bounty programs ban for DROP/DELETE/TRUNCATE/SHUTDOWN even on test data.
+// ── Safety gate ──────────────────────────────────────────────────────────────
 const DESTRUCTIVE_TOKENS = [
-  "DROP TABLE", "DROP DATABASE", "DROP SCHEMA", "DROP ",
-  "DELETE FROM", "TRUNCATE", "UPDATE SET", "INSERT INTO",
-  "SHUTDOWN", "ALTER TABLE", "GRANT ", "REVOKE ",
-  "EXEC(", "EVAL(", "SYSTEM(", "XP_CMDSHELL",
-  "RM -RF", "FORMAT C:", "MKFS", "DD IF=",
-  "; END;", "WAITFOR DELAY",
+  "DROP TABLE",
+  "DROP DATABASE",
+  "DROP SCHEMA",
+  "DROP ",
+  "DELETE FROM",
+  "TRUNCATE",
+  "UPDATE SET",
+  "INSERT INTO",
+  "SHUTDOWN",
+  "ALTER TABLE",
+  "GRANT ",
+  "REVOKE ",
+  "EXEC(",
+  "EVAL(",
+  "SYSTEM(",
+  "XP_CMDSHELL",
+  "RM -RF",
+  "FORMAT C:",
+  "MKFS",
+  "DD IF=",
+  "; END;",
+  "WAITFOR DELAY",
 ];
 function isSafePayload(payload: string): { ok: boolean; matched?: string } {
   if (!payload) return { ok: true };
@@ -59,31 +71,125 @@ function isSafePayload(payload: string): { ok: boolean; matched?: string } {
   return { ok: true };
 }
 
-async function probe(url: string, paramName: string, payload: string): Promise<{ status: number; bodyLen: number; bodySnippet: string; reflected: boolean; errorSig: boolean; blocked?: boolean }> {
-  // Hard block: never send destructive operations to a live target.
+// ── SQL error pattern (used in both probe + verdict) ─────────────────────────
+const SQL_ERROR_RX = /sql syntax|mysql_|pg_query|SQLSTATE|ORA-\d+|unclosed quotation|syntax error.*SQL|psql:|sqlite_/i;
+
+// ── Probe — baseline vs mutated comparison ───────────────────────────────────
+async function probe(
+  url: string,
+  paramName: string,
+  payload: string,
+): Promise<{
+  status: number;
+  bodyLen: number;
+  bodySnippet: string;
+  reflected: boolean;
+  errorSig: boolean;
+  blocked?: boolean;
+  baselineStatus: number;
+  baselineLen: number;
+  meaningfulDiff: boolean;
+  diffReason: string;
+  timingDelta: number;
+}> {
   const safe = isSafePayload(payload);
   if (!safe.ok) {
-    return { status: 0, bodyLen: 0, bodySnippet: `BLOCKED_BY_SAFETY:${safe.matched}`, reflected: false, errorSig: false, blocked: true };
+    return {
+      status: 0,
+      bodyLen: 0,
+      bodySnippet: `BLOCKED_BY_SAFETY:${safe.matched}`,
+      reflected: false,
+      errorSig: false,
+      blocked: true,
+      baselineStatus: 0,
+      baselineLen: 0,
+      meaningfulDiff: false,
+      diffReason: "blocked by safety filter",
+      timingDelta: 0,
+    };
   }
+
   try {
+    // Step 1 — baseline (no payload)
+    const baseT0 = Date.now();
+    const baseResp = await fetch(url, {
+      signal: AbortSignal.timeout(8000),
+      redirect: "manual",
+    });
+    const baseTime = Date.now() - baseT0;
+    const baseBody = await baseResp.text();
+
+    // Step 2 — mutated (with payload)
     const u = new URL(url);
     u.searchParams.set(paramName, payload);
-    const r = await fetch(u.toString(), { signal: AbortSignal.timeout(8000) });
+    const mutT0 = Date.now();
+    const r = await fetch(u.toString(), {
+      signal: AbortSignal.timeout(8000),
+      redirect: "manual",
+    });
+    const mutTime = Date.now() - mutT0;
     const body = await r.text();
+
+    const timingDelta = mutTime - baseTime;
+
+    // Step 3 — meaningful difference analysis
+    const lenDiff = Math.abs(body.length - baseBody.length);
+    const lenDiffPct = lenDiff / (baseBody.length || 1);
+
+    const SQL_ERR =
+      /sql syntax|mysql_fetch|pg_query|SQLSTATE|ORA-\d+|unclosed quotation|syntax error.*sql|psql:|sqlite_/i;
+    const STACK = /at [A-Za-z]+\.[A-Za-z]+\(|stack trace|traceback \(most recent|exception in thread/i;
+    const SECRETS = /root:x:0:0|\/bin\/bash|aws_secret_access_key|AKIA[0-9A-Z]{16}|private_key/i;
+    const HTML_EXEC = /<script[\s>]|onerror\s*=|onload\s*=|javascript:/i;
+
+    const hasSqlError = SQL_ERR.test(body) && !SQL_ERR.test(baseBody);
+    const hasStackTrace = STACK.test(body) && !STACK.test(baseBody);
+    const hasSecrets = SECRETS.test(body) && !SECRETS.test(baseBody);
+    const hasHtmlExec = HTML_EXEC.test(body) && body.includes(payload) && !baseBody.includes(payload);
+    const hasTimingHit = timingDelta > 4500;
+    const statusChanged = r.status !== baseResp.status && !(r.status === 200 && baseResp.status === 200);
+    const bigBodyDiff = lenDiffPct > 0.4 && lenDiff > 1000 && statusChanged;
+
+    const meaningfulDiff = hasSqlError || hasStackTrace || hasSecrets || hasHtmlExec || hasTimingHit || bigBodyDiff;
+
+    let diffReason = "no meaningful difference — likely false positive";
+    if (hasSqlError) diffReason = "SQL error string appeared in response";
+    else if (hasStackTrace) diffReason = "stack trace exposed";
+    else if (hasSecrets) diffReason = "sensitive data pattern matched";
+    else if (hasHtmlExec) diffReason = "HTML payload reflected and unescaped";
+    else if (hasTimingHit) diffReason = `timing delta ${timingDelta}ms — possible blind injection`;
+    else if (bigBodyDiff)
+      diffReason = `response size changed ${lenDiff}b (${Math.round(lenDiffPct * 100)}%) with status change`;
+
     return {
       status: r.status,
       bodyLen: body.length,
       bodySnippet: body.slice(0, 400),
-      reflected: body.includes(payload),
-      errorSig: /SQL syntax|mysql_|pg_query|SQLSTATE|ORA-|stack trace|TypeError|undefined method|fatal error|unclosed quotation/i.test(body),
+      reflected: body.includes(payload) && !baseBody.includes(payload),
+      errorSig: hasSqlError,
+      baselineStatus: baseResp.status,
+      baselineLen: baseBody.length,
+      meaningfulDiff,
+      diffReason,
+      timingDelta,
     };
   } catch {
-    return { status: 0, bodyLen: 0, bodySnippet: "", reflected: false, errorSig: false };
+    return {
+      status: 0,
+      bodyLen: 0,
+      bodySnippet: "",
+      reflected: false,
+      errorSig: false,
+      baselineStatus: 0,
+      baselineLen: 0,
+      meaningfulDiff: false,
+      diffReason: "request failed",
+      timingDelta: 0,
+    };
   }
 }
 
-const SQL_ERROR_RX = /SQL syntax|mysql_|pg_query|SQLSTATE|ORA-\d+|unclosed quotation|syntax error.*SQL|psql:|sqlite_/i;
-
+// ── Main handler ─────────────────────────────────────────────────────────────
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
   try {
@@ -97,175 +203,312 @@ serve(async (req) => {
     const sysA = `You are Agent A — black-hat recon analyst. You analyze HTTP parameters and hypothesize what vulnerability classes (SQLi, XSS, SSRF, IDOR, RCE, SSTI, LFI, etc) might apply. Be SPECIFIC, terse (≤80 words). Talk to Agent B as a teammate.`;
     const sysB = `You are Agent B — black-hat exploit strategist. You propose CONCRETE payloads given a hypothesis. Be SPECIFIC (raw payload), terse (≤80 words). Talk to Agent A as a teammate.`;
 
-    // Round 1: A analyzes the param
-    const a1 = await callAgent("A", sysA, `Param: ${paramName}=${paramValue}\nURL: ${endpointUrl}\nHint: ${vulnClassHint || "none"}\n\nWhat vuln class fits best? Why?`, []);
+    // Round 1 — Agent A analyzes the param
+    const a1 = await callAgent(
+      "A",
+      sysA,
+      `Param: ${paramName}=${paramValue}\nURL: ${endpointUrl}\nHint: ${vulnClassHint || "none"}\n\nWhat vuln class fits best? Why?`,
+      [],
+    );
     transcript.push({ agent: "A", round: 1, msg: a1 });
     history.push({ role: "user", content: `Agent A says: ${a1}` });
 
-    // Round 2: B proposes payload
-    let b1 = await callAgent("B", sysB, `Agent A analysis: ${a1}\n\nPropose ONE concrete READ-ONLY payload to test. Output ONLY the raw payload on the first line, then 1-line rationale.\n\nSAFETY RULES (mandatory):\n- READ-ONLY only. NEVER use DROP, DELETE, TRUNCATE, UPDATE, INSERT, SHUTDOWN, GRANT, REVOKE, ALTER, EXEC, xp_cmdshell, rm -rf, format, mkfs.\n- Prefer error-based / boolean-based / reflection probes (e.g. ' OR 1=1--, <svg onload=alert(1)>, ../../../etc/passwd, {{7*7}}).`, []);
+    // Round 2 — Agent B proposes a read-only payload
+    let b1 = await callAgent(
+      "B",
+      sysB,
+      `Agent A analysis: ${a1}\n\nPropose ONE concrete READ-ONLY payload to test. Output ONLY the raw payload on the first line, then 1-line rationale.\n\nSAFETY RULES (mandatory):\n- READ-ONLY only. NEVER use DROP, DELETE, TRUNCATE, UPDATE, INSERT, SHUTDOWN, GRANT, REVOKE, ALTER, EXEC, xp_cmdshell, rm -rf, format, mkfs.\n- Prefer error-based / boolean-based / reflection probes (e.g. ' OR 1=1--, <svg onload=alert(1)>, ../../../etc/passwd, {{7*7}}).`,
+      [],
+    );
     transcript.push({ agent: "B", round: 2, msg: b1 });
-    let proposedPayload = b1.split("\n")[0].trim().replace(/^[`"']|[`"']$/g, "");
+    let proposedPayload = b1
+      .split("\n")[0]
+      .trim()
+      .replace(/^[`"']|[`"']$/g, "");
 
-    // Safety re-prompt: if Agent B proposed a destructive payload, ask once for a read-only alternative.
+    // Safety re-prompt — if Agent B proposed a destructive payload, ask once for read-only alternative
     let safetyCheck = isSafePayload(proposedPayload);
     if (!safetyCheck.ok) {
       await db.from("scan_logs").insert({
-        target_id: targetId, log_type: "info",
+        target_id: targetId,
+        log_type: "info",
         message: `🛡️ Safety filter blocked destructive payload: ${proposedPayload.slice(0, 50)} (${safetyCheck.matched})`,
         metadata: { run_id: runId, phase: "debate-safety-block" },
       });
-      const b1retry = await callAgent("B", sysB, `Your previous payload "${proposedPayload.slice(0, 60)}" contains destructive operations (${safetyCheck.matched}) and was BLOCKED. Propose a READ-ONLY test payload that cannot modify data. Output ONLY the raw payload on the first line.`, []);
+      const b1retry = await callAgent(
+        "B",
+        sysB,
+        `Your previous payload "${proposedPayload.slice(0, 60)}" contains destructive operations (${safetyCheck.matched}) and was BLOCKED. Propose a READ-ONLY test payload that cannot modify data. Output ONLY the raw payload on the first line.`,
+        [],
+      );
       transcript.push({ agent: "B", round: 2.5, msg: `[retry after safety block] ${b1retry}` });
-      const retryPayload = b1retry.split("\n")[0].trim().replace(/^[`"']|[`"']$/g, "");
+      const retryPayload = b1retry
+        .split("\n")[0]
+        .trim()
+        .replace(/^[`"']|[`"']$/g, "");
       if (isSafePayload(retryPayload).ok) {
         proposedPayload = retryPayload;
         b1 = b1retry;
       } else {
-        // Two strikes — abort this debate. Do NOT execute.
         await db.from("scan_logs").insert({
-          target_id: targetId, log_type: "info",
+          target_id: targetId,
+          log_type: "info",
           message: `🛡️ Safety: Agent B proposed destructive payload twice — debate aborted`,
           metadata: { run_id: runId, phase: "debate-safety-abort" },
         });
-        return new Response(JSON.stringify({ aborted: "safety", fpVerdict: "inconclusive", confidence: 0 }),
-          { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        return new Response(JSON.stringify({ aborted: "safety", fpVerdict: "inconclusive", confidence: 0 }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
       }
     }
 
     // Execute the agreed (safe) payload
     const probe1 = await probe(endpointUrl, paramName, proposedPayload);
-    transcript.push({ agent: "system", round: 3, msg: `EXECUTED: status=${probe1.status} len=${probe1.bodyLen} reflected=${probe1.reflected} errSig=${probe1.errorSig}` });
+    transcript.push({
+      agent: "system",
+      round: 3,
+      msg: `EXECUTED: status=${probe1.status} len=${probe1.bodyLen} reflected=${probe1.reflected} errSig=${probe1.errorSig} meaningfulDiff=${probe1.meaningfulDiff} diffReason=${probe1.diffReason} timingDelta=${probe1.timingDelta}ms`,
+    });
 
-    // Round 4: A debates if this is a real bug or FP
-    const a2 = await callAgent("A", sysA, `Result of payload "${proposedPayload}": status=${probe1.status}, length=${probe1.bodyLen}, reflected=${probe1.reflected}, error_signature=${probe1.errorSig}.\nBody snippet: ${probe1.bodySnippet.slice(0, 200)}\n\nIs this a TRUE bug or FALSE POSITIVE? Be skeptical. State verdict + 1-line reason.`, history);
+    // Round 4 — Agent A debates if this is a real bug or FP
+    const a2 = await callAgent(
+      "A",
+      sysA,
+      `Result of payload "${proposedPayload}":
+status=${probe1.status} (baseline=${probe1.baselineStatus})
+length=${probe1.bodyLen}b (baseline=${probe1.baselineLen}b)
+reflected=${probe1.reflected}
+error_signature=${probe1.errorSig}
+meaningful_diff=${probe1.meaningfulDiff}
+diff_reason=${probe1.diffReason}
+timing_delta=${probe1.timingDelta}ms
+Body snippet: ${probe1.bodySnippet.slice(0, 200)}
+
+Is this a TRUE bug or FALSE POSITIVE? Be SKEPTICAL. 
+IMPORTANT: if meaningful_diff is false, the response did not 
+actually change — that is almost always a false positive.
+State verdict + 1-line reason.`,
+      history,
+    );
     transcript.push({ agent: "A", round: 4, msg: a2 });
 
-    // Round 5: B challenges A
-    const b2 = await callAgent("B", sysB, `Agent A's verdict: ${a2}\n\nDo you AGREE or DISAGREE? If FP, explain why. If real bug, what would be the next escalation step? ≤60 words.`, history);
+    // Round 5 — Agent B challenges Agent A
+    const b2 = await callAgent(
+      "B",
+      sysB,
+      `Agent A's verdict: ${a2}\n\nDo you AGREE or DISAGREE? If FP, explain why. If real bug, what would be the next escalation step? ≤60 words.`,
+      history,
+    );
     transcript.push({ agent: "B", round: 5, msg: b2 });
 
-    // Final FP verdict (heuristic + agent consensus)
+    // ── Verdict logic — response diff drives confidence, not status code alone ──
     const aSaysFP = /false positive|not a bug|FP|not vulnerable|no vuln/i.test(a2);
     const bSaysFP = /false positive|not a bug|FP|agree.*FP|agree.*false/i.test(b2);
     const aSaysTP = /true positive|real bug|exploitable|vulnerable|confirmed/i.test(a2);
     const bSaysTP = /agree|true positive|real bug|exploitable|confirmed/i.test(b2) && !bSaysFP;
     const bothAgreeFP = aSaysFP && bSaysFP;
     const bothAgreeTP = aSaysTP && bSaysTP;
+
     const sqlErrorHit = SQL_ERROR_RX.test(probe1.bodySnippet);
     const reflectionHit = probe1.reflected && /<|script|onerror|onload|alert|javascript:/i.test(proposedPayload);
-    const strongSignal = probe1.errorSig || sqlErrorHit || reflectionHit;
 
     let fpVerdict: "true_positive" | "false_positive" | "inconclusive";
     let confidence: number;
-    // Hard rule: 5xx + SQL error keywords → high-confidence TP regardless of agent votes.
-    if (probe1.status >= 500 && sqlErrorHit) {
+
+    if (probe1.blocked) {
+      // Payload was blocked by safety — cannot assess
+      fpVerdict = "inconclusive";
+      confidence = 0;
+    } else if (!probe1.meaningfulDiff && probe1.status !== 0) {
+      // Response did not meaningfully change — almost certainly a false positive
+      // regardless of what the agents say
+      fpVerdict = "false_positive";
+      confidence = 90;
+    } else if (probe1.diffReason === "sensitive data pattern matched") {
+      fpVerdict = "true_positive";
+      confidence = 95;
+    } else if (probe1.status >= 500 && sqlErrorHit) {
+      fpVerdict = "true_positive";
+      confidence = 90;
+    } else if (probe1.diffReason === "stack trace exposed") {
       fpVerdict = "true_positive";
       confidence = 85;
-    } else if (bothAgreeFP && !strongSignal) {
-      fpVerdict = "false_positive";
-      confidence = 85;
-    } else if (bothAgreeTP && strongSignal) {
+    } else if (probe1.diffReason === "HTML payload reflected and unescaped") {
       fpVerdict = "true_positive";
       confidence = 80;
-    } else if (strongSignal && !bothAgreeFP) {
+    } else if (probe1.timingDelta > 4500) {
       fpVerdict = "true_positive";
-      confidence = bothAgreeTP ? 80 : 70;
+      confidence = 75;
+    } else if (probe1.meaningfulDiff && bothAgreeTP) {
+      fpVerdict = "true_positive";
+      confidence = 70;
+    } else if (probe1.meaningfulDiff && !bothAgreeFP) {
+      fpVerdict = "inconclusive";
+      confidence = 50;
+    } else if (bothAgreeFP) {
+      fpVerdict = "false_positive";
+      confidence = 85;
     } else if (probe1.status === 0) {
       fpVerdict = "inconclusive";
       confidence = 30;
-    } else if (aSaysTP || bSaysTP) {
-      // Only one agent voted TP without strong signal — low trust.
-      fpVerdict = "true_positive";
-      confidence = 60;
     } else {
-      fpVerdict = aSaysFP || bSaysFP ? "inconclusive" : "true_positive";
-      confidence = 55;
+      // Default — no signal, no meaningful diff
+      fpVerdict = "false_positive";
+      confidence = 75;
     }
 
     // Self-correlation learnings
-    const learnA = `Param ${paramName}: my hypothesis was "${a1.slice(0, 80)}…". Verdict: ${fpVerdict} (conf ${confidence}). Adjusting prior weight for this vuln class on similar params.`;
-    const learnB = `Payload "${proposedPayload.slice(0, 60)}" → ${fpVerdict}. ${strongSignal ? "Strong signal — promote this payload pattern." : "Weak signal — deprioritize blind variants of this template."}`;
+    const learnA = `Param ${paramName}: hypothesis "${a1.slice(0, 80)}…". Verdict: ${fpVerdict} (${confidence}%). diffReason: ${probe1.diffReason}`;
+    const learnB = `Payload "${proposedPayload.slice(0, 60)}" → ${fpVerdict}. ${probe1.meaningfulDiff ? "Meaningful diff — promote pattern." : "No diff — deprioritize this template."}`;
 
-    const { data: debateRow } = await db.from("mythos_debates").insert({
-      target_id: targetId,
-      run_id: runId ?? null,
-      endpoint_url: endpointUrl,
-      param_name: paramName,
-      param_value: paramValue ?? null,
-      vuln_class: vulnClassHint ?? null,
-      transcript,
-      agreed_payload: proposedPayload,
-      agreed_rationale: b1,
-      test_result: probe1,
-      fp_verdict: fpVerdict,
-      fp_reasoning: `${a2}\n---\n${b2}`,
-      confidence_score: confidence,
-      agent_a_learning: learnA,
-      agent_b_learning: learnB,
-    }).select().single();
+    const { data: debateRow } = await db
+      .from("mythos_debates")
+      .insert({
+        target_id: targetId,
+        run_id: runId ?? null,
+        endpoint_url: endpointUrl,
+        param_name: paramName,
+        param_value: paramValue ?? null,
+        vuln_class: vulnClassHint ?? null,
+        transcript,
+        agreed_payload: proposedPayload,
+        agreed_rationale: b1,
+        test_result: probe1,
+        fp_verdict: fpVerdict,
+        fp_reasoning: `${a2}\n---\n${b2}`,
+        confidence_score: confidence,
+        agent_a_learning: learnA,
+        agent_b_learning: learnB,
+      })
+      .select()
+      .single();
 
     // Stream phase logs
     await db.from("scan_logs").insert([
-      { target_id: targetId, log_type: "thought", message: `🥷 Agent A: ${a1.slice(0, 120)}`, metadata: { run_id: runId, debate_id: debateRow?.id, phase: "debate-a1" } },
-      { target_id: targetId, log_type: "thought", message: `🥷 Agent B: ${b1.slice(0, 120)}`, metadata: { run_id: runId, debate_id: debateRow?.id, phase: "debate-b1" } },
-      { target_id: targetId, log_type: "action", message: `⚔️ Executed: ${proposedPayload.slice(0, 80)} → ${probe1.status} (${probe1.bodyLen}b)`, metadata: { run_id: runId, debate_id: debateRow?.id, phase: "debate-exec" } },
-      { target_id: targetId, log_type: fpVerdict === "true_positive" ? "result" : "info", message: `🧐 Verdict: ${fpVerdict} (${confidence}% conf)`, metadata: { run_id: runId, debate_id: debateRow?.id, phase: "debate-verdict" } },
+      {
+        target_id: targetId,
+        log_type: "thought",
+        message: `🥷 Agent A: ${a1.slice(0, 120)}`,
+        metadata: { run_id: runId, debate_id: debateRow?.id, phase: "debate-a1" },
+      },
+      {
+        target_id: targetId,
+        log_type: "thought",
+        message: `🥷 Agent B: ${b1.slice(0, 120)}`,
+        metadata: { run_id: runId, debate_id: debateRow?.id, phase: "debate-b1" },
+      },
+      {
+        target_id: targetId,
+        log_type: "action",
+        message: `⚔️ Executed: ${proposedPayload.slice(0, 80)} → ${probe1.status} (${probe1.bodyLen}b)`,
+        metadata: { run_id: runId, debate_id: debateRow?.id, phase: "debate-exec" },
+      },
+      {
+        target_id: targetId,
+        log_type: fpVerdict === "true_positive" ? "result" : "info",
+        message: `🧐 Verdict: ${fpVerdict} (${confidence}% conf) — ${probe1.diffReason} | baseline=${probe1.baselineLen}b → mutated=${probe1.bodyLen}b | Δtime=${probe1.timingDelta}ms | status=${probe1.baselineStatus}→${probe1.status}`,
+        metadata: { run_id: runId, debate_id: debateRow?.id, phase: "debate-verdict" },
+      },
     ]);
 
-    // True positive escalation pipeline.
-    // - confidence >= 75 → insert finding + trigger exploit-engine immediately
-    // - confidence 55-74 → insert finding as "needs_review" (UI shows orange badge)
-    // - confidence < 55 → no finding, just keep the debate row
+    // ── Escalation pipeline ──────────────────────────────────────────────────
+    // confidence >= 75 → insert finding + trigger exploit-engine immediately
+    // confidence 55-74 → insert finding as needs_review
+    // confidence < 55  → no finding created
     if (fpVerdict === "true_positive" && debateRow?.id && confidence >= 55) {
       const validationStatus = confidence >= 75 ? "debate_confirmed" : "needs_review";
-      const title = `Debate-confirmed: ${vulnClassHint || "potential"} via ${paramName}`;
-      const { data: finding } = await db.from("vulnerability_findings").insert({
-        target_id: targetId,
-        title,
-        severity: confidence >= 75 ? "medium" : "low",
-        description: `Two-agent debate verdict: ${fpVerdict} (${confidence}% conf)\n\n**Agent A**: ${a2}\n\n**Agent B**: ${b2}`,
-        payload: proposedPayload,
-        confidence_score: confidence,
-        confidence_level: confidence >= 75 ? "high" : "medium",
-        triage_reasoning: `Agent A: ${a1}\nAgent B: ${b1}\nResult: ${JSON.stringify(probe1)}\nDebate: ${a2} | ${b2}`,
-        validation_status: validationStatus,
-      }).select("id").single();
+      const title = `Debate-confirmed: ${vulnClassHint || "auto"} via ${paramName}`;
+
+      const { data: finding } = await db
+        .from("vulnerability_findings")
+        .insert({
+          target_id: targetId,
+          title,
+          severity: confidence >= 80 ? "high" : confidence >= 75 ? "medium" : "low",
+          description: `Two-agent debate verdict: ${fpVerdict} (${confidence}% conf)\n\n**Diff reason**: ${probe1.diffReason}\n\n**Agent A**: ${a2}\n\n**Agent B**: ${b2}`,
+          payload: proposedPayload,
+          poc: `${endpointUrl}?${paramName}=${encodeURIComponent(proposedPayload)}`,
+          affected_url: endpointUrl,
+          confidence_score: confidence,
+          confidence_level: confidence >= 75 ? "high" : "medium",
+          triage_reasoning: `Agent A: ${a1}\nAgent B: ${b1}\nResult: ${JSON.stringify(probe1)}\nDebate: ${a2} | ${b2}`,
+          validation_status: validationStatus,
+          hard_evidence: {
+            baseline_status: probe1.baselineStatus,
+            baseline_length: probe1.baselineLen,
+            mutated_status: probe1.status,
+            mutated_length: probe1.bodyLen,
+            diff_reason: probe1.diffReason,
+            timing_delta_ms: probe1.timingDelta,
+            meaningful_diff: probe1.meaningfulDiff,
+            body_snippet: probe1.bodySnippet,
+          },
+        })
+        .select("id")
+        .single();
 
       if (confidence >= 75 && finding?.id) {
+        // Fire and forget — exploit engine runs async
         fetch(`${SUPABASE_URL}/functions/v1/exploit-engine`, {
           method: "POST",
-          headers: { Authorization: `Bearer ${SERVICE_KEY}`, "Content-Type": "application/json" },
+          headers: {
+            Authorization: `Bearer ${SERVICE_KEY}`,
+            "Content-Type": "application/json",
+          },
           body: JSON.stringify({ findingId: finding.id, targetId }),
         }).catch((e) => console.error("exploit-engine dispatch failed:", e));
+
         await db.from("scan_jobs").insert({
-          target_id: targetId, job_type: "exploit", priority: 9,
+          target_id: targetId,
+          job_type: "exploit",
+          priority: 9,
           payload: { findingId: finding.id },
         });
+
         await db.from("scan_logs").insert({
-          target_id: targetId, log_type: "result",
-          message: `🚀 Escalating true_positive to exploit engine: ${title} (${confidence}% conf)`,
-          metadata: { run_id: runId, debate_id: debateRow.id, finding_id: finding.id, phase: "debate-escalate" },
+          target_id: targetId,
+          log_type: "result",
+          message: `🚀 Escalating to exploit engine: ${title} (${confidence}% conf) — ${probe1.diffReason}`,
+          metadata: {
+            run_id: runId,
+            debate_id: debateRow.id,
+            finding_id: finding.id,
+            phase: "debate-escalate",
+          },
         });
       } else if (finding?.id) {
         await db.from("scan_logs").insert({
-          target_id: targetId, log_type: "info",
-          message: `🟧 needs_review: ${title} (${confidence}% conf — below auto-escalate threshold)`,
-          metadata: { run_id: runId, debate_id: debateRow.id, finding_id: finding.id, phase: "debate-needs-review" },
+          target_id: targetId,
+          log_type: "info",
+          message: `🟧 needs_review: ${title} (${confidence}% conf — below auto-escalate threshold) — ${probe1.diffReason}`,
+          metadata: {
+            run_id: runId,
+            debate_id: debateRow.id,
+            finding_id: finding.id,
+            phase: "debate-needs-review",
+          },
         });
       }
     }
 
-    return new Response(JSON.stringify({
-      debateId: debateRow?.id,
-      fpVerdict,
-      confidence,
-      agreedPayload: proposedPayload,
-      transcript,
-    }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    return new Response(
+      JSON.stringify({
+        debateId: debateRow?.id,
+        fpVerdict,
+        confidence,
+        agreedPayload: proposedPayload,
+        diffReason: probe1.diffReason,
+        meaningfulDiff: probe1.meaningfulDiff,
+        transcript,
+      }),
+      { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+    );
   } catch (e) {
     console.error("mythos-debate error:", e);
-    return new Response(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }),
-      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    return new Response(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }), {
+      status: 200,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   }
 });
