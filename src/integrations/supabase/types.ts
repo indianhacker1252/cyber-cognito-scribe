@@ -2272,6 +2272,7 @@ export type Database = {
         Args: { _scan_type: string; _target_id: string }
         Returns: Json
       }
+      fail_stuck_mythos_runs: { Args: never; Returns: number }
       grant_scan_credits: {
         Args: { _amount: number; _user_id: string }
         Returns: Json
