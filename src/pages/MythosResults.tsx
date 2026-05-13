@@ -432,13 +432,31 @@ export default function MythosResults() {
                   <div key={r.id} className="border-b border-border p-3 hover:bg-muted/30">
                     <div className="flex items-center justify-between gap-2">
                       <div className="flex items-center gap-2">
-                        <Badge className={`${r.status === "complete" ? "bg-primary text-primary-foreground" : r.status === "running" ? "bg-yellow-600/80 text-white" : "bg-muted text-muted-foreground"} text-[10px] font-mono uppercase`}>{r.status}</Badge>
+                        <Badge className={`${r.status === "complete" ? "bg-primary text-primary-foreground" : r.status === "running" ? "bg-yellow-600/80 text-white" : r.status === "failed" ? "bg-destructive/80 text-destructive-foreground" : "bg-muted text-muted-foreground"} text-[10px] font-mono uppercase`}>{r.status}</Badge>
                         <span className="font-mono text-xs text-muted-foreground">{new Date(r.started_at || r.completed_at || Date.now()).toLocaleString()}</span>
                         {r.current_phase && <Badge variant="outline" className="font-mono text-[10px]">{r.current_phase}</Badge>}
                       </div>
-                      <Link to={traceLink({ runId: r.id })} className="text-[10px] text-primary hover:underline flex items-center gap-1">
-                        <ExternalLink className="h-3 w-3" /> trace
-                      </Link>
+                      <div className="flex items-center gap-2">
+                        {(r.status === "running" || r.status === "failed") && r.current_phase && r.current_phase !== "done" && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-6 text-[10px] font-mono"
+                            onClick={async () => {
+                              const { error } = await supabase.functions.invoke("mythos-orchestrator", {
+                                body: { runId: r.id, nextPhase: r.current_phase },
+                              });
+                              if (error) console.error(error);
+                              reload(targetId);
+                            }}
+                          >
+                            <RefreshCw className="h-3 w-3 mr-1" /> Resume
+                          </Button>
+                        )}
+                        <Link to={traceLink({ runId: r.id })} className="text-[10px] text-primary hover:underline flex items-center gap-1">
+                          <ExternalLink className="h-3 w-3" /> trace
+                        </Link>
+                      </div>
                     </div>
                     <div className="mt-1 grid grid-cols-4 gap-2 font-mono text-[10px] text-muted-foreground">
                       <div>iter <span className="text-primary">{r.iteration}/{r.max_iterations}</span></div>
