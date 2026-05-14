@@ -1,73 +1,91 @@
-# Triple-Verification Before Report
 
-Goal: stop noisy findings from reaching the final report. A finding only enters the PDF as **CONFIRMED** when it survives three independent checks. Anything weaker either ships as **NEEDS-REVIEW** (flagged) or is held back.
+# CyberScope — State of the Platform & Next Plan
 
-## Verification ladder
+## What we've built so far
+
+CyberScope is an autonomous web-app QA / VAPT platform: 15 frontend pages, 60 edge functions, 40+ database tables, a long-horizon AI orchestrator, and a job-queue worker driven by `pg_cron`.
+
+### Capability map (already shipped)
 
 ```text
-  Stage 1: Baseline capture       → record clean response (status, length, body hash)
-        ↓
-  Stage 2: Mutated probe           → fire payload, diff against baseline
-        ↓
-  Stage 3: Re-baseline + canary    → re-fetch clean URL, ensure no drift; replay payload twice
-        ↓
-  Confidence math (0–100)
-        ↓
-   ≥95 → confirmed   |   75–94 → needs_review   |   <75 → inconclusive (excluded)
+                     ┌──────────────────────────────────────┐
+                     │   USER  →  Targets / Findings / UI   │
+                     └──────────────┬───────────────────────┘
+                                    │
+         ┌──────────────────────────┼──────────────────────────┐
+         ▼                          ▼                          ▼
+   RECON & MAPPING           VULNERABILITY ENGINE        VALIDATION & PROOF
+   recon-engine              advanced-fuzzer             triple-verify  (3-stage)
+   recon-deep                vuln-scanner                exploit-engine
+   headless-browser          ssrf-deep, xxe              browser-exploit (headless)
+   cve-version-matcher       graphql-attack              proof-engine
+   app-package-scan          cache-attack, smuggler      sandbox-exec
+                             auth-deep, bac-tester       deterministic-proof
+
+         ┌──────────────────────────┼──────────────────────────┐
+         ▼                          ▼                          ▼
+   LONG-HORIZON AI            INTELLIGENCE               OPERATIONS
+   mythos-orchestrator        intel-sync                 scan-job-worker (cron)
+   mythos-chainer             exploitdb-sync             canary-drift-monitor
+   mythos-variant-gen         ai-tutor-distill           docker-worker-dispatch
+   mythos-debate (A/B)        rag-corpus                 fail_stuck_mythos_runs
+   mythos-patcher             experience_vault (RL)      external-db-mirror
 ```
 
-A finding is **confirmed** only if all three are true:
-1. Mutated response differs from baseline beyond per-class thresholds (e.g. SSRF needs status 500 + >200 byte delta; SQLi needs error-pattern match OR >25% length delta).
-2. Re-baseline matches original baseline (target wasn't drifting on its own).
-3. Payload replay is deterministic — same delta on two consecutive sends.
+### Recent stability work
+- **Triple-verify pipeline** — every finding goes baseline → mutated → re-baseline + replay; writes `confidence_score`, `validation_status`, `triage_reasoning` and gates the PDF report.
+- **Long-horizon orchestrator** — bypasses the 50s edge limit by chunking each Mythos run into resumable phases (`init → sast → iter-N-{chain,variant,debate} → patch`) enqueued through `scan_jobs`.
+- **Browser-exploit worker** — headless Chrome that promotes XSS findings to `proof_tier='exploited'` with real `window.alert` execution.
+- **Stuck-run sweeper** — cron auto-fails Mythos runs idle >60 min so the dashboard stays clean.
+- **Resume button** on `/mythos-results` to manually resume a stalled or failed run from its last phase.
 
-## What gets built
+### Live data snapshot (from last health check)
+- 654 jobs/day cycling through the queue, ~98% success.
+- 50 findings: 21 auto-accepted, 14 needs-review, 3 debate-confirmed, 2 verified.
+- 0 findings at `proof_tier='exploited'` yet — the new browser-exploit chain hasn't fired in production.
 
-### 1. Shared verifier — `supabase/functions/_shared/triple-verify.ts`
-- `captureBaseline(url, method, headers)` → `{ status, length, hash, blocked }`
-- `runMutated(url, method, payload, baseline)` → `{ status, length, hash, delta, signals[] }`
-- `verify(finding)` returns `{ confidence, tier, reasons[], stages: {baseline, mutated, rebaseline, replay} }`
-  - confidence formula: weighted sum of stage signals + class-specific detectors (reuses `EXEC_DETECTORS`)
-  - canary drift detected → confidence capped at 60
-  - replay non-deterministic → capped at 70
+## The gap vs. XBOW
 
-### 2. Verification orchestrator — `supabase/functions/triple-verify/index.ts`
-- Input: `{ findingId }`
-- Pulls finding + endpoint, runs the 3 stages with `safeFetch` (4–8s timeouts, 50s budget)
-- Writes back to `vulnerability_findings`:
-  - `confidence_score`, `validation_status` (`confirmed` | `needs_review` | `inconclusive`)
-  - `triage_reasoning` (human-readable stage breakdown)
-  - `evidence.triple_verify` (raw stage data for the report)
-- Always returns 200 OK; errors land in JSON body
+We compete on autonomy and breadth. We still trail on:
+1. **Proven exploits** — almost every finding is `signal` tier, not `exploited`.
+2. **Scale** — single-region edge functions; no parallel target fan-out.
+3. **Reasoning depth** — debates are 1-round; XBOW does multi-step plan + critique loops.
+4. **Reporting polish** — the PDF is functional but auditor-grade narrative and CVSS justification are thin.
 
-### 3. Auto-routing in `mythos-debate` and `triage-brain`
-After the existing debate writes a candidate finding, enqueue `triple-verify` instead of marking it directly. Status mapping:
-- ≥95 → `confirmed`, auto-promote to `exploit-engine`
-- 75–94 → `needs_review`, surface in Findings list with amber badge
-- <75 → `inconclusive`, hidden from default views
+## Proposed next milestone — "Close the proof gap"
 
-### 4. Report gating — `src/services/PdfReport.ts`
-- `generateBulkPdf` filters to `validation_status IN ('confirmed','needs_review')` by default
-- Each finding page renders a status pill: green CONFIRMED or amber NEEDS REVIEW (with a one-line "why flagged" from `triage_reasoning`)
-- Add a summary table: counts by status alongside counts by severity
-- New parameter `{ includeNeedsReview: boolean }` (default true) so auditors can export confirmed-only
+A focused 4-step push that turns more `needs_review` findings into `exploited` and ships an enterprise-quality report.
 
-### 5. UI — `src/pages/Findings.tsx`
-- New filter chip: All / Confirmed / Needs Review / Inconclusive
-- Badge color for `needs_review` (amber, distinct from `verified` green)
-- "Re-verify" button on each finding → calls `triple-verify` edge function
-- Tooltip on confidence score showing the 3-stage breakdown
+### Step 1 — Auto-fire browser-exploit on the existing backlog
+Trigger `browser_exploit` jobs for the 14 `needs_review` and 17 XSS-class findings already in the DB so we get real exploited-tier results today, not only on new scans.
 
-### 6. Migration
-- Backfill `validation_status` defaults: existing rows with `confidence_score >= 95` → `confirmed`; 75–94 → `needs_review`; rest → `inconclusive`
-- Add index on `(target_id, validation_status)` for fast filtering
+### Step 2 — Multi-round debate (Plan → Attack → Critique → Patch)
+Expand `mythos-debate` from 1 round to 3:
+- **Plan**: Agent A proposes hypothesis + payload class.
+- **Attack**: Agent B executes via `request-repeater` + browser-exploit.
+- **Critique**: Skeptic agent reviews the diff, demands retry on weak signals.
+Stops early when confidence ≥95.
 
-## Out of scope (this round)
-- Refactoring exploit-engine or proof-engine internals
-- Changes to recon / variant-gen
-- Per-vuln-class detector tuning (uses existing `EXEC_DETECTORS`)
+### Step 3 — Parallel exploit fan-out
+Replace the serial loop in `mythos-orchestrator` debate phase with `Promise.all` of up to 6 endpoints in parallel (each capped at 8s safeFetch). Should 4-6× our throughput per run.
+
+### Step 4 — Auditor-grade report
+Upgrade `PdfReport.ts`:
+- Executive summary auto-generated by Lovable AI from confirmed findings.
+- CVSS 3.1 vector breakdown per finding with justification text.
+- Reproduction steps as numbered checklist + curl + browser POC link.
+- Cover page, ToC, severity heatmap, compliance mapping (OWASP Top 10, CWE).
+
+### Out of scope this round
+- Multi-region deploy / horizontal scaling (needs infra work, separate plan)
+- Native mobile app surface
+- Writing real RCE payloads (stays HITL-gated, not autonomous)
 
 ## Acceptance criteria
-- A synthetic test target produces: confirmed SQLi (95+), needs-review reflected XSS (~85), inconclusive timing-only SSRF (<75)
-- PDF export contains only confirmed + needs-review, with status pills
-- Re-running verify on an unchanged finding yields the same tier (deterministic)
+- ≥5 findings reach `proof_tier='exploited'` automatically within 24h of running on a live target.
+- A Mythos iteration completes ≥4 endpoints in parallel within one debate phase.
+- Generated PDF has cover, exec summary, ≥1 narrative paragraph per finding, OWASP/CWE tags.
+- Stuck-run rate stays at 0 (sweeper already in place).
+
+## Decision needed
+Approve this 4-step milestone, or pick a different direction (e.g. mobile app analysis depth, intel-feed expansion, multi-tenant org workspaces).
