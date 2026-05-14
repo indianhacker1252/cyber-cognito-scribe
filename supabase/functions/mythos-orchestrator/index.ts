@@ -87,10 +87,12 @@ async function executePhase(db: any, run: any, phase: string, payload: any): Pro
   }
 
   if (meta.kind === "iter" && meta.sub === "debate") {
-    await log(`🥷 Debate phase (top params)`);
+    await log(`🥷 Debate phase (parallel fan-out, max 6)`);
     const { data: eps } = await db.from("discovered_endpoints").select("url,parameters").eq("target_id", targetId).limit(15);
-    let debates = 0, tp = 0, fp = 0;
     const COMMON = ["q", "id", "search", "url", "redirect"];
+
+    // Build the candidate list (endpoint × param) up-front, then fan out in parallel.
+    const candidates: Array<{ url: string; param: string; value: string }> = [];
     for (const ep of eps || []) {
       let params = (ep.parameters as Record<string, string>) || {};
       if (Object.keys(params).length === 0) {
@@ -98,13 +100,26 @@ async function executePhase(db: any, run: any, phase: string, payload: any): Pro
       }
       if (Object.keys(params).length === 0) params = Object.fromEntries(COMMON.map(p => [p, "test"]));
       for (const pk of Object.keys(params).slice(0, 2)) {
-        const d = await call("mythos-debate", { targetId, runId, endpointUrl: ep.url, paramName: pk, paramValue: params[pk], vulnClassHint: "auto" }, 25000);
-        if (d.ok) { debates++; if (d.data?.fpVerdict === "true_positive") tp++; if (d.data?.fpVerdict === "false_positive") fp++; }
-        if (debates >= 8) break;
+        candidates.push({ url: ep.url, param: pk, value: params[pk] });
+        if (candidates.length >= 6) break;
       }
-      if (debates >= 8) break;
+      if (candidates.length >= 6) break;
     }
-    await log(`Debates: ${debates} run, ${tp} TP, ${fp} FP`, { debates, tp, fp });
+
+    const settled = await Promise.allSettled(
+      candidates.map(c =>
+        call("mythos-debate", { targetId, runId, endpointUrl: c.url, paramName: c.param, paramValue: c.value, vulnClassHint: "auto" }, 28000)
+      ),
+    );
+    let debates = 0, tp = 0, fp = 0;
+    for (const s of settled) {
+      if (s.status === "fulfilled" && s.value.ok) {
+        debates++;
+        if (s.value.data?.fpVerdict === "true_positive") tp++;
+        if (s.value.data?.fpVerdict === "false_positive") fp++;
+      }
+    }
+    await log(`Debates: ${debates}/${candidates.length} run in parallel, ${tp} TP, ${fp} FP`, { debates, tp, fp, parallel: candidates.length });
     // Browser-exploit pass on top XSS findings
     const { data: xssFindings } = await db.from("vulnerability_findings")
       .select("id").eq("target_id", targetId).ilike("finding_type", "%xss%").lt("proof_tier", "exploited").limit(3);
