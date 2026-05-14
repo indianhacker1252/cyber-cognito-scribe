@@ -358,9 +358,49 @@ State verdict + 1-line reason.`,
       confidence = 75;
     }
 
+    // ── Round 6 (optional) — Skeptic critique → refined payload → re-probe ──
+    // Only fires when first probe was inconclusive AND the response was reachable.
+    let probe2: typeof probe1 | null = null;
+    let refinedPayload: string | null = null;
+    let skepticMsg: string | null = null;
+    const inconclusive = fpVerdict === "inconclusive" || (fpVerdict === "false_positive" && confidence < 90 && probe1.status !== 0);
+    if (inconclusive && !probe1.blocked) {
+      const sysSkeptic = `You are the Skeptic — a senior bug-bounty triager. Your only job is to detect WEAK signals the first payload missed and propose ONE refined READ-ONLY payload that would PROVE or DISPROVE the bug. Be terse (≤60 words). Output: line 1 = raw payload only; line 2 = 1-line rationale.`;
+      const skepticUserMsg = `First payload "${proposedPayload}" produced:\nstatus=${probe1.status} (baseline=${probe1.baselineStatus})\nlen=${probe1.bodyLen}b (baseline=${probe1.baselineLen}b)\ndiff_reason=${probe1.diffReason}\ntiming=${probe1.timingDelta}ms\nverdict=${fpVerdict} confidence=${confidence}\n\nAgent A: ${a2}\nAgent B: ${b2}\n\nPropose ONE sharper READ-ONLY payload that would resolve the ambiguity (e.g. timing-based, error-based, boundary-case). Forbidden: DROP/DELETE/UPDATE/INSERT/TRUNCATE/SHUTDOWN/EXEC/rm -rf.`;
+      skepticMsg = await callAgent("A", sysSkeptic, skepticUserMsg, []);
+      transcript.push({ agent: "skeptic", round: 6, msg: skepticMsg });
+      const candidate = skepticMsg.split("\n")[0].trim().replace(/^[`"']|[`"']$/g, "");
+      if (candidate && candidate !== proposedPayload && isSafePayload(candidate).ok) {
+        refinedPayload = candidate;
+        probe2 = await probe(endpointUrl, paramName, refinedPayload);
+        transcript.push({
+          agent: "system",
+          round: 7,
+          msg: `SKEPTIC RETEST: status=${probe2.status} len=${probe2.bodyLen} reflected=${probe2.reflected} errSig=${probe2.errorSig} meaningfulDiff=${probe2.meaningfulDiff} diffReason=${probe2.diffReason} timingDelta=${probe2.timingDelta}ms`,
+        });
+
+        // Re-score using probe2 if it produced a stronger signal
+        let v2: typeof fpVerdict = fpVerdict;
+        let c2 = confidence;
+        const sql2 = SQL_ERROR_RX.test(probe2.bodySnippet);
+        if (probe2.diffReason === "sensitive data pattern matched") { v2 = "true_positive"; c2 = 95; }
+        else if (probe2.status >= 500 && sql2) { v2 = "true_positive"; c2 = 92; }
+        else if (probe2.diffReason === "stack trace exposed") { v2 = "true_positive"; c2 = 88; }
+        else if (probe2.diffReason === "HTML payload reflected and unescaped") { v2 = "true_positive"; c2 = 85; }
+        else if (probe2.timingDelta > 4500) { v2 = "true_positive"; c2 = 80; }
+        else if (probe2.meaningfulDiff) { v2 = "inconclusive"; c2 = Math.max(c2, 60); }
+        else { v2 = "false_positive"; c2 = Math.max(c2, 80); }
+        // Adopt skeptic verdict only if it tightens the conclusion
+        if (c2 > confidence || (v2 === "true_positive" && fpVerdict !== "true_positive")) {
+          fpVerdict = v2;
+          confidence = c2;
+        }
+      }
+    }
+
     // Self-correlation learnings
-    const learnA = `Param ${paramName}: hypothesis "${a1.slice(0, 80)}…". Verdict: ${fpVerdict} (${confidence}%). diffReason: ${probe1.diffReason}`;
-    const learnB = `Payload "${proposedPayload.slice(0, 60)}" → ${fpVerdict}. ${probe1.meaningfulDiff ? "Meaningful diff — promote pattern." : "No diff — deprioritize this template."}`;
+    const learnA = `Param ${paramName}: hypothesis "${a1.slice(0, 80)}…". Verdict: ${fpVerdict} (${confidence}%). diffReason: ${probe1.diffReason}${probe2 ? ` | skeptic-retest: ${probe2.diffReason}` : ""}`;
+    const learnB = `Payload "${proposedPayload.slice(0, 60)}" → ${fpVerdict}. ${probe1.meaningfulDiff ? "Meaningful diff — promote pattern." : "No diff — deprioritize this template."}${refinedPayload ? ` | Skeptic refined: "${refinedPayload.slice(0, 40)}"` : ""}`;
 
     const { data: debateRow } = await db
       .from("mythos_debates")
