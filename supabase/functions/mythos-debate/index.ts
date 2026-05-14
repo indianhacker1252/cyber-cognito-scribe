@@ -483,6 +483,11 @@ State verdict + 1-line reason.`,
             timing_delta_ms: probe1.timingDelta,
             meaningful_diff: probe1.meaningfulDiff,
             body_snippet: probe1.bodySnippet,
+            skeptic_round: probe2 ? {
+              refined_payload: refinedPayload,
+              skeptic_msg: skepticMsg,
+              probe: probe2,
+            } : null,
           },
         })
         .select("id")
