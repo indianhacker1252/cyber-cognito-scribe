@@ -135,8 +135,18 @@ Deno.serve(async (req) => {
         if (!res || res.status >= 500) continue;
         if (!res.body.includes(canary)) continue;
 
-        // Reflection confirmed → escalate with sink payloads
+        // Raw canary reflection alone is NOT XSS — it's almost always echoed
+        // inside a benign URL context (canonical link, og:url meta, anchor href,
+        // form action, JSON-LD URL field). We require an executable sink to be
+        // reflected verbatim AND in a dangerous (non-URL/non-encoded) context.
         reflections++;
+
+        // Find the reflection sites and check whether ANY are in dangerous context.
+        // If every occurrence of the canary sits inside a URL attribute
+        // (href=, src=, content=, action=, formaction=, data-*-url=, JSON "url":)
+        // we treat the parameter as safe and move on.
+        if (!hasDangerousReflectionContext(res.body, canary)) continue;
+
         let bestSink: { name: string; value: string; reason: string; bodySnippet: string } | null = null;
         for (const p of payloads.slice(1)) {
           const c2 = rand();
@@ -147,28 +157,28 @@ Deno.serve(async (req) => {
           await new Promise(r => setTimeout(r, 200));
           if (!sr || sr.status >= 500) continue;
           // Verbatim reflection of the sink string (raw HTML, no entity-encoding)
-          if (sr.body.includes(sinkVal)) {
-            const idx = sr.body.indexOf(sinkVal);
-            bestSink = {
-              name: p.name, value: sinkVal, reason: p.reason,
-              bodySnippet: sr.body.slice(Math.max(0, idx - 60), idx + sinkVal.length + 60),
-            };
-            break;
-          }
+          // AND in a dangerous context (not inside href/src/content/action attribute).
+          if (!sr.body.includes(sinkVal)) continue;
+          if (!hasDangerousReflectionContext(sr.body, sinkVal)) continue;
+          const idx = sr.body.indexOf(sinkVal);
+          bestSink = {
+            name: p.name, value: sinkVal, reason: p.reason,
+            bodySnippet: sr.body.slice(Math.max(0, idx - 60), idx + sinkVal.length + 60),
+          };
+          break;
         }
 
-        const sev = bestSink ? "high" : "medium";
-        const conf = bestSink ? 90 : 60;
-        const title = bestSink
-          ? `Reflected XSS via ?${pname}= (${bestSink.name} sink)`
-          : `Parameter reflection: ?${pname}= echoes user input`;
+        // No executable sink reflected → drop. We refuse to file medium-severity
+        // "parameter echoes input" findings; they were the FP source on every target.
+        if (!bestSink) continue;
 
+        const title = `Reflected XSS via ?${pname}= (${bestSink.name} sink)`;
         const evidence: any = {
           method: "GET",
           url,
           canary,
           reflected: true,
-          sink: bestSink ? { kind: bestSink.name, payload: bestSink.value, snippet: bestSink.bodySnippet } : null,
+          sink: { kind: bestSink.name, payload: bestSink.value, snippet: bestSink.bodySnippet },
           contentType: res.headers["content-type"] || null,
           discoveredBy: "param-bruteforce-xss",
         };
@@ -177,25 +187,22 @@ Deno.serve(async (req) => {
           target_id: targetId,
           endpoint_id: ep.id,
           finding_type: "xss_reflected",
-          severity: sev as any,
+          severity: "high" as any,
           title,
-          description: bestSink
-            ? `Endpoint ${ep.url} reflects the value of parameter '${pname}' verbatim including HTML sink markup. Likely exploitable Reflected XSS.`
-            : `Endpoint ${ep.url} reflects the value of parameter '${pname}' in the response body. Further sink-context probing recommended.`,
+          description: `Endpoint ${ep.url} reflects the value of parameter '${pname}' verbatim including HTML sink markup outside a URL attribute context. Likely exploitable Reflected XSS.`,
           parameter: pname,
-          payload_used: bestSink ? bestSink.value : raw.value,
-          confidence_score: conf,
-          confidence_level: bestSink ? "high" : "medium",
+          payload_used: bestSink.value,
+          confidence_score: 90,
+          confidence_level: "high",
           ai_verified: false,
           reachability_status: "confirmed",
-          triage_reasoning: bestSink
-            ? `Sink "${bestSink.name}" reflected verbatim — ${bestSink.reason}.`
-            : `Canary '${canary}' reflected in body — partial XSS surface.`,
+          triage_reasoning: `Sink "${bestSink.name}" reflected verbatim in dangerous context — ${bestSink.reason}.`,
           evidence,
           request_data: { method: "GET", url },
           response_data: { status: res.status, length: res.body.length, snippet: res.body.slice(0, 500) },
-          cvss_score: bestSink ? 7.4 : 5.4,
+          cvss_score: 7.4,
         }).select("id").single();
+        const sev = "high";
 
         approvals++;
         if (ins?.id) findings.push({ approvalId: ins.id, endpoint: ep.url, param: pname, severity: sev });
