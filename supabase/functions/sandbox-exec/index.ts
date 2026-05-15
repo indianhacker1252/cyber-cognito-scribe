@@ -85,8 +85,14 @@ Deno.serve(async (req) => {
   try {
     const supa = db();
     const auth = req.headers.get("Authorization") || "";
-    const { data: ud } = await supa.auth.getUser(auth.replace(/^Bearer\s+/i, ""));
+    const token = auth.replace(/^Bearer\s+/i, "");
+    const isServiceRole = token && token === Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+    const { data: ud } = await supa.auth.getUser(token);
     const userId = ud?.user?.id;
+    if (!isServiceRole && !userId) {
+      return new Response(JSON.stringify({ ok: false, error: "unauthorized" }),
+        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
 
     const body = await req.json() as Body;
     if (!body.targetId || !body.script) {
