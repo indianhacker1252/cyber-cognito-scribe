@@ -36,8 +36,27 @@ function fail(error: string, extra: any = {}) { return new Response(JSON.stringi
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
+
+  // Auth gate — accept service-role bearer or a real user JWT only.
+  const auth = req.headers.get("Authorization") || "";
+  const token = auth.replace(/^Bearer\s+/i, "");
+  const isServiceRole = token && token === Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  const supaAuth = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_ANON_KEY")!);
+  const { data: ud } = await supaAuth.auth.getUser(token);
+  const callerId = ud?.user?.id;
+  if (!isServiceRole && !callerId) {
+    return new Response(JSON.stringify({ ok: false, error: "unauthorized" }),
+      { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+  }
+
   let body: any;
   try { body = await req.json(); } catch { return fail("invalid json"); }
+
+  // Authenticated users can only operate on their own userId
+  if (!isServiceRole && body?.userId && body.userId !== callerId) {
+    return fail("forbidden: userId must match authenticated user");
+  }
+  if (!isServiceRole) body.userId = callerId;
   const { action, connectionString, userId, findingIds } = body || {};
   let cs: string | undefined = connectionString;
 
