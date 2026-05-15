@@ -68,6 +68,54 @@ async function safeFetch(url: string, ms = 8000): Promise<{ status: number; body
   } catch { return null; }
 }
 
+/**
+ * Decide whether ANY occurrence of `needle` in `body` lands in a context
+ * where it could be parsed as executable HTML/JS (i.e., NOT inside a URL
+ * attribute like href/src/content/action, NOT inside a JSON "url" field,
+ * NOT entity-encoded). Returns true the moment one dangerous occurrence
+ * is found.
+ */
+function hasDangerousReflectionContext(body: string, needle: string): boolean {
+  if (!needle) return false;
+  let from = 0;
+  let safeOnly = true;
+  while (true) {
+    const idx = body.indexOf(needle, from);
+    if (idx === -1) break;
+    safeOnly = safeOnly && isSafeUrlContext(body, idx, needle.length);
+    if (!safeOnly) return true;
+    from = idx + needle.length;
+  }
+  // If we never entered the loop (no occurrences) → false; else all occurrences were URL-safe.
+  return false;
+}
+
+function isSafeUrlContext(body: string, idx: number, len: number): boolean {
+  // Inspect ~200 chars before the reflection to see what attribute/tag we're in.
+  const before = body.slice(Math.max(0, idx - 200), idx).toLowerCase();
+  const after = body.slice(idx + len, Math.min(body.length, idx + len + 80)).toLowerCase();
+  // Inside an HTML attribute that expects a URL?
+  // Look for last `<tag ... attr="` opener before the reflection.
+  const lastTagOpen = before.lastIndexOf("<");
+  const lastTagClose = before.lastIndexOf(">");
+  const insideTag = lastTagOpen > lastTagClose; // we're inside a tag's attribute list
+  if (insideTag) {
+    // URL-bearing attributes
+    if (/\b(href|src|srcset|action|formaction|cite|data|poster|background|manifest|content|ping|usemap|longdesc|profile|codebase)\s*=\s*['"][^'"]*$/i.test(before)) {
+      return true;
+    }
+    // Inside any attribute value at all? If the tag is <link>, <meta>, <a>, <img>, <script src>, <iframe src> — even non-URL attrs end up serialized safely.
+    const tagNameMatch = before.slice(lastTagOpen).match(/^<\s*([a-z][a-z0-9-]*)/i);
+    const tagName = tagNameMatch ? tagNameMatch[1].toLowerCase() : "";
+    if (["link", "meta", "base"].includes(tagName)) return true;
+  }
+  // Inside a JSON-LD / inline JSON "url"/"@id" string?
+  if (/"(?:url|@id|canonical|image|sameAs|contentUrl|thumbnailUrl)"\s*:\s*"[^"]*$/i.test(before) && /^[^"]*"/.test(after)) {
+    return true;
+  }
+  return false;
+}
+
 function rand(): string {
   return "csXz" + Math.random().toString(36).slice(2, 10);
 }
