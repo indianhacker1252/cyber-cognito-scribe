@@ -420,7 +420,7 @@ function getIntruderPayloads(vulnClass: string, paramValue: string, adaptivePayl
       "${7*7}", "{{7*'7'}}", "<%= 7*7 %>", "#{7*7}",
     ],
   };
-  return [...new Set([...(adaptivePayloads || []), ...(base[vulnClass] || [])])].filter(Boolean).slice(0, 12);
+  return [...new Set([...(adaptivePayloads || []), ...(base[vulnClass] || [])])].filter(Boolean).slice(0, 24);
 }
 
 const MUTATIONS: Array<{ name: string; transform: (s: string) => string }> = [
