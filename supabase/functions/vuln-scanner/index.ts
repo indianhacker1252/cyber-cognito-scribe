@@ -2241,7 +2241,7 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
           Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ targetId, maxEndpoints: 8, maxParamsPerEndpoint: 12 }),
+        body: JSON.stringify({ targetId, maxEndpoints: 20, maxParamsPerEndpoint: 24 }),
       }).catch((e) => console.error("param-bruteforce-xss dispatch failed:", e));
 
       // fire-and-forget zero-day engine (SSTI, NoSQLi, prototype pollution, GraphQL, SSRF, CRLF, redirect, deserialization, host-header)
