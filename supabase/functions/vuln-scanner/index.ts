@@ -420,7 +420,7 @@ function getIntruderPayloads(vulnClass: string, paramValue: string, adaptivePayl
       "${7*7}", "{{7*'7'}}", "<%= 7*7 %>", "#{7*7}",
     ],
   };
-  return [...new Set([...(adaptivePayloads || []), ...(base[vulnClass] || [])])].filter(Boolean).slice(0, 12);
+  return [...new Set([...(adaptivePayloads || []), ...(base[vulnClass] || [])])].filter(Boolean).slice(0, 24);
 }
 
 const MUTATIONS: Array<{ name: string; transform: (s: string) => string }> = [
@@ -431,7 +431,7 @@ const MUTATIONS: Array<{ name: string; transform: (s: string) => string }> = [
   { name: "Case Toggle", transform: (s) => s.split("").map((c, i) => i % 2 === 0 ? c.toUpperCase() : c.toLowerCase()).join("") },
 ];
 
-const MAX_ADAPTIVE_RETRIES = 3;
+const MAX_ADAPTIVE_RETRIES = 6; // doubled for deeper bypass coverage
 
 function captureHeaders(resp: Response): Record<string, string> {
   const h: Record<string, string> = {};
@@ -1213,8 +1213,8 @@ serve(async (req) => {
     const secListsPayloadsMap = new Map<string, string[]>();
     const uniqueClasses = [...new Set(vulnChecks.flatMap(c => c.vulnClasses))];
     await log(db, targetId, taskId, "action", `📦 Phase 11: Loading SecLists payloads for ${uniqueClasses.length} vuln classes`);
-    await Promise.all(uniqueClasses.slice(0, 6).map(async (vc) => {
-      const payloads = await loadSecListsPayloads(vc, 20);
+    await Promise.all(uniqueClasses.slice(0, 12).map(async (vc) => {
+      const payloads = await loadSecListsPayloads(vc, 40);
       if (payloads.length > 0) secListsPayloadsMap.set(vc, payloads);
     }));
     const secListsLoaded = [...secListsPayloadsMap.entries()].map(([k, v]) => `${k}(${v.length})`).join(", ");
@@ -2241,7 +2241,7 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
           Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ targetId, maxEndpoints: 8, maxParamsPerEndpoint: 12 }),
+        body: JSON.stringify({ targetId, maxEndpoints: 20, maxParamsPerEndpoint: 24 }),
       }).catch((e) => console.error("param-bruteforce-xss dispatch failed:", e));
 
       // fire-and-forget zero-day engine (SSTI, NoSQLi, prototype pollution, GraphQL, SSRF, CRLF, redirect, deserialization, host-header)
