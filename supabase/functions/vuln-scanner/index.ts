@@ -431,7 +431,7 @@ const MUTATIONS: Array<{ name: string; transform: (s: string) => string }> = [
   { name: "Case Toggle", transform: (s) => s.split("").map((c, i) => i % 2 === 0 ? c.toUpperCase() : c.toLowerCase()).join("") },
 ];
 
-const MAX_ADAPTIVE_RETRIES = 3;
+const MAX_ADAPTIVE_RETRIES = 6; // doubled for deeper bypass coverage
 
 function captureHeaders(resp: Response): Record<string, string> {
   const h: Record<string, string> = {};
