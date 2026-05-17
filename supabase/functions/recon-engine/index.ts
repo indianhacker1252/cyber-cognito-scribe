@@ -441,7 +441,7 @@ async function analyzeJsFiles(jsFiles: string[]): Promise<{
     /['"](\w+)['"]\s*:/g,
   ];
 
-  for (const jsUrl of jsFiles.slice(0, 15)) {
+  for (const jsUrl of jsFiles.slice(0, 40)) {
     try {
       const resp = await safeFetch(jsUrl, { headers: { "User-Agent": "Mozilla/5.0" } }, 5000);
       if (!resp.ok) continue;
