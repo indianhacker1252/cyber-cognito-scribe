@@ -1213,8 +1213,8 @@ serve(async (req) => {
     const secListsPayloadsMap = new Map<string, string[]>();
     const uniqueClasses = [...new Set(vulnChecks.flatMap(c => c.vulnClasses))];
     await log(db, targetId, taskId, "action", `📦 Phase 11: Loading SecLists payloads for ${uniqueClasses.length} vuln classes`);
-    await Promise.all(uniqueClasses.slice(0, 6).map(async (vc) => {
-      const payloads = await loadSecListsPayloads(vc, 20);
+    await Promise.all(uniqueClasses.slice(0, 12).map(async (vc) => {
+      const payloads = await loadSecListsPayloads(vc, 40);
       if (payloads.length > 0) secListsPayloadsMap.set(vc, payloads);
     }));
     const secListsLoaded = [...secListsPayloadsMap.entries()].map(([k, v]) => `${k}(${v.length})`).join(", ");
