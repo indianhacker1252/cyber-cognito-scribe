@@ -60,7 +60,7 @@ async function executePhase(db: any, run: any, phase: string, payload: any): Pro
   if (phase === "init") {
     await log("Run resumed — starting orchestration");
     const repoUrl = payload.repoUrl || run.payload?.repoUrl;
-    return { done: false, nextPhase: repoUrl ? "sast" : "iter-1-chain", results: { repoUrl } };
+    return { done: false, nextPhase: repoUrl ? "sast" : "asset-scan", results: { repoUrl } };
   }
 
   if (phase === "sast") {
@@ -70,6 +70,13 @@ async function executePhase(db: any, run: any, phase: string, payload: any): Pro
       const r = await call("mythos-codebase-ingest", { targetId, repoUrl }, 45000);
       await log(`SAST: ${r.data?.findingsCount || 0} findings in ${r.data?.fileCount || 0} files`, { sast: r.data });
     }
+    return { done: false, nextPhase: "asset-scan" };
+  }
+
+  if (phase === "asset-scan") {
+    await log(`🔑 Deep asset scan — secrets / source bugs / debug paths / blind SSRF`);
+    const r = await call("deep-asset-scan", { targetId }, 50000);
+    await log(`Asset scan: ${r.data?.secrets || 0} secrets, ${r.data?.codeBugs || 0} code bugs, ${r.data?.debugPaths || 0} debug paths, ${r.data?.ssrfInjections || 0} SSRF probes`, { asset: r.data });
     return { done: false, nextPhase: "iter-1-chain" };
   }
 
