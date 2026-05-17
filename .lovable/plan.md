@@ -1,91 +1,58 @@
+# Enterprise Launch Hardening — XBOW-Class Coverage
 
-# CyberScope — State of the Platform & Next Plan
+Goal: Make the scanner cover the full OWASP Top 10 actively (not just label them), crawl every JS/asset file for hidden secrets and code bugs, and remove the per-run caps that are stopping deep discovery.
 
-## What we've built so far
+## Current state (audit)
 
-CyberScope is an autonomous web-app QA / VAPT platform: 15 frontend pages, 60 edge functions, 40+ database tables, a long-horizon AI orchestrator, and a job-queue worker driven by `pg_cron`.
+`vuln-scanner` already maps to all 10 OWASP categories but the active probing is throttled by the 60s edge-function ceiling. Real limiters today:
+- `slice(0, 6)` on vuln classes per run, `slice(0, 3)` on endpoints per class, `slice(0, 12)` on payloads per param, `MAX_ADAPTIVE_RETRIES = 3`, `MAX_SCAN_MS = 55000`.
+- No active probes for: A04 Insecure Design (business-logic), A07 weak-password / credential-stuffing, A08 subresource-integrity / unsigned-update, A09 logging-pipeline checks, A10 SSRF blind-OOB.
+- No JS-asset crawler: no scan of `*.js` / `*.map` / `*.json` / `.env*` / HTML inline scripts for API keys, JWTs, AWS/GCP creds, internal hostnames, debug routes, hardcoded admin paths.
+- No source-code bug scanner against discovered front-end bundles (eval, postMessage `*`, `dangerouslySetInnerHTML`, `Function()`, prototype-pollution sinks, weak crypto).
 
-### Capability map (already shipped)
+## Deliverables
 
-```text
-                     ┌──────────────────────────────────────┐
-                     │   USER  →  Targets / Findings / UI   │
-                     └──────────────┬───────────────────────┘
-                                    │
-         ┌──────────────────────────┼──────────────────────────┐
-         ▼                          ▼                          ▼
-   RECON & MAPPING           VULNERABILITY ENGINE        VALIDATION & PROOF
-   recon-engine              advanced-fuzzer             triple-verify  (3-stage)
-   recon-deep                vuln-scanner                exploit-engine
-   headless-browser          ssrf-deep, xxe              browser-exploit (headless)
-   cve-version-matcher       graphql-attack              proof-engine
-   app-package-scan          cache-attack, smuggler      sandbox-exec
-                             auth-deep, bac-tester       deterministic-proof
+### 1. New edge function: `secrets-and-source-scan`
+Crawls every JS / JSON / source-map / HTML / `.env*` / `robots.txt` / `sitemap.xml` reachable from `discovered_endpoints`. For each file:
+- Regex bank for ~80 secret types (AWS, GCP, Azure, Stripe, Slack, GitHub, JWT, Twilio, SendGrid, OpenAI, private keys, DB URIs, internal IPs, S3 buckets, Firebase configs, Mapbox, Algolia, Sentry DSN, etc.).
+- Source-map (`.js.map`) auto-fetch + reconstruct original sources, then taint-scan with the same SAST patterns used by `mythos-codebase-ingest` (sources → sinks).
+- Front-end bug detectors: `eval(`, `new Function(`, `dangerouslySetInnerHTML`, `innerHTML=`, `document.write`, `postMessage(.., '*')`, prototype-pollution sinks, weak crypto (`Math.random` for tokens, `MD5`, `SHA1`), `localStorage`/`sessionStorage` for tokens, hardcoded admin endpoints, debug routes, GraphQL introspection URLs.
+- Findings written to `vulnerability_findings` with full file path, line number, evidence snippet, OWASP category (A02 / A03 / A05 / A08).
 
-         ┌──────────────────────────┼──────────────────────────┐
-         ▼                          ▼                          ▼
-   LONG-HORIZON AI            INTELLIGENCE               OPERATIONS
-   mythos-orchestrator        intel-sync                 scan-job-worker (cron)
-   mythos-chainer             exploitdb-sync             canary-drift-monitor
-   mythos-variant-gen         ai-tutor-distill           docker-worker-dispatch
-   mythos-debate (A/B)        rag-corpus                 fail_stuck_mythos_runs
-   mythos-patcher             experience_vault (RL)      external-db-mirror
-```
+### 2. `vuln-scanner` deep mode
+- Add `deep: true` request flag. When set, the function enqueues a `scan_jobs` row instead of running inline, and the existing `scan-job-worker` processes it without the 50s budget — iterating until every endpoint × every vuln class × full payload corpus is exhausted.
+- Inline (fast) mode keeps current caps for the live-UI run, but `slice(0, 6)` → `slice(0, 12)`, payloads `slice(0, 12)` → `slice(0, 24)`, `MAX_ADAPTIVE_RETRIES` 3 → 6.
+- Add active probes for the missing OWASP slices:
+  - **A04 Insecure Design**: race-condition probe on state-changing endpoints (already have `race-runner`, wire it in), price/qty tampering on numeric params.
+  - **A07 Auth Failures**: rate-limit detector (50 fast logins → expect 429), default-cred dictionary against discovered login forms.
+  - **A08 Integrity**: check for `<script src="…">` without SRI, unsigned package endpoints.
+  - **A09 Logging**: hit `/admin`, `/debug`, `/.git/HEAD`, `/actuator/*`, `/api/swagger*` and flag if reachable.
+  - **A10 SSRF blind**: wire `oob-collector` token into any URL-shaped parameter and watch `oob_callbacks` for a hit.
 
-### Recent stability work
-- **Triple-verify pipeline** — every finding goes baseline → mutated → re-baseline + replay; writes `confidence_score`, `validation_status`, `triage_reasoning` and gates the PDF report.
-- **Long-horizon orchestrator** — bypasses the 50s edge limit by chunking each Mythos run into resumable phases (`init → sast → iter-N-{chain,variant,debate} → patch`) enqueued through `scan_jobs`.
-- **Browser-exploit worker** — headless Chrome that promotes XSS findings to `proof_tier='exploited'` with real `window.alert` execution.
-- **Stuck-run sweeper** — cron auto-fails Mythos runs idle >60 min so the dashboard stays clean.
-- **Resume button** on `/mythos-results` to manually resume a stalled or failed run from its last phase.
+### 3. `recon-engine` deeper crawl
+- Lift `maxEndpoints: 8` cap. New defaults: 40 endpoints, recursive depth 3, follow all same-origin links plus subdomains.
+- Parse every linked JS/CSS/JSON, extract URLs from string literals (already partially done), add discovered routes back to `discovered_endpoints`.
+- Auto-trigger `secrets-and-source-scan` at the end of recon.
 
-### Live data snapshot (from last health check)
-- 654 jobs/day cycling through the queue, ~98% success.
-- 50 findings: 21 auto-accepted, 14 needs-review, 3 debate-confirmed, 2 verified.
-- 0 findings at `proof_tier='exploited'` yet — the new browser-exploit chain hasn't fired in production.
+### 4. Orchestrator wiring
+- `mythos-orchestrator` gains a `phase: "deep-asset-scan"` that calls `secrets-and-source-scan` between `recon` and `vuln-scanner`.
+- Findings from the asset scan feed the same Mythos confidence/triage pipeline, get reported the same way to bounty platforms.
 
-## The gap vs. XBOW
+### 5. UI surface
+- `Findings.tsx` filter chip for `source = secrets-scanner`.
+- `NeuralLog.tsx` shows per-file progress (`🔑 Scanning app.bundle.js — 0 secrets, 3 sinks`).
 
-We compete on autonomy and breadth. We still trail on:
-1. **Proven exploits** — almost every finding is `signal` tier, not `exploited`.
-2. **Scale** — single-region edge functions; no parallel target fan-out.
-3. **Reasoning depth** — debates are 1-round; XBOW does multi-step plan + critique loops.
-4. **Reporting polish** — the PDF is functional but auditor-grade narrative and CVSS justification are thin.
+## Out of scope for this pass
+- Mobile binary scanning (already in `app-package-scan`).
+- Authenticated multi-step business-logic chains beyond race + IDOR (Mythos handles those).
+- Container/CI-CD scanning.
 
-## Proposed next milestone — "Close the proof gap"
+## Technical notes
+- `secrets-and-source-scan` will use the worker pattern from day one (no 60s ceiling) — request enqueues a `scan_jobs` row, worker iterates with 8s timeout per fetch via the shared `safeFetch`.
+- All new findings: `confidence_score` derived from regex specificity (e.g. AWS AKIA prefix + 40-char secret = 95, generic 32-hex = 40).
+- HIGH/CRITICAL findings (live keys, RCE patterns) auto-create `pending_approvals` rows per existing HITL policy.
 
-A focused 4-step push that turns more `needs_review` findings into `exploited` and ships an enterprise-quality report.
-
-### Step 1 — Auto-fire browser-exploit on the existing backlog
-Trigger `browser_exploit` jobs for the 14 `needs_review` and 17 XSS-class findings already in the DB so we get real exploited-tier results today, not only on new scans.
-
-### Step 2 — Multi-round debate (Plan → Attack → Critique → Patch)
-Expand `mythos-debate` from 1 round to 3:
-- **Plan**: Agent A proposes hypothesis + payload class.
-- **Attack**: Agent B executes via `request-repeater` + browser-exploit.
-- **Critique**: Skeptic agent reviews the diff, demands retry on weak signals.
-Stops early when confidence ≥95.
-
-### Step 3 — Parallel exploit fan-out
-Replace the serial loop in `mythos-orchestrator` debate phase with `Promise.all` of up to 6 endpoints in parallel (each capped at 8s safeFetch). Should 4-6× our throughput per run.
-
-### Step 4 — Auditor-grade report
-Upgrade `PdfReport.ts`:
-- Executive summary auto-generated by Lovable AI from confirmed findings.
-- CVSS 3.1 vector breakdown per finding with justification text.
-- Reproduction steps as numbered checklist + curl + browser POC link.
-- Cover page, ToC, severity heatmap, compliance mapping (OWASP Top 10, CWE).
-
-### Out of scope this round
-- Multi-region deploy / horizontal scaling (needs infra work, separate plan)
-- Native mobile app surface
-- Writing real RCE payloads (stays HITL-gated, not autonomous)
-
-## Acceptance criteria
-- ≥5 findings reach `proof_tier='exploited'` automatically within 24h of running on a live target.
-- A Mythos iteration completes ≥4 endpoints in parallel within one debate phase.
-- Generated PDF has cover, exec summary, ≥1 narrative paragraph per finding, OWASP/CWE tags.
-- Stuck-run rate stays at 0 (sweeper already in place).
-
-## Decision needed
-Approve this 4-step milestone, or pick a different direction (e.g. mobile app analysis depth, intel-feed expansion, multi-tenant org workspaces).
+## Confirm before I build
+1. OK to enqueue deep scans as background jobs (results appear over minutes, not seconds)?
+2. OK to auto-fetch `.js.map` files when present (they're public assets but some hunters consider it noisy)?
+3. Keep default-credentials check ON for A07 (uses tiny ~20-pair list, non-destructive)?
