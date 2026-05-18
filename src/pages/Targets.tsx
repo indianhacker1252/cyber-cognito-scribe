@@ -109,13 +109,14 @@ export default function Targets() {
 
   const addTarget = useMutation({
     mutationFn: async () => {
-      const { error } = await supabase.from("target_workspaces").insert({
+      const { data, error } = await supabase.from("target_workspaces").insert({
         name,
         domain: domain || null,
         ip_range: ipRange || null,
         api_schema_url: apiSchema || null,
-      });
+      }).select().single();
       if (error) throw error;
+      if (!data) throw new Error("Insert blocked — admin role required to add targets");
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["targets"] });
