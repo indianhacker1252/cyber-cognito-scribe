@@ -77,6 +77,13 @@ async function executePhase(db: any, run: any, phase: string, payload: any): Pro
     await log(`🔑 Deep asset scan — secrets / source bugs / debug paths / blind SSRF`);
     const r = await call("deep-asset-scan", { targetId }, 50000);
     await log(`Asset scan: ${r.data?.secrets || 0} secrets, ${r.data?.codeBugs || 0} code bugs, ${r.data?.debugPaths || 0} debug paths, ${r.data?.ssrfInjections || 0} SSRF probes`, { asset: r.data });
+    return { done: false, nextPhase: "template-runner" };
+  }
+
+  if (phase === "template-runner") {
+    await log(`🧪 Nuclei-style template runner (OWASP Top 10 + CVEs, WAF-aware)`);
+    const r = await call("template-runner", { targetId, scanRunId: runId }, 48000);
+    await log(`Templates: ${r.data?.findings || 0} findings, WAF=${r.data?.waf?.vendor || "none"}`, { template: r.data });
     return { done: false, nextPhase: "iter-1-chain" };
   }
 

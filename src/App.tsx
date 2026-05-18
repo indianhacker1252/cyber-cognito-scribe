@@ -20,6 +20,7 @@ import FalsePositives from "./pages/FalsePositives";
 import AttackVisualization from "./pages/AttackVisualization";
 import MythosResults from "./pages/MythosResults";
 import AppPackages from "./pages/AppPackages";
+import OwaspCoverage from "./pages/OwaspCoverage";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -50,6 +51,7 @@ const App = () => (
                     <Route path="/attack-viz" element={<AttackVisualization />} />
                     <Route path="/mythos" element={<MythosResults />} />
                     <Route path="/app-packages" element={<AppPackages />} />
+                    <Route path="/coverage" element={<OwaspCoverage />} />
                     <Route path="*" element={<NotFound />} />
                   </Routes>
                 </Layout>
