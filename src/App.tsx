@@ -51,6 +51,7 @@ const App = () => (
                     <Route path="/attack-viz" element={<AttackVisualization />} />
                     <Route path="/mythos" element={<MythosResults />} />
                     <Route path="/app-packages" element={<AppPackages />} />
+                    <Route path="/coverage" element={<OwaspCoverage />} />
                     <Route path="*" element={<NotFound />} />
                   </Routes>
                 </Layout>
