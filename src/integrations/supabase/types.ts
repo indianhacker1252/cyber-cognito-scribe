@@ -1584,6 +1584,48 @@ export type Database = {
         }
         Relationships: []
       }
+      owasp_coverage: {
+        Row: {
+          checks_run: number
+          created_at: string
+          findings_count: number
+          id: string
+          last_run_at: string
+          metadata: Json
+          owasp_category: string
+          payloads_sent: number
+          scan_run_id: string | null
+          target_id: string
+          waf_blocked: number
+        }
+        Insert: {
+          checks_run?: number
+          created_at?: string
+          findings_count?: number
+          id?: string
+          last_run_at?: string
+          metadata?: Json
+          owasp_category: string
+          payloads_sent?: number
+          scan_run_id?: string | null
+          target_id: string
+          waf_blocked?: number
+        }
+        Update: {
+          checks_run?: number
+          created_at?: string
+          findings_count?: number
+          id?: string
+          last_run_at?: string
+          metadata?: Json
+          owasp_category?: string
+          payloads_sent?: number
+          scan_run_id?: string | null
+          target_id?: string
+          waf_blocked?: number
+        }
+        Relationships: []
+      }
       patch_validations: {
         Row: {
           created_at: string
