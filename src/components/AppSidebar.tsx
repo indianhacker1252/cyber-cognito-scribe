@@ -20,6 +20,7 @@ const navItems = [
   { title: "Targets", url: "/targets", icon: Crosshair },
   { title: "Neural Log", url: "/logs", icon: Terminal },
   { title: "Findings", url: "/findings", icon: ShieldAlert },
+  { title: "OWASP Coverage", url: "/coverage", icon: ShieldCheck },
   { title: "Approvals", url: "/approvals", icon: ClipboardCheck },
   { title: "System Health", url: "/system-health", icon: Activity },
   { title: "Intel Feed", url: "/intel-feed", icon: Rss },
