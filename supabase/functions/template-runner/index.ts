@@ -86,16 +86,16 @@ const TEMPLATES: Template[] = [
 ];
 
 async function runTemplate(
-  baseUrl: string, tmpl: Template, throttle: AdaptiveThrottle,
-): Promise<{ payloadsSent: number; wafBlocked: number; findings: Array<{ payload: string; evidence: string; statusCode: number }> }> {
+  baseUrl: string, tmpl: Template, throttle: AdaptiveThrottle, authHeaders: Record<string, string> = {},
+): Promise<{ payloadsSent: number; wafBlocked: number; findings: Array<{ payload: string; evidence: string; statusCode: number; endpoint: string }> }> {
   let payloadsSent = 0;
   let wafBlocked = 0;
-  const findings: Array<{ payload: string; evidence: string; statusCode: number }> = [];
+  const findings: Array<{ payload: string; evidence: string; statusCode: number; endpoint: string }> = [];
 
   // Get baseline once
   let baselineBody = "";
   try {
-    const b = await safeFetch(baseUrl, { method: "GET" }, 5000);
+    const b = await safeFetch(baseUrl, { method: "GET", headers: authHeaders }, 5000);
     baselineBody = await readBodySafe(b, 16384);
   } catch { /* ignore */ }
 
@@ -110,7 +110,7 @@ async function runTemplate(
           ? (v.startsWith("http") ? v : new URL(v, baseUrl).toString())
           : baseUrl + (baseUrl.includes("?") ? "&" : "?") + `q=${v}`;
         const t0 = Date.now();
-        const r = await safeFetch(targetUrl, { method: "GET" }, 8000);
+        const r = await safeFetch(targetUrl, { method: "GET", headers: authHeaders }, 8000);
         const elapsed = Date.now() - t0;
         const body = await readBodySafe(r, 32768);
 
@@ -121,13 +121,13 @@ async function runTemplate(
         }
         throttle.noteOk();
 
-        // Special-case timing-based command injection
         const timed = tmpl.id === "a03-cmdi-time" && elapsed > 4500;
         if (timed || tmpl.matcher(body, r.status, rawPayload, baselineBody)) {
           findings.push({
             payload: rawPayload,
             evidence: timed ? `timed-out after ${elapsed}ms (sleep matched)` : body.slice(0, 400),
             statusCode: r.status,
+            endpoint: targetUrl,
           });
           matched = true;
           break;
@@ -136,7 +136,7 @@ async function runTemplate(
         // network error counts as no match
       }
     }
-    if (matched) break; // one finding per template-payload is enough
+    if (matched) break;
   }
   return { payloadsSent, wafBlocked, findings };
 }
