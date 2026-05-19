@@ -154,8 +154,9 @@ Deno.serve(async (req) => {
     const { data: target } = await db.from("target_workspaces").select("*").eq("id", targetId).maybeSingle();
     if (!target) return ok({ ok: false, error: "target not found" });
 
-    const targetUrl: string = target.target_url || target.url || target.domain;
+    let targetUrl: string = target.target_url || target.url || target.domain;
     if (!targetUrl) return ok({ ok: false, error: "no target url" });
+    if (!/^https?:\/\//i.test(targetUrl)) targetUrl = `https://${targetUrl}`;
 
     // 1) WAF probe up-front
     const waf = await detectWaf(targetUrl);
