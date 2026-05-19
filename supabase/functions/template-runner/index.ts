@@ -86,16 +86,16 @@ const TEMPLATES: Template[] = [
 ];
 
 async function runTemplate(
-  baseUrl: string, tmpl: Template, throttle: AdaptiveThrottle,
-): Promise<{ payloadsSent: number; wafBlocked: number; findings: Array<{ payload: string; evidence: string; statusCode: number }> }> {
+  baseUrl: string, tmpl: Template, throttle: AdaptiveThrottle, authHeaders: Record<string, string> = {},
+): Promise<{ payloadsSent: number; wafBlocked: number; findings: Array<{ payload: string; evidence: string; statusCode: number; endpoint: string }> }> {
   let payloadsSent = 0;
   let wafBlocked = 0;
-  const findings: Array<{ payload: string; evidence: string; statusCode: number }> = [];
+  const findings: Array<{ payload: string; evidence: string; statusCode: number; endpoint: string }> = [];
 
   // Get baseline once
   let baselineBody = "";
   try {
-    const b = await safeFetch(baseUrl, { method: "GET" }, 5000);
+    const b = await safeFetch(baseUrl, { method: "GET", headers: authHeaders }, 5000);
     baselineBody = await readBodySafe(b, 16384);
   } catch { /* ignore */ }
 
@@ -110,7 +110,7 @@ async function runTemplate(
           ? (v.startsWith("http") ? v : new URL(v, baseUrl).toString())
           : baseUrl + (baseUrl.includes("?") ? "&" : "?") + `q=${v}`;
         const t0 = Date.now();
-        const r = await safeFetch(targetUrl, { method: "GET" }, 8000);
+        const r = await safeFetch(targetUrl, { method: "GET", headers: authHeaders }, 8000);
         const elapsed = Date.now() - t0;
         const body = await readBodySafe(r, 32768);
 
@@ -121,13 +121,13 @@ async function runTemplate(
         }
         throttle.noteOk();
 
-        // Special-case timing-based command injection
         const timed = tmpl.id === "a03-cmdi-time" && elapsed > 4500;
         if (timed || tmpl.matcher(body, r.status, rawPayload, baselineBody)) {
           findings.push({
             payload: rawPayload,
             evidence: timed ? `timed-out after ${elapsed}ms (sleep matched)` : body.slice(0, 400),
             statusCode: r.status,
+            endpoint: targetUrl,
           });
           matched = true;
           break;
@@ -136,7 +136,7 @@ async function runTemplate(
         // network error counts as no match
       }
     }
-    if (matched) break; // one finding per template-payload is enough
+    if (matched) break;
   }
   return { payloadsSent, wafBlocked, findings };
 }
@@ -158,52 +158,62 @@ Deno.serve(async (req) => {
     if (!targetUrl) return ok({ ok: false, error: "no target url" });
     if (!/^https?:\/\//i.test(targetUrl)) targetUrl = `https://${targetUrl}`;
 
+    // 0) Load auth profile (cookie / bearer) if present
+    const { data: authp } = await db.from("auth_profiles")
+      .select("auth_type,cookie_header,bearer_token").eq("target_id", targetId).eq("is_valid", true).limit(1).maybeSingle();
+    const authHeaders: Record<string, string> = { "User-Agent": "CyberScope/1.0" };
+    if (authp?.auth_type === "cookie" && authp.cookie_header) authHeaders["Cookie"] = authp.cookie_header;
+    if (authp?.auth_type === "bearer" && authp.bearer_token) authHeaders["Authorization"] = `Bearer ${authp.bearer_token}`;
+    const authMode = authp ? authp.auth_type : "none";
+
     // 1) WAF probe up-front
     const waf = await detectWaf(targetUrl);
     const throttle = new AdaptiveThrottle(waf.detected);
     await db.from("scan_logs").insert({
       target_id: targetId, log_type: waf.detected ? "warning" : "info",
       message: waf.detected
-        ? `🛡️  WAF detected (${waf.vendor}) — switching to slow polite mode + encoding variants`
-        : `✅ No WAF detected — running templates at normal speed`,
-      metadata: { waf, scanRunId },
+        ? `🛡️  WAF detected (${waf.vendor}) — slow polite mode + encoding variants (auth=${authMode})`
+        : `✅ No WAF detected — running templates at normal speed (auth=${authMode})`,
+      metadata: { waf, scanRunId, authMode },
     });
 
-    // 2) Collect endpoints to test
+    // 2) Collect endpoints — fan out across up to 6
     const { data: eps } = await db.from("discovered_endpoints")
-      .select("url").eq("target_id", targetId).limit(20);
+      .select("url").eq("target_id", targetId).limit(40);
     const urls = new Set<string>([targetUrl]);
     (eps || []).forEach((e) => e.url && urls.add(e.url));
-    const urlList = Array.from(urls).slice(0, 15);
+    const urlList = Array.from(urls).slice(0, 6);
 
-    // 3) Iterate templates (budget ~45s)
+    // 3) Iterate templates × endpoints (budget ~45s)
     const startedAt = Date.now();
     const perCategory = new Map<string, { checks: number; payloads: number; findings: number; waf: number }>();
     const insertedFindings: any[] = [];
 
-    for (const tmpl of TEMPLATES) {
-      if (Date.now() - startedAt > 42_000) break;
-      const url = urlList[0]; // primary target; secondary URLs already in DB will be scanned by other phases
-      const r = await runTemplate(url, tmpl, throttle);
+    outer: for (const tmpl of TEMPLATES) {
+      for (const url of urlList) {
+        if (Date.now() - startedAt > 42_000) break outer;
+        const r = await runTemplate(url, tmpl, throttle, authHeaders);
 
-      const acc = perCategory.get(tmpl.category) || { checks: 0, payloads: 0, findings: 0, waf: 0 };
-      acc.checks += 1;
-      acc.payloads += r.payloadsSent;
-      acc.findings += r.findings.length;
-      acc.waf += r.wafBlocked;
-      perCategory.set(tmpl.category, acc);
+        const acc = perCategory.get(tmpl.category) || { checks: 0, payloads: 0, findings: 0, waf: 0 };
+        acc.checks += 1;
+        acc.payloads += r.payloadsSent;
+        acc.findings += r.findings.length;
+        acc.waf += r.wafBlocked;
+        perCategory.set(tmpl.category, acc);
 
-      for (const f of r.findings) {
-        insertedFindings.push({
-          target_id: targetId,
-          finding_type: tmpl.id,
-          severity: tmpl.severity,
-          title: `[${tmpl.category}] ${tmpl.cve || tmpl.id}`,
-          description: `Template ${tmpl.id} matched. Payload: ${f.payload}`,
-          evidence: { templateId: tmpl.id, category: tmpl.category, cve: tmpl.cve || null, payload: f.payload, snippet: f.evidence, statusCode: f.statusCode, waf: waf.vendor },
-          confidence_score: tmpl.cve ? 85 : 70,
-          source: "template-runner",
-        });
+        for (const f of r.findings) {
+          insertedFindings.push({
+            target_id: targetId,
+            finding_type: tmpl.id,
+            severity: tmpl.severity,
+            title: `[${tmpl.category}] ${tmpl.cve || tmpl.id}`,
+            description: `Template ${tmpl.id} matched at ${f.endpoint}. Payload: ${f.payload}`,
+            evidence: { templateId: tmpl.id, category: tmpl.category, cve: tmpl.cve || null, payload: f.payload, snippet: f.evidence, statusCode: f.statusCode, waf: waf.vendor, endpoint: f.endpoint },
+            confidence_score: tmpl.cve ? 85 : 70,
+            source: "template-runner",
+          });
+        }
+        if (r.findings.length) break; // one endpoint match is enough per template
       }
     }
 
@@ -216,22 +226,32 @@ Deno.serve(async (req) => {
       payloads_sent: v.payloads,
       findings_count: v.findings,
       waf_blocked: v.waf,
-      metadata: { waf_vendor: waf.vendor },
+      metadata: { waf_vendor: waf.vendor, auth_mode: authMode, endpoints_scanned: urlList.length },
     }));
     if (coverageRows.length) await db.from("owasp_coverage").insert(coverageRows);
 
-    // 5) Insert findings (table name `vulnerability_findings` per project schema)
+    // 5) Insert findings + auto-queue browser verification for XSS-class findings
+    let queuedBrowserVerify = 0;
     if (insertedFindings.length) {
-      await db.from("vulnerability_findings").insert(insertedFindings);
+      const { data: inserted } = await db.from("vulnerability_findings").insert(insertedFindings).select("id,finding_type,target_id");
+      const xssLike = (inserted || []).filter((f: any) =>
+        /xss|redirect|csti|prototype|dom/i.test(f.finding_type));
+      for (const f of xssLike) {
+        await db.from("scan_jobs").insert({
+          target_id: f.target_id, job_type: "browser_verify",
+          payload: { findingId: f.id }, status: "queued", priority: 8,
+        });
+        queuedBrowserVerify++;
+      }
     }
 
     await db.from("scan_logs").insert({
       target_id: targetId, log_type: "result",
-      message: `🧪 Template runner: ${TEMPLATES.length} templates, ${insertedFindings.length} findings, WAF blocks=${Array.from(perCategory.values()).reduce((a, b) => a + b.waf, 0)}`,
-      metadata: { waf, coverage: coverageRows },
+      message: `🧪 Template runner: ${TEMPLATES.length} templates × ${urlList.length} endpoints, ${insertedFindings.length} findings, ${queuedBrowserVerify} browser-verifies queued, WAF blocks=${Array.from(perCategory.values()).reduce((a, b) => a + b.waf, 0)}`,
+      metadata: { waf, coverage: coverageRows, authMode, queuedBrowserVerify },
     });
 
-    return ok({ ok: true, waf, coverage: coverageRows, findings: insertedFindings.length });
+    return ok({ ok: true, waf, coverage: coverageRows, findings: insertedFindings.length, queuedBrowserVerify, authMode, endpoints: urlList.length });
   } catch (e) {
     return ok({ ok: false, error: e instanceof Error ? e.message : String(e) });
   }

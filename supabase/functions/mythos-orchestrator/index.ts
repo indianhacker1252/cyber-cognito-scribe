@@ -141,6 +141,15 @@ async function executePhase(db: any, run: any, phase: string, payload: any): Pro
       await call("browser-exploit", { findingId: xf.id }, 35000);
     }
 
+    // Auto-execute high-CVSS chains (combined_cvss >= 7) once per iteration
+    const { data: hotChains } = await db.from("mythos_chains")
+      .select("id,chain_name,combined_cvss").eq("target_id", targetId).eq("execution_status", "proposed")
+      .gte("combined_cvss", 7).limit(2);
+    for (const c of hotChains || []) {
+      await log(`⛓️  Auto-executing chain '${c.chain_name}' (cvss=${c.combined_cvss})`, { chainId: c.id });
+      await call("exploit-chain-runner", { chainId: c.id, targetId }, 40000);
+    }
+
     // Decide next: more iterations or move to patch?
     if (meta.iter! < run.max_iterations) {
       // Stop early if no progress and we've done at least 2 iters

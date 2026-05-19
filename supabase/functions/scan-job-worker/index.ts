@@ -29,6 +29,8 @@ const JOB_ROUTES: Record<string, string> = {
   exploit: "exploit-engine",
   proof: "proof-engine",
   mythos_step: "mythos-orchestrator",
+  browser_verify: "browser-exploit",
+  chain_exec: "exploit-chain-runner",
 };
 
 async function runJob(job: any): Promise<{ ok: boolean; result?: any; error?: string }> {
