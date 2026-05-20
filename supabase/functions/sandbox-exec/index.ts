@@ -40,7 +40,7 @@ async function runViaWorker(cfg: any, payload: any, timeoutMs = 45000) {
   } finally { clearTimeout(t); }
 }
 
-async function runViaEdge(script: string, language: string) {
+async function runViaEdge(script: string, language: string, fallbackUrl?: string) {
   // Edge fallback can't exec arbitrary code. We parse the script to extract a
   // single curl/HTTP call and execute it via safeFetch, recording the response.
   const lines = script.split(/\r?\n/);
@@ -61,6 +61,12 @@ async function runViaEdge(script: string, language: string) {
       const u = line.match(/(https?:\/\/[^\s"'<>]+)/);
       if (u) url = u[1];
     }
+  }
+
+  // NEW: fall back to the finding's bound target URL when the script omits one
+  if (!url && fallbackUrl) {
+    url = fallbackUrl;
+    evidence.urlSource = "target_fallback";
   }
 
   if (!url) {
