@@ -16,6 +16,7 @@ interface Body {
   script: string;
   language?: "curl" | "python" | "bash";
   mode?: "auto" | "worker" | "edge";
+  targetUrl?: string;        // explicit fallback when script lacks a URL
 }
 
 async function runViaWorker(cfg: any, payload: any, timeoutMs = 45000) {
