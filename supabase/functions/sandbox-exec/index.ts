@@ -140,7 +140,15 @@ Deno.serve(async (req) => {
 
     // Fall back to edge sandbox
     if (!runResult && mode !== "worker") {
-      runResult = await runViaEdge(body.script, language);
+      // Resolve a fallback target URL when the synthesised script omits one
+      let fallbackUrl: string | undefined = body.targetUrl;
+      if (!fallbackUrl) {
+        const { data: tgt } = await supa.from("target_workspaces")
+          .select("target_url,url,domain").eq("id", body.targetId).maybeSingle();
+        const raw = (tgt as any)?.target_url || (tgt as any)?.url || (tgt as any)?.domain;
+        if (raw) fallbackUrl = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+      }
+      runResult = await runViaEdge(body.script, language, fallbackUrl);
       executor = "edge_function";
     }
 
