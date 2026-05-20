@@ -170,7 +170,7 @@ async function probe(
     const lenDiffPct = lenDiff / (baseBody.length || 1);
 
     const SQL_ERR =
-      /sql syntax|mysql_fetch|pg_query|SQLSTATE|ORA-\d+|unclosed quotation|syntax error.*sql|psql:|sqlite_/i;
+      /sql syntax|mysql_fetch|pg_query|SQLSTATE|ORA-\d+|unclosed quotation|syntax error.*sql|psql:|sqlite_|odbc.*error|microsoft.*odbc|System\.Data\.SqlClient/i;
     const STACK = /at [A-Za-z]+\.[A-Za-z]+\(|stack trace|traceback \(most recent|exception in thread/i;
     const SECRETS = /root:x:0:0|\/bin\/bash|aws_secret_access_key|AKIA[0-9A-Z]{16}|private_key/i;
 
@@ -181,13 +181,41 @@ async function probe(
     const statusChanged = r.status !== baseResp.status && !(r.status === 200 && baseResp.status === 200);
     const bigBodyDiff = lenDiffPct > 0.4 && lenDiff > 1000 && statusChanged;
 
+    // ── NEW: SQLi diff-pair detection ──────────────────────────────────────
+    // Real SQLi often returns same length on a single mutated probe. Compare
+    // a TRUE-twin against a FALSE-twin and a SYNTAX-BREAK twin — boolean-based
+    // evidence even without error leakage. Eliminates the FP-FP-FP loop on
+    // targets like testaspnet.vulnweb.com.
+    const looksSqli = /('|"|union|select|or\s+1=1|and\s+1=|--|sleep\(|benchmark\()/i.test(payload);
+    let sqliDiffPair = false;
+    let sqliDiffReason = "";
+    if (looksSqli && !hasSqlError && !hasStackTrace) {
+      try {
+        const uTrue = new URL(url); uTrue.searchParams.set(paramName, "1' OR '1'='1");
+        const uFalse = new URL(url); uFalse.searchParams.set(paramName, "1' AND '1'='2");
+        const uBreak = new URL(url); uBreak.searchParams.set(paramName, "1''\"\\");
+        const [tR, fR, bR] = await Promise.all([
+          fetch(uTrue.toString(), { signal: AbortSignal.timeout(6000), redirect: "manual" }).catch(() => null),
+          fetch(uFalse.toString(), { signal: AbortSignal.timeout(6000), redirect: "manual" }).catch(() => null),
+          fetch(uBreak.toString(), { signal: AbortSignal.timeout(6000), redirect: "manual" }).catch(() => null),
+        ]);
+        const tB = tR ? await tR.text() : "";
+        const fB = fR ? await fR.text() : "";
+        const bB = bR ? await bR.text() : "";
+        const tfDelta = Math.abs(tB.length - fB.length);
+        const tfDeltaPct = tfDelta / (Math.max(tB.length, fB.length) || 1);
+        const breakErr = SQL_ERR.test(bB) && !SQL_ERR.test(baseBody);
+        const breakStatus500 = bR && bR.status >= 500 && baseResp.status < 500;
+        if (breakErr) { sqliDiffPair = true; sqliDiffReason = "syntax-break twin leaked SQL error"; }
+        else if (breakStatus500) { sqliDiffPair = true; sqliDiffReason = `syntax-break twin → ${bR!.status} (baseline ${baseResp.status})`; }
+        else if (tfDelta > 200 && tfDeltaPct > 0.05) {
+          sqliDiffPair = true;
+          sqliDiffReason = `boolean diff: TRUE=${tB.length}b vs FALSE=${fB.length}b (Δ${tfDelta}b)`;
+        }
+      } catch { /* ignore twin errors */ }
+    }
+
     // ── XSS detection — strict unescaped check ──────────────────────────────
-    // Must satisfy ALL conditions:
-    // 1. Payload is NOT in baseline (it's not existing page content)
-    // 2. Payload IS in mutated response
-    // 3. Payload appears literally unescaped (not entity-encoded)
-    // 4. Response grew by at least 70% of payload length (real reflection)
-    // 5. Payload contains actual XSS-dangerous characters
     const isXssPayload = /<|onerror|onload|javascript:|alert|script/i.test(payload);
     const payloadInBase = baseBody.includes(payload);
     const payloadInMutated = body.includes(payload);
@@ -201,10 +229,9 @@ async function probe(
       grewByPayloadSize &&
       isPayloadUnescapedInBody(payload, body);
 
-    // Only treat as meaningful XSS if all strict conditions met
     const hasHtmlExec = xssUnescaped;
 
-    const meaningfulDiff = hasSqlError || hasStackTrace || hasSecrets || hasHtmlExec || hasTimingHit || bigBodyDiff;
+    const meaningfulDiff = hasSqlError || hasStackTrace || hasSecrets || hasHtmlExec || hasTimingHit || bigBodyDiff || sqliDiffPair;
 
     let diffReason = "no meaningful difference — likely false positive";
     if (hasSqlError) diffReason = "SQL error string appeared in response";
@@ -212,6 +239,7 @@ async function probe(
     else if (hasSecrets) diffReason = "sensitive data pattern matched";
     else if (hasHtmlExec) diffReason = "XSS payload reflected literally unescaped — confirmed injection point";
     else if (hasTimingHit) diffReason = `timing delta ${timingDelta}ms — possible blind injection`;
+    else if (sqliDiffPair) diffReason = `SQLi diff-pair confirmed: ${sqliDiffReason}`;
     else if (bigBodyDiff)
       diffReason = `response size changed ${lenDiff}b (${Math.round(lenDiffPct * 100)}%) with status change`;
 
