@@ -16,6 +16,7 @@ interface Body {
   script: string;
   language?: "curl" | "python" | "bash";
   mode?: "auto" | "worker" | "edge";
+  targetUrl?: string;        // explicit fallback when script lacks a URL
 }
 
 async function runViaWorker(cfg: any, payload: any, timeoutMs = 45000) {
@@ -39,7 +40,7 @@ async function runViaWorker(cfg: any, payload: any, timeoutMs = 45000) {
   } finally { clearTimeout(t); }
 }
 
-async function runViaEdge(script: string, language: string) {
+async function runViaEdge(script: string, language: string, fallbackUrl?: string) {
   // Edge fallback can't exec arbitrary code. We parse the script to extract a
   // single curl/HTTP call and execute it via safeFetch, recording the response.
   const lines = script.split(/\r?\n/);
@@ -60,6 +61,12 @@ async function runViaEdge(script: string, language: string) {
       const u = line.match(/(https?:\/\/[^\s"'<>]+)/);
       if (u) url = u[1];
     }
+  }
+
+  // NEW: fall back to the finding's bound target URL when the script omits one
+  if (!url && fallbackUrl) {
+    url = fallbackUrl;
+    evidence.urlSource = "target_fallback";
   }
 
   if (!url) {
@@ -133,7 +140,15 @@ Deno.serve(async (req) => {
 
     // Fall back to edge sandbox
     if (!runResult && mode !== "worker") {
-      runResult = await runViaEdge(body.script, language);
+      // Resolve a fallback target URL when the synthesised script omits one
+      let fallbackUrl: string | undefined = body.targetUrl;
+      if (!fallbackUrl) {
+        const { data: tgt } = await supa.from("target_workspaces")
+          .select("target_url,url,domain").eq("id", body.targetId).maybeSingle();
+        const raw = (tgt as any)?.target_url || (tgt as any)?.url || (tgt as any)?.domain;
+        if (raw) fallbackUrl = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+      }
+      runResult = await runViaEdge(body.script, language, fallbackUrl);
       executor = "edge_function";
     }
 
