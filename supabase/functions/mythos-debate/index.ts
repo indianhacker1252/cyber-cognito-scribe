@@ -427,7 +427,10 @@ State verdict + 1-line reason.`,
     if (probe1.blocked) {
       fpVerdict = "inconclusive";
       confidence = 0;
-    } else if (!probe1.meaningfulDiff && probe1.status !== 0) {
+    } else if (probe1.status === 0 || probe1.baselineStatus === 0) {
+      // Network failure — cannot judge; mark inconclusive to avoid FP cascade
+      fpVerdict = "inconclusive";
+      confidence = 0;
       // Response did not meaningfully change — false positive
       fpVerdict = "false_positive";
       confidence = 90;
