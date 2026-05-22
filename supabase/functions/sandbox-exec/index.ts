@@ -144,8 +144,8 @@ Deno.serve(async (req) => {
       let fallbackUrl: string | undefined = body.targetUrl;
       if (!fallbackUrl) {
         const { data: tgt } = await supa.from("target_workspaces")
-          .select("target_url,url,domain").eq("id", body.targetId).maybeSingle();
-        const raw = (tgt as any)?.target_url || (tgt as any)?.url || (tgt as any)?.domain;
+          .select("domain,ip_range").eq("id", body.targetId).maybeSingle();
+        const raw = (tgt as any)?.domain || (tgt as any)?.ip_range;
         if (raw) fallbackUrl = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
       }
       runResult = await runViaEdge(body.script, language, fallbackUrl);
