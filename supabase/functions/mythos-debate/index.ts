@@ -142,12 +142,18 @@ async function probe(
     };
   }
 
+  const FETCH_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+  } as const;
   try {
     // Step 1 — baseline (no payload)
     const baseT0 = Date.now();
     const baseResp = await fetch(url, {
       signal: AbortSignal.timeout(8000),
       redirect: "manual",
+      headers: FETCH_HEADERS,
     });
     const baseTime = Date.now() - baseT0;
     const baseBody = await baseResp.text();
@@ -159,6 +165,7 @@ async function probe(
     const r = await fetch(u.toString(), {
       signal: AbortSignal.timeout(8000),
       redirect: "manual",
+      headers: FETCH_HEADERS,
     });
     const mutTime = Date.now() - mutT0;
     const body = await r.text();
@@ -195,9 +202,9 @@ async function probe(
         const uFalse = new URL(url); uFalse.searchParams.set(paramName, "1' AND '1'='2");
         const uBreak = new URL(url); uBreak.searchParams.set(paramName, "1''\"\\");
         const [tR, fR, bR] = await Promise.all([
-          fetch(uTrue.toString(), { signal: AbortSignal.timeout(6000), redirect: "manual" }).catch(() => null),
-          fetch(uFalse.toString(), { signal: AbortSignal.timeout(6000), redirect: "manual" }).catch(() => null),
-          fetch(uBreak.toString(), { signal: AbortSignal.timeout(6000), redirect: "manual" }).catch(() => null),
+          fetch(uTrue.toString(), { signal: AbortSignal.timeout(6000), redirect: "manual", headers: FETCH_HEADERS }).catch(() => null),
+          fetch(uFalse.toString(), { signal: AbortSignal.timeout(6000), redirect: "manual", headers: FETCH_HEADERS }).catch(() => null),
+          fetch(uBreak.toString(), { signal: AbortSignal.timeout(6000), redirect: "manual", headers: FETCH_HEADERS }).catch(() => null),
         ]);
         const tB = tR ? await tR.text() : "";
         const fB = fR ? await fR.text() : "";
@@ -420,7 +427,11 @@ State verdict + 1-line reason.`,
     if (probe1.blocked) {
       fpVerdict = "inconclusive";
       confidence = 0;
-    } else if (!probe1.meaningfulDiff && probe1.status !== 0) {
+    } else if (probe1.status === 0 || probe1.baselineStatus === 0) {
+      // Network failure — cannot judge; mark inconclusive to avoid FP cascade
+      fpVerdict = "inconclusive";
+      confidence = 0;
+    } else if (!probe1.meaningfulDiff) {
       // Response did not meaningfully change — false positive
       fpVerdict = "false_positive";
       confidence = 90;
@@ -493,7 +504,11 @@ State verdict + 1-line reason.`,
         let v2: typeof fpVerdict = fpVerdict;
         let c2 = confidence;
         const sql2 = SQL_ERROR_RX.test(probe2.bodySnippet);
-        if (probe2.diffReason === "sensitive data pattern matched") {
+        if (probe2.status === 0 || probe2.baselineStatus === 0) {
+          // Network failure on retest — keep verdict inconclusive
+          v2 = "inconclusive";
+          c2 = 0;
+        } else if (probe2.diffReason === "sensitive data pattern matched") {
           v2 = "true_positive";
           c2 = 95;
         } else if (probe2.status >= 500 && sql2) {
