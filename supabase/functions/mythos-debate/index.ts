@@ -431,6 +431,7 @@ State verdict + 1-line reason.`,
       // Network failure — cannot judge; mark inconclusive to avoid FP cascade
       fpVerdict = "inconclusive";
       confidence = 0;
+    } else if (!probe1.meaningfulDiff) {
       // Response did not meaningfully change — false positive
       fpVerdict = "false_positive";
       confidence = 90;
