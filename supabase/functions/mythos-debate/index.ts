@@ -142,12 +142,18 @@ async function probe(
     };
   }
 
+  const FETCH_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+  } as const;
   try {
     // Step 1 — baseline (no payload)
     const baseT0 = Date.now();
     const baseResp = await fetch(url, {
       signal: AbortSignal.timeout(8000),
       redirect: "manual",
+      headers: FETCH_HEADERS,
     });
     const baseTime = Date.now() - baseT0;
     const baseBody = await baseResp.text();
@@ -159,6 +165,7 @@ async function probe(
     const r = await fetch(u.toString(), {
       signal: AbortSignal.timeout(8000),
       redirect: "manual",
+      headers: FETCH_HEADERS,
     });
     const mutTime = Date.now() - mutT0;
     const body = await r.text();
