@@ -202,9 +202,9 @@ async function probe(
         const uFalse = new URL(url); uFalse.searchParams.set(paramName, "1' AND '1'='2");
         const uBreak = new URL(url); uBreak.searchParams.set(paramName, "1''\"\\");
         const [tR, fR, bR] = await Promise.all([
-          fetch(uTrue.toString(), { signal: AbortSignal.timeout(6000), redirect: "manual" }).catch(() => null),
-          fetch(uFalse.toString(), { signal: AbortSignal.timeout(6000), redirect: "manual" }).catch(() => null),
-          fetch(uBreak.toString(), { signal: AbortSignal.timeout(6000), redirect: "manual" }).catch(() => null),
+          fetch(uTrue.toString(), { signal: AbortSignal.timeout(6000), redirect: "manual", headers: FETCH_HEADERS }).catch(() => null),
+          fetch(uFalse.toString(), { signal: AbortSignal.timeout(6000), redirect: "manual", headers: FETCH_HEADERS }).catch(() => null),
+          fetch(uBreak.toString(), { signal: AbortSignal.timeout(6000), redirect: "manual", headers: FETCH_HEADERS }).catch(() => null),
         ]);
         const tB = tR ? await tR.text() : "";
         const fB = fR ? await fR.text() : "";
