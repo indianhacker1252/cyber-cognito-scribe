@@ -154,7 +154,7 @@ Deno.serve(async (req) => {
     const { data: target } = await db.from("target_workspaces").select("*").eq("id", targetId).maybeSingle();
     if (!target) return ok({ ok: false, error: "target not found" });
 
-    let targetUrl: string = target.target_url || target.url || target.domain;
+    let targetUrl: string = (target as any).domain || (target as any).ip_range;
     if (!targetUrl) return ok({ ok: false, error: "no target url" });
     if (!/^https?:\/\//i.test(targetUrl)) targetUrl = `https://${targetUrl}`;
 
