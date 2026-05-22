@@ -504,7 +504,11 @@ State verdict + 1-line reason.`,
         let v2: typeof fpVerdict = fpVerdict;
         let c2 = confidence;
         const sql2 = SQL_ERROR_RX.test(probe2.bodySnippet);
-        if (probe2.diffReason === "sensitive data pattern matched") {
+        if (probe2.status === 0 || probe2.baselineStatus === 0) {
+          // Network failure on retest — keep verdict inconclusive
+          v2 = "inconclusive";
+          c2 = 0;
+        } else if (probe2.diffReason === "sensitive data pattern matched") {
           v2 = "true_positive";
           c2 = 95;
         } else if (probe2.status >= 500 && sql2) {
