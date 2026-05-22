@@ -204,13 +204,13 @@ Deno.serve(async (req) => {
         for (const f of r.findings) {
           insertedFindings.push({
             target_id: targetId,
-            finding_type: tmpl.id,
             severity: tmpl.severity,
             title: `[${tmpl.category}] ${tmpl.cve || tmpl.id}`,
             description: `Template ${tmpl.id} matched at ${f.endpoint}. Payload: ${f.payload}`,
-            evidence: { templateId: tmpl.id, category: tmpl.category, cve: tmpl.cve || null, payload: f.payload, snippet: f.evidence, statusCode: f.statusCode, waf: waf.vendor, endpoint: f.endpoint },
+            payload: f.payload,
             confidence_score: tmpl.cve ? 85 : 70,
-            source: "template-runner",
+            hard_evidence: { templateId: tmpl.id, category: tmpl.category, cve: tmpl.cve || null, snippet: f.evidence, statusCode: f.statusCode, waf: waf.vendor, endpoint: f.endpoint, source: "template-runner" },
+            _tmplId: tmpl.id, // local-only marker, stripped before insert
           });
         }
         if (r.findings.length) break; // one endpoint match is enough per template
@@ -233,13 +233,14 @@ Deno.serve(async (req) => {
     // 5) Insert findings + auto-queue browser verification for XSS-class findings
     let queuedBrowserVerify = 0;
     if (insertedFindings.length) {
-      const { data: inserted } = await db.from("vulnerability_findings").insert(insertedFindings).select("id,finding_type,target_id");
-      const xssLike = (inserted || []).filter((f: any) =>
-        /xss|redirect|csti|prototype|dom/i.test(f.finding_type));
-      for (const f of xssLike) {
+      const xssTmplIds = new Set(insertedFindings.filter(f => /xss|redirect|csti|prototype|dom/i.test(f._tmplId)).map((_, i) => i));
+      const rows = insertedFindings.map(({ _tmplId, ...rest }) => rest);
+      const { data: inserted } = await db.from("vulnerability_findings").insert(rows).select("id");
+      for (let i = 0; i < (inserted || []).length; i++) {
+        if (!xssTmplIds.has(i)) continue;
         await db.from("scan_jobs").insert({
-          target_id: f.target_id, job_type: "browser_verify",
-          payload: { findingId: f.id }, status: "queued", priority: 8,
+          target_id: targetId, job_type: "browser_verify",
+          payload: { findingId: inserted![i].id }, status: "queued", priority: 8,
         });
         queuedBrowserVerify++;
       }
