@@ -887,8 +887,15 @@ serve(async (req) => {
       if (!allUrls.has(form.action)) allUrls.set(form.action, { method: form.method, params, source: "spider-form" });
     }
 
+    // Fix #13 — collapse http/https and www. duplicates by normalizing keys before insert
+    const normalizedMap = new Map<string, { method: string; params: Record<string, unknown>; source: string }>();
+    for (const [url, info] of allUrls.entries()) {
+      const key = normalizeUrl(url);
+      if (!normalizedMap.has(key)) normalizedMap.set(key, info);
+    }
+
     // Batch insert endpoints
-    const endpoints = [...allUrls.entries()].map(([url, info]) => ({
+    const endpoints = [...normalizedMap.entries()].map(([url, info]) => ({
       target_id: targetId,
       url,
       method: info.method,
