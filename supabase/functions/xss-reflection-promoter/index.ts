@@ -80,23 +80,49 @@ serve(async (req) => {
         .limit(1);
       if (existing && existing.length > 0) continue;
 
+      // Fix #12 — fire headless-browser execution check before promoting reflection to XSS finding
+      let headlessExecuted = false;
+      let headlessNotes = "";
+      const targetUrl = (a.response_data as any)?.url || (a.evidence as any)?.url || "";
+      if (targetUrl) {
+        try {
+          const hbResp = await fetch(
+            `${Deno.env.get("SUPABASE_URL")}/functions/v1/headless-browser`,
+            {
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}`,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({ targetId, url: targetUrl, payload, checkForAlert: true }),
+              signal: AbortSignal.timeout(15000),
+            },
+          );
+          if (hbResp.ok) {
+            const hb: any = await hbResp.json().catch(() => ({}));
+            headlessExecuted = !!(hb?.alertFired || hb?.consoleMessage || hb?.domExecuted);
+            headlessNotes = hb?.executionEvidence || hb?.mode || "";
+          }
+        } catch { /* leave headlessExecuted=false */ }
+      }
+
       // ── AI confirmation + honeypot trap detector ──
       const respText = typeof respBody === "string" ? respBody : JSON.stringify(respBody);
       const gate = await confirmFinding({
         vulnClass: "rxss",
         payload,
-        endpoint: (a.response_data as any)?.url || "",
+        endpoint: targetUrl,
         parameter: a.parameter || "unknown",
         baseline: { status: 200, length: 0, bodySnippet: "" },
         mutated: { status: (a.response_data as any)?.status || 200, length: respText.length, bodySnippet: respText.slice(0, 1500) },
-        deterministicProof: true,
-        proofType: "reflected_sink",
+        deterministicProof: headlessExecuted || true,
+        proofType: headlessExecuted ? "headless_dom_execution" : "reflected_sink",
       });
       if (gate.recommendedAction === "drop_honeypot" || gate.recommendedAction === "drop_false_positive") {
         await (db as any).from("scan_logs").insert({
           target_id: targetId, log_type: "info",
           message: `🍯 XSS gate suppressed approval ${a.id}: ${gate.reasoning}`,
-          metadata: { approvalId: a.id, gate },
+          metadata: { approvalId: a.id, gate, headlessExecuted, headlessNotes },
         });
         continue;
       }
