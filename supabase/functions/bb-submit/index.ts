@@ -191,6 +191,10 @@ Deno.serve(async (req) => {
     const { data: target } = await supa.from("target_workspaces").select("*").eq("id", f.target_id).maybeSingle();
     const { data: tokens } = await supa.from("bug_bounty_tokens").select("*").eq("user_id", user.id).maybeSingle();
 
+    // Fix #20 — apply severity cap before serialising or submitting
+    const vulnClassHint = ((f as any).hard_evidence?.templateId || (f as any).hard_evidence?.vulnClass || (f as any).finding_type || "").toString();
+    (f as any).severity = capSeverity(f.severity || "medium", f.title || "", vulnClassHint);
+
     let result: any = { ok: false };
     let status: "submitted" | "exported" | "failed" = "failed";
     let remoteId: string | undefined;
