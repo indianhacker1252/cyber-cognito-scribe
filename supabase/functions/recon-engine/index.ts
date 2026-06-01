@@ -760,7 +760,10 @@ serve(async (req) => {
         );
         if (hbRes.ok) {
           const hbData: any = await hbRes.json().catch(() => ({}));
-          const hbUrls: string[] = Array.isArray(hbData?.urls) ? hbData.urls : [];
+          // Fix #11 — headless-browser actually returns `endpoints`, not `urls`. Accept either.
+          const hbUrls: string[] = Array.isArray(hbData?.endpoints)
+            ? hbData.endpoints
+            : Array.isArray(hbData?.urls) ? hbData.urls : [];
           const hbForms: any[] = Array.isArray(hbData?.forms) ? hbData.forms : [];
           allSpiderUrls.push(...hbUrls);
           allForms.push(...hbForms);
@@ -798,6 +801,23 @@ serve(async (req) => {
     await log(db, targetId, taskId, "action", "Normalizing and deduplicating all discovered endpoints");
 
     const allUrls = new Map<string, { method: string; params: Record<string, unknown>; source: string }>();
+
+    // Fix #13 — normalize URLs to dedupe http/https + www. variants of the same endpoint.
+    // Strategy: prefer HTTPS, strip leading "www.", lowercase host, drop trailing slash, drop fragments.
+    const normalizeUrl = (raw: string): string => {
+      try {
+        const u = new URL(raw);
+        u.protocol = "https:";
+        u.hash = "";
+        u.hostname = u.hostname.toLowerCase().replace(/^www\./, "");
+        if (u.pathname.length > 1 && u.pathname.endsWith("/")) u.pathname = u.pathname.replace(/\/+$/, "");
+        return u.toString();
+      } catch { return raw; }
+    };
+    const setUrl = (rawKey: string, info: { method: string; params: Record<string, unknown>; source: string }) => {
+      const key = normalizeUrl(rawKey);
+      if (!allUrls.has(key)) allUrls.set(key, info);
+    };
 
     // Subdomains as root endpoints
     for (const sub of allSubdomains) {
