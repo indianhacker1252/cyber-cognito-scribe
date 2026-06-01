@@ -22,10 +22,56 @@ const SEVERITY_MAP: Record<string, string> = {
   critical: "critical", high: "high", medium: "medium", low: "low", info: "none",
 };
 
+// Fix #20 — severity ceilings per vuln class (H1/Bugcrowd triagers reject inflated severities)
+const SEVERITY_CAPS: Array<{ match: RegExp; max: "critical" | "high" | "medium" | "low" | "info" }> = [
+  { match: /x-frame-options|frame-options|content-security-policy|hsts|x-content-type|referrer-policy|permissions-policy|misconfig|security-header|header/i, max: "low" },
+  { match: /cors.*credentials?\s*=?\s*false|cors-no-credentials|wildcard cors/i, max: "medium" },
+  { match: /\brxss\b|reflected.xss|stored.xss|dom.xss|\bxss\b/i, max: "high" },
+  { match: /\bsqli\b|\bssrf\b|\brce\b|cmdi|command.injection|rce|auth.bypass|priv.escalation|insecure.deserialization/i, max: "critical" },
+];
+const RANK = { info: 0, low: 1, medium: 2, high: 3, critical: 4 } as const;
+function capSeverity(rawSev: string, title: string, vulnClass: string): string {
+  const sev = (rawSev || "medium").toLowerCase() as keyof typeof RANK;
+  const hay = `${title} ${vulnClass}`.toLowerCase();
+  let cap: keyof typeof RANK | null = null;
+  for (const rule of SEVERITY_CAPS) {
+    if (rule.match.test(hay)) { cap = rule.max; break; }
+  }
+  if (!cap) return sev;
+  return RANK[sev] > RANK[cap] ? cap : sev;
+}
+
+// Fix #19 — auto-build reproduction steps from poc/payload/affected_url/diff so H1 triagers accept the report
+function buildReproSteps(f: any): string[] {
+  const steps: string[] = [];
+  const url = f.affected_url || f.poc || "";
+  const param = (f.hard_evidence as any)?.param_name || (f.evidence as any)?.parameter || "<param>";
+  const payload = f.payload || (f.hard_evidence as any)?.payload || "";
+  if (url) steps.push(`Navigate to: \`${url}\``);
+  if (payload && param !== "<param>") {
+    steps.push(`Send a request injecting the payload into the \`${param}\` parameter:\n\n\`\`\`\n${payload}\n\`\`\``);
+  } else if (payload) {
+    steps.push(`Send the following payload:\n\n\`\`\`\n${payload}\n\`\`\``);
+  }
+  const diff = (f.hard_evidence as any)?.diff_reason || (f.hard_evidence as any)?.mathematicalBasis;
+  if (diff) steps.push(`Observe the response — expected indicator: ${diff}`);
+  const ev = (f.hard_evidence as any) || {};
+  if (ev.baseline_status && ev.mutated_status) {
+    steps.push(`Compare baseline (HTTP ${ev.baseline_status}, ${ev.baseline_length || "?"}b) vs mutated (HTTP ${ev.mutated_status}, ${ev.mutated_length || "?"}b).`);
+  }
+  if (f.poc && f.poc !== url) steps.push(`Full PoC URL: \`${f.poc}\``);
+  if (steps.length < 2) {
+    steps.push("Reproduce by issuing the original request shown above and confirming the response differs from a clean baseline.");
+  }
+  return steps;
+}
+
 function buildMarkdown(f: any, target: any): string {
+  const steps = buildReproSteps(f);
+  const stepBlock = steps.map((s, i) => `${i + 1}. ${s}`).join("\n");
   return `# ${f.title}
 
-**Severity:** ${f.severity?.toUpperCase() || "MEDIUM"}  
+**Severity:** ${(f.severity || "MEDIUM").toUpperCase()}  
 **CVSS:** ${f.cvss_score ?? "N/A"}  
 **Target:** ${target?.domain || target?.name || "n/a"}  
 **Confidence:** ${f.confidence_score ?? 0}/100 (${f.confidence_level || "medium"})
@@ -33,7 +79,10 @@ function buildMarkdown(f: any, target: any): string {
 ## Summary
 ${f.description || "—"}
 
-## Steps to Reproduce / Proof of Concept
+## Steps to Reproduce
+${stepBlock}
+
+## Proof of Concept
 \`\`\`
 ${f.poc || f.payload || "—"}
 \`\`\`
@@ -48,6 +97,7 @@ ${f.remediation || "Apply standard hardening for this vulnerability class."}
 - Validation status: ${f.validation_status}
 - AI verified: ${f.ai_verified ? "yes" : "no"}
 - Reachability: ${f.reachability_status}
+- Proof tier: ${(f as any).proof_tier || "signal"}
 
 ---
 _Submitted via CyberScope_`;
@@ -140,6 +190,10 @@ Deno.serve(async (req) => {
     }
     const { data: target } = await supa.from("target_workspaces").select("*").eq("id", f.target_id).maybeSingle();
     const { data: tokens } = await supa.from("bug_bounty_tokens").select("*").eq("user_id", user.id).maybeSingle();
+
+    // Fix #20 — apply severity cap before serialising or submitting
+    const vulnClassHint = ((f as any).hard_evidence?.templateId || (f as any).hard_evidence?.vulnClass || (f as any).finding_type || "").toString();
+    (f as any).severity = capSeverity(f.severity || "medium", f.title || "", vulnClassHint);
 
     let result: any = { ok: false };
     let status: "submitted" | "exported" | "failed" = "failed";

@@ -63,14 +63,27 @@ const DESTRUCTIVE_TOKENS = [
   "MKFS",
   "DD IF=",
   "; END;",
-  "WAITFOR DELAY",
 ];
+
+// Read-only allowlist: time-based blind probes capped at 5s on read-only DBs (MSSQL, etc).
+// WAITFOR DELAY '0:0:5' is non-destructive but blocked if duration > 5s.
+function isAllowedReadOnlyTiming(payload: string): boolean {
+  const upper = payload.toUpperCase();
+  const wait = upper.match(/WAITFOR\s+DELAY\s+['"]?0:0:(\d{1,2})/);
+  if (wait) return parseInt(wait[1], 10) <= 5;
+  const sleep = upper.match(/SLEEP\s*\(\s*(\d{1,2})\s*\)/);
+  if (sleep) return parseInt(sleep[1], 10) <= 5;
+  return true;
+}
 
 function isSafePayload(payload: string): { ok: boolean; matched?: string } {
   if (!payload) return { ok: true };
   const upper = payload.toUpperCase();
   for (const t of DESTRUCTIVE_TOKENS) {
     if (upper.includes(t)) return { ok: false, matched: t };
+  }
+  if (!isAllowedReadOnlyTiming(payload)) {
+    return { ok: false, matched: "TIMING>5s" };
   }
   return { ok: true };
 }
@@ -424,15 +437,33 @@ State verdict + 1-line reason.`,
     let fpVerdict: "true_positive" | "false_positive" | "inconclusive";
     let confidence: number;
 
+    // WAF/CDN block detection — baseline 200/302/301 vs mutated 403/406/501 with tiny body = WAF, not FP
+    const wafBlocked =
+      [200, 301, 302, 303, 307, 308].includes(probe1.baselineStatus) &&
+      [403, 406, 419, 429, 451, 501, 503].includes(probe1.status) &&
+      probe1.bodyLen < 2000;
+
     if (probe1.blocked) {
       fpVerdict = "inconclusive";
       confidence = 0;
+    } else if (probe1.status === 0 && probe1.baselineStatus === 0) {
+      // Both requests failed — cannot judge. Do NOT poison the vault.
+      await db.from("scan_logs").insert({
+        target_id: targetId,
+        log_type: "info",
+        message: `🌐 Debate skipped: network unreachable (baseline=${probe1.baselineStatus}, mutated=${probe1.status}) — no insert`,
+        metadata: { run_id: runId, phase: "debate-network-skip", endpointUrl, paramName },
+      });
+      return new Response(JSON.stringify({ skipped: "network_failure", fpVerdict: "inconclusive", confidence: 0 }),
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     } else if (probe1.status === 0 || probe1.baselineStatus === 0) {
-      // Network failure — cannot judge; mark inconclusive to avoid FP cascade
       fpVerdict = "inconclusive";
       confidence = 0;
+    } else if (wafBlocked) {
+      fpVerdict = "inconclusive";
+      confidence = 40;
+      probe1.diffReason = `WAF/CDN blocked payload (baseline ${probe1.baselineStatus} → mutated ${probe1.status}, ${probe1.bodyLen}b)`;
     } else if (!probe1.meaningfulDiff) {
-      // Response did not meaningfully change — false positive
       fpVerdict = "false_positive";
       confidence = 90;
     } else if (probe1.diffReason === "sensitive data pattern matched") {
@@ -441,14 +472,16 @@ State verdict + 1-line reason.`,
     } else if (probe1.status >= 500 && sqlErrorHit) {
       fpVerdict = "true_positive";
       confidence = 90;
+    } else if (probe1.status >= 500 && probe1.baselineStatus < 500) {
+      // Server 500 on payload alone is info-disclosure / possible SQLi
+      fpVerdict = "true_positive";
+      confidence = 78;
+      probe1.diffReason = `${probe1.diffReason} | server 500 triggered by payload (info disclosure / possible SQLi)`;
     } else if (probe1.diffReason === "stack trace exposed") {
       fpVerdict = "true_positive";
       confidence = 85;
     } else if (probe1.xssUnescaped) {
-      // XSS confirmed only when strict unescaped check passes
-      // Additional check: agents must not both disagree
       if (bothAgreeFP) {
-        // Agents disagree with our check — downgrade to needs_review
         fpVerdict = "true_positive";
         confidence = 70;
       } else {
@@ -467,9 +500,6 @@ State verdict + 1-line reason.`,
     } else if (bothAgreeFP) {
       fpVerdict = "false_positive";
       confidence = 85;
-    } else if (probe1.status === 0) {
-      fpVerdict = "inconclusive";
-      confidence = 30;
     } else {
       fpVerdict = "false_positive";
       confidence = 75;

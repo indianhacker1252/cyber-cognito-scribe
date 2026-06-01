@@ -83,11 +83,13 @@ serve(async (req) => {
       // Debate phase: pick top N suspicious params and run two-agent debate
       await append(`iter-${i}-debate`, `🥷 Two-agent black-hat debate on top params`);
       const { data: eps } = await db.from("discovered_endpoints")
-        .select("url,parameters").eq("target_id", targetId).limit(50);
+        .select("url,method,parameters").eq("target_id", targetId).limit(50);
       let debatesRun = 0, fpEliminated = 0, tpConfirmed = 0;
       const COMMON_PARAMS = ["q", "id", "search", "query", "email", "user", "page", "url", "redirect"];
+      // Fix #7 — dedupe params across iterations so we don't re-test the same (url, param) pair
+      const alreadyDebated: Set<string> = (globalThis as any).__mythos_debated__ ||= new Set();
       for (const ep of (eps || [])) {
-        // Bug #3 fix — accept stored params, URL params, then common-name fallbacks.
+        // accept stored params, URL params, then common-name fallbacks.
         let params = (ep.parameters as Record<string, string>) || {};
         if (Object.keys(params).length === 0) {
           try {
@@ -95,11 +97,17 @@ serve(async (req) => {
             params = Object.fromEntries(urlParams);
           } catch { /* ignore parse errors */ }
         }
+        // Fix #9 — skip GET param testing on POST-only endpoints (would send wrong-method probes)
+        const isPostOnly = (ep.method || "GET").toUpperCase() === "POST" && Object.keys(params).length === 0;
+        if (isPostOnly) continue;
         if (Object.keys(params).length === 0) {
           params = Object.fromEntries(COMMON_PARAMS.map((p) => [p, "test"]));
         }
         const paramKeys = Object.keys(params).slice(0, 3);
         for (const pk of paramKeys) {
+          const dedupKey = `${ep.url}::${pk}`;
+          if (alreadyDebated.has(dedupKey)) continue;
+          alreadyDebated.add(dedupKey);
           const dRes = await call("mythos-debate", {
             targetId, runId, endpointUrl: ep.url, paramName: pk,
             paramValue: params[pk], vulnClassHint: "auto",
@@ -113,7 +121,7 @@ serve(async (req) => {
         }
         if (debatesRun >= 20) break;
       }
-      await append(`iter-${i}-debate`, `Debates: ${debatesRun} run, ${tpConfirmed} TP, ${fpEliminated} FP eliminated`, { debatesRun, tpConfirmed, fpEliminated });
+      await append(`iter-${i}-debate`, `Debates: ${debatesRun} run, ${tpConfirmed} TP, ${fpEliminated} FP eliminated (${alreadyDebated.size} unique pairs tested so far)`, { debatesRun, tpConfirmed, fpEliminated });
 
       // Stop early if nothing new
       if ((chainRes.data?.chainsCount ?? 0) === 0 && (varRes.data?.candidates ?? 0) === 0 && debatesRun === 0 && i >= 2) {
