@@ -63,14 +63,27 @@ const DESTRUCTIVE_TOKENS = [
   "MKFS",
   "DD IF=",
   "; END;",
-  "WAITFOR DELAY",
 ];
+
+// Read-only allowlist: time-based blind probes capped at 5s on read-only DBs (MSSQL, etc).
+// WAITFOR DELAY '0:0:5' is non-destructive but blocked if duration > 5s.
+function isAllowedReadOnlyTiming(payload: string): boolean {
+  const upper = payload.toUpperCase();
+  const wait = upper.match(/WAITFOR\s+DELAY\s+['"]?0:0:(\d{1,2})/);
+  if (wait) return parseInt(wait[1], 10) <= 5;
+  const sleep = upper.match(/SLEEP\s*\(\s*(\d{1,2})\s*\)/);
+  if (sleep) return parseInt(sleep[1], 10) <= 5;
+  return true;
+}
 
 function isSafePayload(payload: string): { ok: boolean; matched?: string } {
   if (!payload) return { ok: true };
   const upper = payload.toUpperCase();
   for (const t of DESTRUCTIVE_TOKENS) {
     if (upper.includes(t)) return { ok: false, matched: t };
+  }
+  if (!isAllowedReadOnlyTiming(payload)) {
+    return { ok: false, matched: "TIMING>5s" };
   }
   return { ok: true };
 }
