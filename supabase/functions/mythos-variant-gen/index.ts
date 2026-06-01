@@ -23,15 +23,33 @@ serve(async (req) => {
     });
 
     let intel: any[] = [];
+    // Fix #15 — rotate CVE window per iteration so successive runs see fresh intel
+    const iterSalt = Math.floor(Math.random() * 5) * 5; // 0,5,10,15,20
     if (cveIds?.length) {
       const { data } = await db.from("intel_feeds").select("title,vulnerability_class,extracted_payloads,raw_summary,report_id").in("report_id", cveIds).limit(5);
       intel = data || [];
     } else {
-      const { data } = await db.from("intel_feeds").select("title,vulnerability_class,extracted_payloads,raw_summary,report_id").eq("status", "processed").order("ingested_at", { ascending: false }).limit(5);
+      const { data } = await db.from("intel_feeds").select("title,vulnerability_class,extracted_payloads,raw_summary,report_id").eq("status", "processed").order("ingested_at", { ascending: false }).range(iterSalt, iterSalt + 4);
       intel = data || [];
     }
 
     const { data: endpoints } = await db.from("discovered_endpoints").select("url,method,parameters").eq("target_id", targetId).limit(20);
+
+    // Fix #14 — pre-flight HEAD against the first endpoint; if unreachable, skip inline tests entirely
+    let targetReachable = true;
+    if (endpoints?.[0]?.url) {
+      try {
+        const head = await fetch(endpoints[0].url, { method: "HEAD", signal: AbortSignal.timeout(4000), redirect: "manual" });
+        targetReachable = head.status > 0 && head.status < 600;
+      } catch { targetReachable = false; }
+      if (!targetReachable) {
+        await db.from("scan_logs").insert({
+          target_id: targetId, log_type: "info",
+          message: `🌐 Variant Gen: target unreachable via HEAD — skipping inline tests, only queueing for worker retry`,
+          metadata: { phase: "variant-preflight-fail", run_id: runId },
+        });
+      }
+    }
 
     const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
     if (!LOVABLE_API_KEY) throw new Error("LOVABLE_API_KEY not configured");
@@ -167,25 +185,27 @@ Given a known CVE, identify its ROOT-CAUSE PATTERN, then return 3-5 novel varian
       }));
     if (jobs.length) await db.from("scan_jobs").insert(jobs);
 
-    // Also run inline tests for first 3 (so we have immediate results without waiting for cron)
+    // Also run inline tests for first 3 — only if pre-flight reachability passed
     let immediateCandidates = 0;
-    for (const v of variantRecords.slice(0, 3)) {
-      if (!v.test_endpoint) continue;
-      try {
-        const u = new URL(v.test_endpoint);
-        u.searchParams.set(v._paramName, v.variant_payload);
-        const r = await fetch(u.toString(), { signal: AbortSignal.timeout(6000) });
-        const body = await r.text();
-        const reflected = body.includes(v.variant_payload);
-        const errorSig = /SQL|syntax error|stack trace|undefined|TypeError|fatal error/i.test(body);
-        const isCand = reflected || errorSig;
-        if (isCand) immediateCandidates++;
-        await db.from("mythos_variants").update({
-          test_status: isCand ? "candidate" : "negative",
-          test_result: { status: r.status, bodyLen: body.length, reflected, errorSig },
-          is_zero_day_candidate: isCand,
-        } as any).eq("id", v.id);
-      } catch { /* leave as queued */ }
+    if (targetReachable) {
+      for (const v of variantRecords.slice(0, 3)) {
+        if (!v.test_endpoint) continue;
+        try {
+          const u = new URL(v.test_endpoint);
+          u.searchParams.set(v._paramName, v.variant_payload);
+          const r = await fetch(u.toString(), { signal: AbortSignal.timeout(6000) });
+          const body = await r.text();
+          const reflected = body.includes(v.variant_payload);
+          const errorSig = /SQL|syntax error|stack trace|undefined|TypeError|fatal error/i.test(body);
+          const isCand = reflected || errorSig;
+          if (isCand) immediateCandidates++;
+          await db.from("mythos_variants").update({
+            test_status: isCand ? "candidate" : "negative",
+            test_result: { status: r.status, bodyLen: body.length, reflected, errorSig },
+            is_zero_day_candidate: isCand,
+          } as any).eq("id", v.id);
+        } catch { /* leave as queued */ }
+      }
     }
 
     await db.from("scan_logs").insert({
