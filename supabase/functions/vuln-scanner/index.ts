@@ -2048,7 +2048,7 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
 
       // Route by severity: high/critical → approvals, others → auto-accept
       if (effectiveSeverity === "high" || effectiveSeverity === "critical") {
-        await db.from("pending_approvals").insert({
+        const { data: insertedApproval } = await db.from("pending_approvals").insert({
           target_id: targetId,
           endpoint_id: matchingCheck?.endpointId || null,
           finding_type: `active-${diff.vulnClass}`,
@@ -2073,8 +2073,35 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
             gauntletProof: proof || null, peerReview: peer || null, aiGate,
             payloadsTested: attemptedCount, gauntletVerdict: gauntletGate.gauntlet_verdict,
           },
-        });
+        }).select("id").single();
         approvalCount++;
+
+        // Fix #3 — auto-fire exploit engine for high/critical findings so they don't sit at "signal" tier.
+        // Also create a vulnerability_findings row first so exploit-engine can update its proof_tier.
+        try {
+          const { data: vfRow } = await db.from("vulnerability_findings").insert({
+            target_id: targetId,
+            endpoint_id: matchingCheck?.endpointId || null,
+            title: `${diff.vulnClass.toUpperCase()} [${diff.owaspCategory}]`,
+            severity: effectiveSeverity as any,
+            description: fullDescription,
+            payload: diff.truePayload,
+            confidence_score: aiGate.confidence,
+            confidence_level: confidenceLabel,
+            ai_verified: true,
+            validation_status: "pending_exploit",
+            triage_reasoning: `${triageNote}. Pending exploit-engine verification.`,
+            hard_evidence: { templateId: diff.vulnClass, proof, gauntletVerdict: gauntletGate.gauntlet_verdict, approval_id: insertedApproval?.id },
+          } as any).select("id").single();
+          if (vfRow?.id) {
+            fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/exploit-engine`, {
+              method: "POST",
+              headers: { Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}`, "Content-Type": "application/json" },
+              body: JSON.stringify({ findingId: vfRow.id }),
+            }).catch(() => {});
+            await db.from("scan_jobs").insert({ target_id: targetId, job_type: "exploit", priority: 9, payload: { findingId: vfRow.id } });
+          }
+        } catch { /* non-fatal */ }
       } else {
         await autoAcceptFinding({
           target_id: targetId,
