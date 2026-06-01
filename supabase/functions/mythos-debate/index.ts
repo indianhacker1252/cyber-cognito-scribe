@@ -437,15 +437,33 @@ State verdict + 1-line reason.`,
     let fpVerdict: "true_positive" | "false_positive" | "inconclusive";
     let confidence: number;
 
+    // WAF/CDN block detection — baseline 200/302/301 vs mutated 403/406/501 with tiny body = WAF, not FP
+    const wafBlocked =
+      [200, 301, 302, 303, 307, 308].includes(probe1.baselineStatus) &&
+      [403, 406, 419, 429, 451, 501, 503].includes(probe1.status) &&
+      probe1.bodyLen < 2000;
+
     if (probe1.blocked) {
       fpVerdict = "inconclusive";
       confidence = 0;
+    } else if (probe1.status === 0 && probe1.baselineStatus === 0) {
+      // Both requests failed — cannot judge. Do NOT poison the vault.
+      await db.from("scan_logs").insert({
+        target_id: targetId,
+        log_type: "info",
+        message: `🌐 Debate skipped: network unreachable (baseline=${probe1.baselineStatus}, mutated=${probe1.status}) — no insert`,
+        metadata: { run_id: runId, phase: "debate-network-skip", endpointUrl, paramName },
+      });
+      return new Response(JSON.stringify({ skipped: "network_failure", fpVerdict: "inconclusive", confidence: 0 }),
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     } else if (probe1.status === 0 || probe1.baselineStatus === 0) {
-      // Network failure — cannot judge; mark inconclusive to avoid FP cascade
       fpVerdict = "inconclusive";
       confidence = 0;
+    } else if (wafBlocked) {
+      fpVerdict = "inconclusive";
+      confidence = 40;
+      probe1.diffReason = `WAF/CDN blocked payload (baseline ${probe1.baselineStatus} → mutated ${probe1.status}, ${probe1.bodyLen}b)`;
     } else if (!probe1.meaningfulDiff) {
-      // Response did not meaningfully change — false positive
       fpVerdict = "false_positive";
       confidence = 90;
     } else if (probe1.diffReason === "sensitive data pattern matched") {
@@ -454,14 +472,16 @@ State verdict + 1-line reason.`,
     } else if (probe1.status >= 500 && sqlErrorHit) {
       fpVerdict = "true_positive";
       confidence = 90;
+    } else if (probe1.status >= 500 && probe1.baselineStatus < 500) {
+      // Server 500 on payload alone is info-disclosure / possible SQLi
+      fpVerdict = "true_positive";
+      confidence = 78;
+      probe1.diffReason = `${probe1.diffReason} | server 500 triggered by payload (info disclosure / possible SQLi)`;
     } else if (probe1.diffReason === "stack trace exposed") {
       fpVerdict = "true_positive";
       confidence = 85;
     } else if (probe1.xssUnescaped) {
-      // XSS confirmed only when strict unescaped check passes
-      // Additional check: agents must not both disagree
       if (bothAgreeFP) {
-        // Agents disagree with our check — downgrade to needs_review
         fpVerdict = "true_positive";
         confidence = 70;
       } else {
@@ -480,9 +500,6 @@ State verdict + 1-line reason.`,
     } else if (bothAgreeFP) {
       fpVerdict = "false_positive";
       confidence = 85;
-    } else if (probe1.status === 0) {
-      fpVerdict = "inconclusive";
-      confidence = 30;
     } else {
       fpVerdict = "false_positive";
       confidence = 75;
