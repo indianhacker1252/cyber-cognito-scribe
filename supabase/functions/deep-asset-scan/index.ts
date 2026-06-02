@@ -553,7 +553,7 @@ Deno.serve(async (req) => {
 
     return respond({
       ok: true, scannedFiles, secrets: totalSecrets, codeBugs: totalBugs,
-      debugPaths: debugHits, ssrfInjections,
+      debugPaths: debugHits, ssrfInjections, passiveFindings: passiveInserted,
     });
   } catch (err) {
     return respond({ ok: false, error: (err as Error).message });
