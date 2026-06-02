@@ -462,10 +462,18 @@ Deno.serve(async (req) => {
       catch { return `https://${target.domain}`; }
     })();
 
+    // 0. ALWAYS-ON passive header / cookie / CORS sweep (info/low/medium)
+    const passiveInserted = await runPassiveHeaderSweep(db, targetId, origin);
+    await db.from("scan_logs").insert({
+      target_id: targetId, log_type: "result",
+      message: `📋 Passive header sweep wrote ${passiveInserted} baseline findings (info/low/medium)`,
+    });
+
     await db.from("scan_logs").insert({
       target_id: targetId, log_type: "info",
       message: `🔑 Deep Asset Scan engaged on ${origin} — secrets/source/SRI/debug/SSRF`,
     });
+
 
     // 1. Build asset URL list: discovered_endpoints + root HTML spidered links
     const { data: discovered } = await db.from("discovered_endpoints")
