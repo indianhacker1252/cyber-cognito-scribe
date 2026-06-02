@@ -568,9 +568,90 @@ State verdict + 1-line reason.`,
       }
     }
 
-    // Self-correlation learnings
-    const learnA = `Param ${paramName}: hypothesis "${a1.slice(0, 80)}…". Verdict: ${fpVerdict} (${confidence}%). diffReason: ${probe1.diffReason}${probe2 ? ` | skeptic-retest: ${probe2.diffReason}` : ""}`;
-    const learnB = `Payload "${proposedPayload.slice(0, 60)}" → ${fpVerdict}. ${probe1.meaningfulDiff ? "Meaningful diff — promote pattern." : "No diff — deprioritize this template."}${refinedPayload ? ` | Skeptic refined: "${refinedPayload.slice(0, 40)}"` : ""}`;
+    // ── Rounds 8-11 — MUTATION LOOP: if still FP, agents propose a
+    // fundamentally DIFFERENT attack class (not just a tweaked payload).
+    // Up to MAX_MUTATIONS new attack vectors are tried before giving up.
+    const MAX_MUTATIONS = 2;
+    const mutationProbes: Array<{ vector: string; payload: string; probe: typeof probe1 }> = [];
+    const triedClasses = new Set<string>([(vulnClassHint || "auto").toLowerCase()]);
+    let mutationRound = 0;
+    while (fpVerdict === "false_positive" && mutationRound < MAX_MUTATIONS && confidence < 95) {
+      mutationRound++;
+      const sysMutator = `You are a black-hat strategist running attack mutation #${mutationRound}. The previous attempts FAILED to find a bug. You must propose a COMPLETELY DIFFERENT attack class — do not repeat what was already tried.
+
+Already tried vuln classes: ${[...triedClasses].join(", ") || "none"}.
+Previously tried payloads: ${[proposedPayload, refinedPayload, ...mutationProbes.map(m => m.payload)].filter(Boolean).map(p => p?.slice(0, 60)).join(" | ")}.
+
+Available attack classes to switch to: SQLi (UNION/error/boolean/time-based), NoSQLi ($ne/$where), XSS (reflected/DOM/polyglot), SSTI (jinja/twig/freemarker/handlebars), SSRF (file://,gopher://,internal IP,DNS rebind), Path Traversal (../, %2e%2e/, unicode), LFI (php://filter, /proc/self/environ), Command Injection ($(...), backticks, |, ;), HTTP Header Injection (CRLF \\r\\n), Open Redirect, XXE, Prototype Pollution, GraphQL introspection, Race Condition.
+
+Output STRICT format:
+LINE 1: vuln_class_name (lowercase, single token)
+LINE 2: raw payload only
+LINE 3: 1-line rationale
+
+SAFETY: READ-ONLY only. NEVER use DROP/DELETE/UPDATE/INSERT/TRUNCATE/SHUTDOWN/EXEC/rm -rf/format.`;
+      const mutUserMsg = `Param: ${paramName}=${paramValue}
+URL: ${endpointUrl}
+Original hypothesis (FAILED): ${a1.slice(0, 200)}
+First payload (FAILED): "${proposedPayload}" → ${probe1.diffReason}
+${refinedPayload ? `Skeptic refined (FAILED): "${refinedPayload}" → ${probe2?.diffReason || "n/a"}` : ""}
+${mutationProbes.map((m, i) => `Mutation ${i + 1} (${m.vector}, FAILED): "${m.payload}" → ${m.probe.diffReason}`).join("\n")}
+
+Propose a CLEAN-SLATE attack with a DIFFERENT vuln class.`;
+      const mutMsg = await callAgent("B", sysMutator, mutUserMsg, []);
+      const lines = mutMsg.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+      const newClass = (lines[0] || "auto").toLowerCase().replace(/[^a-z]/g, "");
+      const newPayload = (lines[1] || "").replace(/^[`"']|[`"']$/g, "");
+      const rationale = lines.slice(2).join(" ").slice(0, 200);
+      transcript.push({ agent: "B", round: 8 + mutationRound, msg: `[mutation #${mutationRound} → class=${newClass}] ${mutMsg.slice(0, 300)}` });
+
+      if (!newPayload || triedClasses.has(newClass) || !isSafePayload(newPayload).ok) {
+        await db.from("scan_logs").insert({
+          target_id: targetId,
+          log_type: "info",
+          message: `🧬 Mutation #${mutationRound} rejected (class=${newClass}, dup=${triedClasses.has(newClass)}, unsafe=${!isSafePayload(newPayload).ok})`,
+          metadata: { run_id: runId, phase: "debate-mutation-reject" },
+        });
+        continue;
+      }
+      triedClasses.add(newClass);
+
+      const mProbe = await probe(endpointUrl, paramName, newPayload);
+      mutationProbes.push({ vector: newClass, payload: newPayload, probe: mProbe });
+
+      // Score this mutation
+      const sql_m = SQL_ERROR_RX.test(mProbe.bodySnippet);
+      let mv: typeof fpVerdict = "false_positive";
+      let mc = 60;
+      if (mProbe.status === 0 || mProbe.baselineStatus === 0) { mv = "inconclusive"; mc = 0; }
+      else if (mProbe.diffReason === "sensitive data pattern matched") { mv = "true_positive"; mc = 95; }
+      else if (mProbe.status >= 500 && sql_m) { mv = "true_positive"; mc = 92; }
+      else if (mProbe.diffReason === "stack trace exposed") { mv = "true_positive"; mc = 88; }
+      else if (mProbe.xssUnescaped) { mv = "true_positive"; mc = 85; }
+      else if (mProbe.timingDelta > 4500) { mv = "true_positive"; mc = 80; }
+      else if (mProbe.meaningfulDiff && mProbe.status >= 500) { mv = "true_positive"; mc = 78; }
+      else if (mProbe.meaningfulDiff) { mv = "inconclusive"; mc = 55; }
+
+      await db.from("scan_logs").insert({
+        target_id: targetId,
+        log_type: mv === "true_positive" ? "result" : "action",
+        message: `🧬 Mutation #${mutationRound} [${newClass}] → ${newPayload.slice(0, 60)} | ${mProbe.baselineStatus}→${mProbe.status} ${mProbe.baselineLen}→${mProbe.bodyLen}b | ${mv} (${mc}%) — ${rationale.slice(0, 80)}`,
+        metadata: { run_id: runId, phase: "debate-mutation", vuln_class: newClass, payload: newPayload },
+      });
+
+      if (mv === "true_positive" && mc > confidence) {
+        fpVerdict = mv;
+        confidence = mc;
+        // Replace probe1 reference for downstream insert: keep original but stash mutation in evidence
+        probe1.diffReason = `mutation #${mutationRound} [${newClass}] confirmed — ${mProbe.diffReason}`;
+        proposedPayload = newPayload;
+        break;
+      }
+    }
+
+    // Self-correlation learnings (now include mutation history)
+    const learnA = `Param ${paramName}: hypothesis "${a1.slice(0, 80)}…". Verdict: ${fpVerdict} (${confidence}%). diffReason: ${probe1.diffReason}${probe2 ? ` | skeptic-retest: ${probe2.diffReason}` : ""}${mutationProbes.length ? ` | mutations: ${mutationProbes.length} tried (${[...triedClasses].join(",")})` : ""}`;
+    const learnB = `Payload "${proposedPayload.slice(0, 60)}" → ${fpVerdict}. ${probe1.meaningfulDiff ? "Meaningful diff — promote pattern." : "No diff — deprioritize this template."}${refinedPayload ? ` | Skeptic refined: "${refinedPayload.slice(0, 40)}"` : ""}${mutationProbes.length ? ` | Mutation classes attempted: ${[...triedClasses].join(",")}` : ""}`;
 
     const { data: debateRow } = await db
       .from("mythos_debates")
@@ -636,7 +717,7 @@ State verdict + 1-line reason.`,
           description: `Two-agent debate verdict: ${fpVerdict} (${confidence}% conf)\n\n**Diff reason**: ${probe1.diffReason}\n**XSS unescaped**: ${probe1.xssUnescaped}\n\n**Agent A**: ${a2}\n\n**Agent B**: ${b2}`,
           payload: proposedPayload,
           poc: `${endpointUrl}?${paramName}=${encodeURIComponent(proposedPayload)}`,
-          affected_url: endpointUrl,
+          // Note: vulnerability_findings has no `affected_url` column — URL lives in `poc`.
           confidence_score: confidence,
           confidence_level: confidence >= 75 ? "high" : "medium",
           triage_reasoning: `Agent A: ${a1}\nAgent B: ${b1}\nResult: ${JSON.stringify(probe1)}\nDebate: ${a2} | ${b2}`,
@@ -658,6 +739,10 @@ State verdict + 1-line reason.`,
                   probe: probe2,
                 }
               : null,
+            mutation_rounds: mutationProbes.length
+              ? mutationProbes.map((m) => ({ vuln_class: m.vector, payload: m.payload, status: m.probe.status, baseline_status: m.probe.baselineStatus, body_len: m.probe.bodyLen, diff_reason: m.probe.diffReason }))
+              : null,
+            classes_attempted: [...triedClasses],
           },
         })
         .select("id")
