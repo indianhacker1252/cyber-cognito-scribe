@@ -72,7 +72,12 @@ async function runViaEdge(script: string, language: string, fallbackUrl?: string
   if (!url) {
     return { ok: false, exitCode: 2, output: "edge-sandbox: could not extract a target URL from the script", evidence };
   }
-  const r = await safeFetch(url, { method, headers, body, timeoutMs: 8000 });
+  let r: Response | null = null;
+  try {
+    r = await safeFetch(url, { method, headers, body, redirect: "follow" }, 8000);
+  } catch (e) {
+    return { ok: false, exitCode: 1, output: `edge-sandbox: fetch threw ${e instanceof Error ? e.message : "err"}`, evidence: { ...evidence, url } };
+  }
   if (!r) return { ok: false, exitCode: 1, output: `edge-sandbox: fetch failed`, evidence: { ...evidence, url } };
   const text = (await r.text().catch(() => "")) || "";
   evidence.method = method; evidence.url = url;
