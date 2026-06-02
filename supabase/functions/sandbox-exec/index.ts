@@ -161,7 +161,7 @@ Deno.serve(async (req) => {
       runResult = { ok: false, exitCode: 1, output: "no executor available", evidence: {} };
     }
 
-    const proven = runResult.ok && /\[PROVEN\]|HTTP\/\d\.\d 5\d\d|root:x:0:0/i.test(runResult.output || "");
+    const proven = runResult.ok && /\[PROVEN\]|CYBERSCOPE_PROVEN|root:x:0:0:|\[boot loader\]|<\?php|sql syntax|mysql_|pg_query|SQLSTATE|ORA-\d{4,}|unclosed quotation|System\.Data\.SqlClient/i.test(runResult.output || "");
 
     await supa.from("sandbox_executions").update({
       status: runResult.ok ? "done" : "failed",
