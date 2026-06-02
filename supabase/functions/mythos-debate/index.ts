@@ -739,6 +739,10 @@ Propose a CLEAN-SLATE attack with a DIFFERENT vuln class.`;
                   probe: probe2,
                 }
               : null,
+            mutation_rounds: mutationProbes.length
+              ? mutationProbes.map((m) => ({ vuln_class: m.vector, payload: m.payload, status: m.probe.status, baseline_status: m.probe.baselineStatus, body_len: m.probe.bodyLen, diff_reason: m.probe.diffReason }))
+              : null,
+            classes_attempted: [...triedClasses],
           },
         })
         .select("id")
