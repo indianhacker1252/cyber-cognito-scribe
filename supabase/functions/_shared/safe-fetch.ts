@@ -8,7 +8,9 @@ export async function safeFetch(
   const ctl = new AbortController();
   const t = setTimeout(() => ctl.abort(), timeoutMs);
   try {
-    return await fetch(url, { ...opts, signal: ctl.signal, redirect: "manual" });
+    // Honor caller's redirect choice; default to "manual" so callers comparing
+    // response bodies don't accidentally follow cross-host redirects.
+    return await fetch(url, { redirect: "manual", ...opts, signal: ctl.signal });
   } finally {
     clearTimeout(t);
   }

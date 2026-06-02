@@ -1221,7 +1221,9 @@ serve(async (req) => {
     if (secListsLoaded) await log(db, targetId, taskId, "info", `📦 SecLists loaded: ${secListsLoaded}`);
 
     for (let i = 0; i < maxTests; i++) {
-      if (isTimedOut()) { await log(db, targetId, taskId, "info", `⏱️ Time limit reached after ${i} tests — wrapping up`); break; }
+      // Fix: removed inner-loop isTimedOut() break so the full template suite
+      // runs even when the outer 55s budget is exceeded. The orchestrator
+      // re-enqueues us — we do NOT want to silently truncate templates here.
       const check = vulnChecks[i];
       // Exploration vs Exploitation strategy (Phase 8)
       const isExploring = i < Math.ceil(totalSteps * 0.1);
