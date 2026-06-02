@@ -717,7 +717,7 @@ Propose a CLEAN-SLATE attack with a DIFFERENT vuln class.`;
           description: `Two-agent debate verdict: ${fpVerdict} (${confidence}% conf)\n\n**Diff reason**: ${probe1.diffReason}\n**XSS unescaped**: ${probe1.xssUnescaped}\n\n**Agent A**: ${a2}\n\n**Agent B**: ${b2}`,
           payload: proposedPayload,
           poc: `${endpointUrl}?${paramName}=${encodeURIComponent(proposedPayload)}`,
-          affected_url: endpointUrl,
+          // Note: vulnerability_findings has no `affected_url` column — URL lives in `poc`.
           confidence_score: confidence,
           confidence_level: confidence >= 75 ? "high" : "medium",
           triage_reasoning: `Agent A: ${a1}\nAgent B: ${b1}\nResult: ${JSON.stringify(probe1)}\nDebate: ${a2} | ${b2}`,
