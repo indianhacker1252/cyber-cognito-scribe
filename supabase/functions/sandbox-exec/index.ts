@@ -1,8 +1,15 @@
 // Sandbox Exec — runs an exploit/validation payload in isolation.
 // Strategy: try user's docker worker (if active) → fall back to edge-function
 // simulated sandbox (safeFetch with strict allowlist + recorded evidence).
+//
+// Every edge-mode run loads the per-target SESSION JAR (cookies, JWT, CSRF,
+// sticky headers) and replays it on the outbound request — and harvests
+// fresh Set-Cookie / Bearer / CSRF tokens from the response so the NEXT
+// attempt continues the same session. This makes multi-step exploit chains
+// (login → IDOR → admin) work without re-authenticating each time.
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { safeFetch } from "../_shared/safe-fetch.ts";
+import { applyJar, harvestAndPersist, loadJar } from "../_shared/session-jar.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
