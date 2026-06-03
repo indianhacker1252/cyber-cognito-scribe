@@ -499,6 +499,45 @@ export type Database = {
         }
         Relationships: []
       }
+      chain_finder_runs: {
+        Row: {
+          created_at: string
+          id: string
+          primitive: string | null
+          proposed_next_step: Json
+          queued_exploit_run_id: string | null
+          reasoning: string | null
+          result: Json
+          seed_finding_id: string | null
+          status: string
+          target_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          primitive?: string | null
+          proposed_next_step?: Json
+          queued_exploit_run_id?: string | null
+          reasoning?: string | null
+          result?: Json
+          seed_finding_id?: string | null
+          status?: string
+          target_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          primitive?: string | null
+          proposed_next_step?: Json
+          queued_exploit_run_id?: string | null
+          reasoning?: string | null
+          result?: Json
+          seed_finding_id?: string | null
+          status?: string
+          target_id?: string
+        }
+        Relationships: []
+      }
       chat_messages: {
         Row: {
           content: string
@@ -2070,6 +2109,48 @@ export type Database = {
           scan_type?: string
           target_id?: string | null
           user_id?: string
+        }
+        Relationships: []
+      }
+      session_jars: {
+        Row: {
+          cookies: Json
+          created_at: string
+          csrf_token: string | null
+          headers: Json
+          hit_count: number
+          id: string
+          jwt: string | null
+          last_url: string | null
+          profile_name: string
+          target_id: string
+          updated_at: string
+        }
+        Insert: {
+          cookies?: Json
+          created_at?: string
+          csrf_token?: string | null
+          headers?: Json
+          hit_count?: number
+          id?: string
+          jwt?: string | null
+          last_url?: string | null
+          profile_name?: string
+          target_id: string
+          updated_at?: string
+        }
+        Update: {
+          cookies?: Json
+          created_at?: string
+          csrf_token?: string | null
+          headers?: Json
+          hit_count?: number
+          id?: string
+          jwt?: string | null
+          last_url?: string | null
+          profile_name?: string
+          target_id?: string
+          updated_at?: string
         }
         Relationships: []
       }

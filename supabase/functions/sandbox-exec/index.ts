@@ -1,8 +1,15 @@
 // Sandbox Exec — runs an exploit/validation payload in isolation.
 // Strategy: try user's docker worker (if active) → fall back to edge-function
 // simulated sandbox (safeFetch with strict allowlist + recorded evidence).
+//
+// Every edge-mode run loads the per-target SESSION JAR (cookies, JWT, CSRF,
+// sticky headers) and replays it on the outbound request — and harvests
+// fresh Set-Cookie / Bearer / CSRF tokens from the response so the NEXT
+// attempt continues the same session. This makes multi-step exploit chains
+// (login → IDOR → admin) work without re-authenticating each time.
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { safeFetch } from "../_shared/safe-fetch.ts";
+import { applyJar, harvestAndPersist, loadJar } from "../_shared/session-jar.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -40,7 +47,13 @@ async function runViaWorker(cfg: any, payload: any, timeoutMs = 45000) {
   } finally { clearTimeout(t); }
 }
 
-async function runViaEdge(script: string, language: string, fallbackUrl?: string) {
+async function runViaEdge(
+  script: string,
+  language: string,
+  fallbackUrl: string | undefined,
+  supa: any,
+  targetId: string,
+) {
   // Edge fallback can't exec arbitrary code. We parse the script to extract a
   // single curl/HTTP call and execute it via safeFetch, recording the response.
   const lines = script.split(/\r?\n/);
@@ -63,7 +76,6 @@ async function runViaEdge(script: string, language: string, fallbackUrl?: string
     }
   }
 
-  // NEW: fall back to the finding's bound target URL when the script omits one
   if (!url && fallbackUrl) {
     url = fallbackUrl;
     evidence.urlSource = "target_fallback";
@@ -72,9 +84,20 @@ async function runViaEdge(script: string, language: string, fallbackUrl?: string
   if (!url) {
     return { ok: false, exitCode: 2, output: "edge-sandbox: could not extract a target URL from the script", evidence };
   }
+
+  // ── SESSION JAR: load + inject cookies/JWT/CSRF/sticky headers ──
+  const jar = await loadJar(supa, targetId);
+  const mergedHeaders = applyJar(jar, headers);
+  evidence.jar_applied = {
+    cookies: Object.keys(jar.cookies).length,
+    jwt: jar.jwt ? "present" : null,
+    csrf: jar.csrf_token ? "present" : null,
+    hit_count: jar.hit_count,
+  };
+
   let r: Response | null = null;
   try {
-    r = await safeFetch(url, { method, headers, body, redirect: "follow" }, 8000);
+    r = await safeFetch(url, { method, headers: mergedHeaders, body, redirect: "follow" }, 8000);
   } catch (e) {
     return { ok: false, exitCode: 1, output: `edge-sandbox: fetch threw ${e instanceof Error ? e.message : "err"}`, evidence: { ...evidence, url } };
   }
@@ -83,6 +106,14 @@ async function runViaEdge(script: string, language: string, fallbackUrl?: string
   evidence.method = method; evidence.url = url;
   evidence.status = r.status; evidence.length = text.length;
   evidence.snippet = text.slice(0, 400);
+
+  // ── SESSION JAR: harvest fresh cookies/JWT/CSRF for the next attempt ──
+  try {
+    await harvestAndPersist(supa, targetId, "default", jar, {
+      headers: r.headers, bodyText: text, url,
+    });
+  } catch { /* ignore */ }
+
   return {
     ok: true,
     exitCode: 0,
@@ -153,7 +184,7 @@ Deno.serve(async (req) => {
         const raw = (tgt as any)?.domain || (tgt as any)?.ip_range;
         if (raw) fallbackUrl = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
       }
-      runResult = await runViaEdge(body.script, language, fallbackUrl);
+      runResult = await runViaEdge(body.script, language, fallbackUrl, supa, body.targetId);
       executor = "edge_function";
     }
 
