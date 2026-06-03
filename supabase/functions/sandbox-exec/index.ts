@@ -184,7 +184,7 @@ Deno.serve(async (req) => {
         const raw = (tgt as any)?.domain || (tgt as any)?.ip_range;
         if (raw) fallbackUrl = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
       }
-      runResult = await runViaEdge(body.script, language, fallbackUrl);
+      runResult = await runViaEdge(body.script, language, fallbackUrl, supa, body.targetId);
       executor = "edge_function";
     }
 
