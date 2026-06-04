@@ -1075,7 +1075,7 @@ serve(async (req) => {
             .from("vulnerability_findings")
             .select("id, payload, title")
             .eq("target_id", targetId)
-            .limit(50);
+            .limit(150);
           if (existing && existing.length > 0) {
             const mutated = existing.map((f) => ({
               id: f.id,
@@ -1187,7 +1187,7 @@ serve(async (req) => {
       .select("vuln_class, payload_used, reward_score")
       .eq("outcome", "confirmed")
       .order("reward_score", { ascending: false })
-      .limit(50);
+      .limit(150);
 
     const highYieldPayloads = new Map<string, string[]>();
     for (const exp of (pastExperiences || []) as any[]) {
