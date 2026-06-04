@@ -812,7 +812,7 @@ RULES:
 
     let fullAssistantContent = "";
     let toolCallsMade: Array<{ name: string; input: unknown; result: string }> = [];
-    let maxIterations = 5;
+    let maxIterations = 10;
     let providerUsed = "";
 
     for (let i = 0; i < maxIterations; i++) {

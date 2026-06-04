@@ -104,7 +104,7 @@ function mutate(seed: string): string[] {
   variants.push(seed + "%00");
   // Unicode escape
   variants.push(seed.replace(/[a-z]/gi, (c) => `\\u00${c.charCodeAt(0).toString(16).padStart(2, "0")}`));
-  return variants.slice(0, 3);
+  return variants.slice(0, 6);
 }
 
 interface FuzzResult {
@@ -238,7 +238,7 @@ async function testCveTemplates(
     let templatePassed = false;
     const perEndpoint: Array<{ url: string; status: number; matched: boolean; reason: string }> = [];
 
-    for (const ep of endpoints.slice(0, 3)) {
+    for (const ep of endpoints.slice(0, 8)) {
       if (timeLeft() < 4000) break;
       const payload = payloads[0];
       const sep = ep.url.includes("?") ? "&" : "?";
@@ -331,11 +331,11 @@ Deno.serve(async (req) => {
     const summary: Record<string, { total: number; anomalies: number }> = {};
 
     // Round 1: grammar-based payloads on first 4 endpoints
-    for (const ep of endpoints.slice(0, 4)) {
+    for (const ep of endpoints.slice(0, 10)) {
       if (timeLeft() < 6000) break;
       for (const [vc, payloads] of Object.entries(FUZZ_GRAMMARS)) {
         if (timeLeft() < 5000) break;
-        const r = await fuzzEndpoint(ep.url, vc, payloads.slice(0, 4), "grammar");
+        const r = await fuzzEndpoint(ep.url, vc, payloads.slice(0, 12), "grammar");
         allResults.push(...r);
         summary[vc] = summary[vc] || { total: 0, anomalies: 0 };
         summary[vc].total += r.length;
@@ -344,7 +344,7 @@ Deno.serve(async (req) => {
     }
 
     // Round 2: genetic mutation on top-signal payloads
-    const topSignals = allResults.filter(r => r.signal === "high" || r.signal === "medium").slice(0, 5);
+    const topSignals = allResults.filter(r => r.signal === "high" || r.signal === "medium").slice(0, 15);
     for (const seed of topSignals) {
       if (timeLeft() < 5000) break;
       const variants = mutate(seed.payload);
@@ -357,7 +357,7 @@ Deno.serve(async (req) => {
 
     // Persist high-signal anomalies as findings
     const anomalies = allResults.filter(r => r.signal === "high");
-    for (const a of anomalies.slice(0, 10)) {
+    for (const a of anomalies.slice(0, 30)) {
       await db.from("vulnerability_findings").insert({
         target_id: targetId,
         title: `[Pro-Fuzz] ${a.vulnClass} anomaly via ${a.strategy}`,

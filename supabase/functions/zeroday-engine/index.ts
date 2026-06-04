@@ -243,7 +243,7 @@ serve(async (req) => {
     const db = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 
     const { data: target } = await db.from("target_workspaces").select("domain").eq("id", targetId).single();
-    const { data: endpoints } = await db.from("discovered_endpoints").select("url,parameters").eq("target_id", targetId).limit(15);
+    const { data: endpoints } = await db.from("discovered_endpoints").select("url,parameters").eq("target_id", targetId).limit(50);
 
     const log = async (msg: string, meta: any = {}) => {
       await db.from("scan_logs").insert({ target_id: targetId, log_type: "action", message: `⚡ 0-Day: ${msg}`, metadata: { phase: "zeroday-engine", ...meta } });

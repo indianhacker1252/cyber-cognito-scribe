@@ -656,7 +656,7 @@ async function runDifferentialTest(
         ]);
         const intruderResults: Array<{ payload: string; status: number; length: number; timingMs: number }> = [];
 
-        for (const ip of intruderPayloads.slice(0, 5)) {
+        for (const ip of intruderPayloads.slice(0, 15)) {
           if (!isSafePayload(ip)) continue;
           try {
             const iUrl = new URL(baseUrl);
@@ -818,7 +818,7 @@ async function queryCveDatabase(techStack: Record<string, string | undefined>): 
   if (techStack.poweredBy) searchTerms.push(techStack.poweredBy);
   if (techStack.framework) searchTerms.push(techStack.framework);
 
-  for (const term of searchTerms.slice(0, 2)) {
+  for (const term of searchTerms.slice(0, 5)) {
     if (isTimedOut()) break;
     try {
       const resp = await safeFetch(
@@ -1206,14 +1206,14 @@ serve(async (req) => {
     await log(db, targetId, taskId, "thought", "Running differential tests with Intruder/Repeater, adaptive mutation, evolutionary fuzzing, and SecLists payloads");
     const diffResults: DiffResult[] = [];
     const experienceRecords: ExperienceRecord[] = [];
-    const maxTests = Math.min(vulnChecks.length, 15);
+    const maxTests = Math.min(vulnChecks.length, 40);
     const totalSteps = maxTests;
 
     // Phase 11: Pre-load SecLists payloads for detected vuln classes
     const secListsPayloadsMap = new Map<string, string[]>();
     const uniqueClasses = [...new Set(vulnChecks.flatMap(c => c.vulnClasses))];
     await log(db, targetId, taskId, "action", `📦 Phase 11: Loading SecLists payloads for ${uniqueClasses.length} vuln classes`);
-    await Promise.all(uniqueClasses.slice(0, 12).map(async (vc) => {
+    await Promise.all(uniqueClasses.slice(0, 25).map(async (vc) => {
       const payloads = await loadSecListsPayloads(vc, 40);
       if (payloads.length > 0) secListsPayloadsMap.set(vc, payloads);
     }));
@@ -1291,7 +1291,7 @@ serve(async (req) => {
 
             // Phase 8: Evolutionary Fuzzing — only if time permits
             if (!isTimedOut() && result.confidenceScore < 80 && result.confidenceScore >= 30) {
-              for (const gm of GENETIC_MUTATIONS.slice(0, 2)) {
+              for (const gm of GENETIC_MUTATIONS.slice(0, 5)) {
                 if (isTimedOut()) break;
                 const evolved = gm.mutate(result.truePayload);
                 if (evolved === result.truePayload) continue;
@@ -1624,7 +1624,7 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
     }
 
     // ── Step 3.5: Phase 8 — Method Expansion Discovery (skip if timed out) ──
-    const sampleEndpoints = endpoints.slice(0, 2);
+    const sampleEndpoints = endpoints.slice(0, 10);
     let methodDiscoveryCount = 0;
     if (!isTimedOut()) {
     for (const ep of sampleEndpoints) {
@@ -2306,7 +2306,7 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
           Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ targetId, maxEndpoints: 20, maxParamsPerEndpoint: 24 }),
+        body: JSON.stringify({ targetId, maxEndpoints: 50, maxParamsPerEndpoint: 40 }),
       }).catch((e) => console.error("param-bruteforce-xss dispatch failed:", e));
 
       // fire-and-forget zero-day engine (SSTI, NoSQLi, prototype pollution, GraphQL, SSRF, CRLF, redirect, deserialization, host-header)
@@ -2353,7 +2353,7 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
             for (const pk of Object.keys(params)) {
               if (!ssrfParamRx.test(pk)) continue;
               dispatch("ssrf-deep", { targetId, endpointUrl: ep.url, paramName: pk });
-              if (++ssrfQueued >= 12) break;
+              if (++ssrfQueued >= 30) break;
             }
             if (ssrfQueued >= 12) break;
           }
@@ -2366,7 +2366,7 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
               const u = new URL(ep.url);
               if (!uploadRx.test(u.pathname)) continue;
               dispatch("upload-fuzzer", { targetId, uploadUrl: ep.url, fileField: "file" });
-              if (++upQueued >= 4) break;
+              if (++upQueued >= 10) break;
             } catch {}
           }
 
@@ -2378,7 +2378,7 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
               const u = new URL(ep.url);
               if (!raceRx.test(u.pathname)) continue;
               dispatch("race-runner", { targetId, url: ep.url, method: "POST", parallel: 20 });
-              if (++raceQueued >= 3) break;
+              if (++raceQueued >= 8) break;
             } catch {}
           }
         } catch (e) {

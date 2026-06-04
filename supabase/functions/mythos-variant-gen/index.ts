@@ -39,7 +39,7 @@ serve(async (req) => {
     let targetReachable = true;
     if (endpoints?.[0]?.url) {
       try {
-        const head = await fetch(endpoints[0].url, { method: "HEAD", signal: AbortSignal.timeout(4000), redirect: "manual" });
+        const head = await fetch(endpoints[0].url, { method: "HEAD", signal: AbortSignal.timeout(10000), redirect: "manual" });
         targetReachable = head.status > 0 && head.status < 600;
       } catch { targetReachable = false; }
       if (!targetReachable) {
@@ -141,7 +141,7 @@ Given a known CVE, identify its ROOT-CAUSE PATTERN, then return 3-5 novel varian
         metadata: { phase: "variant-filter", run_id: runId, dropped },
       });
     }
-    const variants = rawVariants.slice(0, 8);
+    const variants = rawVariants.slice(0, 20);
 
 
     // Insert variants as "queued" — actual testing is queued as scan_jobs
@@ -188,12 +188,12 @@ Given a known CVE, identify its ROOT-CAUSE PATTERN, then return 3-5 novel varian
     // Also run inline tests for first 3 — only if pre-flight reachability passed
     let immediateCandidates = 0;
     if (targetReachable) {
-      for (const v of variantRecords.slice(0, 3)) {
+      for (const v of variantRecords.slice(0, 8)) {
         if (!v.test_endpoint) continue;
         try {
           const u = new URL(v.test_endpoint);
           u.searchParams.set(v._paramName, v.variant_payload);
-          const r = await fetch(u.toString(), { signal: AbortSignal.timeout(6000) });
+          const r = await fetch(u.toString(), { signal: AbortSignal.timeout(12000) });
           const body = await r.text();
           const reflected = body.includes(v.variant_payload);
           const errorSig = /SQL|syntax error|stack trace|undefined|TypeError|fatal error/i.test(body);

@@ -85,7 +85,7 @@ export class AdaptiveThrottle {
 }
 
 // Encoding variants for a payload. Returns up to N unique strings.
-export function encodingVariants(payload: string, max = 6): string[] {
+export function encodingVariants(payload: string, max = 12): string[] {
   const out = new Set<string>([payload]);
   out.add(encodeURIComponent(payload));
   out.add(payload.split("").map((c) => `%${c.charCodeAt(0).toString(16).padStart(2, "0")}`).join(""));

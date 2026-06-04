@@ -49,7 +49,7 @@ Deno.serve(async (req) => {
       try {
         const r = await fetch(baseUrl + c.payload, {
           headers: { "User-Agent": "CyberScope-Canary/2.0" },
-          redirect: "manual", signal: AbortSignal.timeout(6000),
+          redirect: "manual", signal: AbortSignal.timeout(12000),
         });
         status = r.status;
         body = await r.text();

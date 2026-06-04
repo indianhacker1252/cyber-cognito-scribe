@@ -113,11 +113,11 @@ async function executePhase(db: any, run: any, phase: string, payload: any): Pro
         try { params = Object.fromEntries(new URL(ep.url).searchParams); } catch {}
       }
       if (Object.keys(params).length === 0) params = Object.fromEntries(COMMON.map(p => [p, "test"]));
-      for (const pk of Object.keys(params).slice(0, 2)) {
+      for (const pk of Object.keys(params).slice(0, 5)) {
         candidates.push({ url: ep.url, param: pk, value: params[pk] });
-        if (candidates.length >= 6) break;
+        if (candidates.length >= 20) break;
       }
-      if (candidates.length >= 6) break;
+      if (candidates.length >= 20) break;
     }
 
     const settled = await Promise.allSettled(
@@ -187,7 +187,7 @@ Deno.serve(async (req) => {
 
     // Bootstrap a new run if none provided
     if (!runId) {
-      const { targetId, maxIterations = 4, repoUrl, triggerType = "manual" } = body;
+      const { targetId, maxIterations = 8, repoUrl, triggerType = "manual" } = body;
       if (!targetId) return ok({ ok: false, error: "targetId required" });
       const { data: run, error } = await db.from("mythos_runs").insert({
         target_id: targetId, trigger_type: triggerType, max_iterations: maxIterations,

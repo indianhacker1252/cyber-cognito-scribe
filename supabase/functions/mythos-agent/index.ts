@@ -23,7 +23,7 @@ async function call(fn: string, body: any) {
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
   try {
-    const { targetId, triggerType = "manual", maxIterations = 4, repoUrl } = await req.json();
+    const { targetId, triggerType = "manual", maxIterations = 8, repoUrl } = await req.json();
     if (!targetId) throw new Error("targetId required");
 
     const db = createClient(SUPABASE_URL, SERVICE_KEY);

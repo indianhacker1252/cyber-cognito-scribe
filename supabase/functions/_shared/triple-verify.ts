@@ -132,7 +132,7 @@ function looksBlocked(status: number, body: string): boolean {
   return /access denied|cloudflare|akamai|imperva|forbidden|blocked|web application firewall|waf/i.test(body.slice(0, 2000));
 }
 
-async function snapshot(url: string, init: RequestInit, timeoutMs = 7000): Promise<StageSnapshot> {
+async function snapshot(url: string, init: RequestInit, timeoutMs = 12000): Promise<StageSnapshot> {
   const r = await safeFetch(url, init, timeoutMs);
   const body = await readBodySafe(r);
   return {

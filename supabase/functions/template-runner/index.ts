@@ -213,7 +213,7 @@ Deno.serve(async (req) => {
             _tmplId: tmpl.id, // local-only marker, stripped before insert
           });
         }
-        if (r.findings.length) break; // one endpoint match is enough per template
+        // removed early break — test ALL endpoints per template for multi-point vulns
       }
     }
 

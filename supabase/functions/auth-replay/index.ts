@@ -63,7 +63,7 @@ Deno.serve(async (req) => {
     let validation: any = { hasAuth: Object.keys(headers).length > 0 };
     if (testUrl) {
       try {
-        const r = await fetch(testUrl, { headers, redirect: "manual", signal: AbortSignal.timeout(6000) });
+        const r = await fetch(testUrl, { headers, redirect: "manual", signal: AbortSignal.timeout(12000) });
         validation = { ...validation, status: r.status, ok: r.status < 400 };
       } catch (e) {
         validation = { ...validation, error: e instanceof Error ? e.message : "err" };

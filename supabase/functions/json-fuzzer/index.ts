@@ -78,7 +78,7 @@ Deno.serve(async (req) => {
             const r = await fetch(endpoint, {
               method: method || "POST",
               headers: { "Content-Type": contentType || "application/json", ...auth },
-              body: JSON.stringify(mutated), signal: AbortSignal.timeout(7000),
+              body: JSON.stringify(mutated), signal: AbortSignal.timeout(12000),
             });
             const body = await r.text();
             const lenDelta = Math.abs(body.length - baselineLen);

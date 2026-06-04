@@ -215,9 +215,9 @@ async function probe(
         const uFalse = new URL(url); uFalse.searchParams.set(paramName, "1' AND '1'='2");
         const uBreak = new URL(url); uBreak.searchParams.set(paramName, "1''\"\\");
         const [tR, fR, bR] = await Promise.all([
-          fetch(uTrue.toString(), { signal: AbortSignal.timeout(6000), redirect: "manual", headers: FETCH_HEADERS }).catch(() => null),
-          fetch(uFalse.toString(), { signal: AbortSignal.timeout(6000), redirect: "manual", headers: FETCH_HEADERS }).catch(() => null),
-          fetch(uBreak.toString(), { signal: AbortSignal.timeout(6000), redirect: "manual", headers: FETCH_HEADERS }).catch(() => null),
+          fetch(uTrue.toString(), { signal: AbortSignal.timeout(12000), redirect: "manual", headers: FETCH_HEADERS }).catch(() => null),
+          fetch(uFalse.toString(), { signal: AbortSignal.timeout(12000), redirect: "manual", headers: FETCH_HEADERS }).catch(() => null),
+          fetch(uBreak.toString(), { signal: AbortSignal.timeout(12000), redirect: "manual", headers: FETCH_HEADERS }).catch(() => null),
         ]);
         const tB = tR ? await tR.text() : "";
         const fB = fR ? await fR.text() : "";
@@ -571,7 +571,7 @@ State verdict + 1-line reason.`,
     // ── Rounds 8-11 — MUTATION LOOP: if still FP, agents propose a
     // fundamentally DIFFERENT attack class (not just a tweaked payload).
     // Up to MAX_MUTATIONS new attack vectors are tried before giving up.
-    const MAX_MUTATIONS = 2;
+    const MAX_MUTATIONS = 5;
     const mutationProbes: Array<{ vector: string; payload: string; probe: typeof probe1 }> = [];
     const triedClasses = new Set<string>([(vulnClassHint || "auto").toLowerCase()]);
     let mutationRound = 0;

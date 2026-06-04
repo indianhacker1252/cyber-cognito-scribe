@@ -136,7 +136,7 @@ Deno.serve(async (req) => {
     new Response(JSON.stringify(body), { status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
   try {
-    const { targetId, maxEndpoints = 8, maxParamsPerEndpoint = 12 } = await req.json().catch(() => ({}));
+    const { targetId, maxEndpoints = 30, maxParamsPerEndpoint = 30 } = await req.json().catch(() => ({}));
     if (!targetId) return respond({ ok: false, error: "targetId required" }, 200);
 
     const supa = db();
