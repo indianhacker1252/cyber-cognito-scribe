@@ -52,10 +52,10 @@ poc=${(seedFinding.poc || "").slice(0, 400)}
 hard_evidence (first 1200b)=${JSON.stringify(seedFinding.hard_evidence || {}).slice(0, 1200)}
 
 NEIGHBOURING FINDINGS (max 5):
-${neighbours.slice(0, 5).map((n) => `- ${n.severity}/${n.title} @ ${n.affected_url}`).join("\n") || "(none)"}
+${neighbours.slice(0, 15).map((n) => `- ${n.severity}/${n.title} @ ${n.affected_url}`).join("\n") || "(none)"}
 
 KNOWN ENDPOINTS ON THIS TARGET (max 12):
-${endpoints.slice(0, 12).map((e) => `- ${e.method} ${e.url}`).join("\n") || "(none)"}
+${endpoints.slice(0, 30).map((e) => `- ${e.method} ${e.url}`).join("\n") || "(none)"}
 
 Propose the next step.`;
 
@@ -108,9 +108,9 @@ Deno.serve(async (req) => {
       supa.from("vulnerability_findings")
         .select("title,severity,affected_url,hard_evidence")
         .eq("target_id", f.target_id).neq("id", seedFindingId)
-        .order("created_at", { ascending: false }).limit(15),
+        .order("created_at", { ascending: false }).limit(100),
       supa.from("discovered_endpoints")
-        .select("url,method").eq("target_id", f.target_id).limit(40),
+        .select("url,method").eq("target_id", f.target_id).limit(100),
     ]);
 
     const step = await proposeNextStep(f, neighRes.data || [], epRes.data || []);
@@ -187,7 +187,7 @@ Deno.serve(async (req) => {
               "Authorization": `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}`,
             },
             body: JSON.stringify({ findingId: nextFinding.id }),
-            signal: AbortSignal.timeout(2000),
+            signal: AbortSignal.timeout(10000),
           }).catch(() => { /* fire-and-forget */ });
           queuedRunId = nextFinding.id;
           await supa.from("chain_finder_runs").update({

@@ -322,12 +322,12 @@ async function probeBlindSsrf(db: any, targetId: string, endpoints: Array<{ url:
   const SUPA_URL = Deno.env.get("SUPABASE_URL")!;
   const URL_PARAMS = ["url", "redirect", "next", "callback", "target", "dest", "uri", "endpoint", "webhook", "fetch", "image", "img", "src"];
   let injected = 0;
-  for (const ep of endpoints.slice(0, 8)) {
+  for (const ep of endpoints.slice(0, 25)) {
     if (timeLeft() < 6000) break;
     let parsed: URL; try { parsed = new URL(ep.url); } catch { continue; }
     const hits = URL_PARAMS.filter(p => parsed.searchParams.has(p));
     if (hits.length === 0) continue;
-    for (const p of hits.slice(0, 2)) {
+    for (const p of hits.slice(0, 6)) {
       const token = `${targetId.slice(0, 8)}-${Math.random().toString(36).slice(2, 8)}`;
       const oobUrl = `${SUPA_URL}/functions/v1/oob-collector?token=${token}&ctx=ssrf-${p}`;
       parsed.searchParams.set(p, oobUrl);
@@ -477,7 +477,7 @@ Deno.serve(async (req) => {
 
     // 1. Build asset URL list: discovered_endpoints + root HTML spidered links
     const { data: discovered } = await db.from("discovered_endpoints")
-      .select("url, parameters").eq("target_id", targetId).limit(80);
+      .select("url, parameters").eq("target_id", targetId).limit(200);
 
     const seedUrls = new Set<string>();
     seedUrls.add(origin + "/");

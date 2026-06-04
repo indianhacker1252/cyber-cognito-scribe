@@ -310,8 +310,8 @@ async function harvestOTX(
 
 async function spiderCrawl(
   domain: string,
-  maxPages = 30,
-  maxDepth = 3,
+  maxPages = 100,
+  maxDepth = 5,
   scheme: "https" | "http" = "https",
 ): Promise<{ urls: string[]; forms: Array<{ action: string; method: string; inputs: string[] }>; jsFiles: string[] }> {
   const visited = new Set<string>();

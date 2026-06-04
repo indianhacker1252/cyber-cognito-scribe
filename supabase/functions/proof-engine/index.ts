@@ -80,7 +80,7 @@ Deno.serve(async (req) => {
         const probe = `cs_proof_${Math.random().toString(36).slice(2,8)}`;
         const url = new URL(m[1]);
         url.searchParams.set("__cs", probe);
-        const r = await safeFetch(url.toString(), { method: "GET", timeoutMs: 6000 });
+        const r = await safeFetch(url.toString(), { method: "GET", timeoutMs: 12000 });
         if (r) {
           const txt = (await r.text().catch(() => "")) || "";
           if (txt.includes(probe)) {

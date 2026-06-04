@@ -81,7 +81,7 @@ Deno.serve(async (req) => {
 
     for (const ep of (endpoints || []).slice(0, 25)) {
       // Step 1: hit as user A, harvest IDs from response
-      const aRes = await smartFetch(ep, { headers: authHeaders(pa), timeoutMs: 6000 });
+      const aRes = await smartFetch(ep, { headers: authHeaders(pa), timeoutMs: 12000 });
       if (aRes.response.status >= 400) continue;
       const ids = extractIds(aRes.body);
       if (!ids.length) continue;
@@ -90,7 +90,7 @@ Deno.serve(async (req) => {
       for (const pivotUrl of urlsWithIds(ep, ids)) {
         probed++;
         if (probed > 80) break;
-        const bRes = await smartFetch(pivotUrl, { headers: authHeaders(pb), timeoutMs: 6000 });
+        const bRes = await smartFetch(pivotUrl, { headers: authHeaders(pb), timeoutMs: 12000 });
         // IDOR signal: 200 with substantive body AND body shares tokens with A's response
         if (bRes.response.status === 200 && bRes.body.length > 200) {
           // shared-token heuristic

@@ -32,7 +32,7 @@ Deno.serve(async (req) => {
     const matches: any[] = [];
 
     for (const ep of (endpoints || []).slice(0, 30)) {
-      const r = await smartFetch(ep, { timeoutMs: 6000 });
+      const r = await smartFetch(ep, { timeoutMs: 12000 });
       const server = r.response.headers.get("server") || "";
       const xpb = r.response.headers.get("x-powered-by") || "";
       const fps = [parseHeader(server), parseHeader(xpb)].filter(Boolean) as Array<{ product: string; version: string | null }>;
@@ -43,7 +43,7 @@ Deno.serve(async (req) => {
       for (const m of jsMatches) {
         const src = m[1].startsWith("http") ? m[1] : new URL(m[1], ep).toString();
         try {
-          const jr = await smartFetch(src, { timeoutMs: 5000 });
+          const jr = await smartFetch(src, { timeoutMs: 10000 });
           jsHashes.push(`${src.split("/").pop()}:${await hashStr(jr.body)}`);
         } catch { /* skip */ }
       }

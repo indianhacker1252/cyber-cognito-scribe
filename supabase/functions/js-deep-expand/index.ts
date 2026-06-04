@@ -29,7 +29,7 @@ function routeTemplate(u: string): string {
 
 async function fetchJs(url: string): Promise<string> {
   try {
-    const r = await smartFetch(url, { timeoutMs: 6000 });
+    const r = await smartFetch(url, { timeoutMs: 12000 });
     return r.body.slice(0, 500_000);
   } catch { return ""; }
 }
@@ -59,7 +59,7 @@ Deno.serve(async (req) => {
     const discovered: string[] = [];
 
     // Seed: fetch HTML, find <script src=...>
-    const seedRes = await smartFetch(seedUrl, { timeoutMs: 6000 });
+    const seedRes = await smartFetch(seedUrl, { timeoutMs: 12000 });
     const scriptSrcs = [...seedRes.body.matchAll(/<script[^>]+src=["']([^"']+)["']/gi)]
       .map(m => m[1].startsWith("http") ? m[1] : new URL(m[1], seedUrl).toString())
       .slice(0, 10);

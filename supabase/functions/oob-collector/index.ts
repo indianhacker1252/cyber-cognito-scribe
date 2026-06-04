@@ -68,7 +68,7 @@ async function pollInteractshHits(cfg: OobConfig, tokens: string[]): Promise<any
       const headers: Record<string, string> = {};
       if (cfg.auth_token) headers["Authorization"] = `Bearer ${cfg.auth_token}`;
       const r = await fetch(`${base}/poll?id=${encodeURIComponent(tok)}`, {
-        headers, signal: AbortSignal.timeout(6000),
+        headers, signal: AbortSignal.timeout(12000),
       });
       if (!r.ok) continue;
       const j = await r.json().catch(() => null);
