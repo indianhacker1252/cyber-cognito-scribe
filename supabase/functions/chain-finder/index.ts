@@ -108,9 +108,9 @@ Deno.serve(async (req) => {
       supa.from("vulnerability_findings")
         .select("title,severity,affected_url,hard_evidence")
         .eq("target_id", f.target_id).neq("id", seedFindingId)
-        .order("created_at", { ascending: false }).limit(15),
+        .order("created_at", { ascending: false }).limit(100),
       supa.from("discovered_endpoints")
-        .select("url,method").eq("target_id", f.target_id).limit(40),
+        .select("url,method").eq("target_id", f.target_id).limit(100),
     ]);
 
     const step = await proposeNextStep(f, neighRes.data || [], epRes.data || []);

@@ -477,7 +477,7 @@ Deno.serve(async (req) => {
 
     // 1. Build asset URL list: discovered_endpoints + root HTML spidered links
     const { data: discovered } = await db.from("discovered_endpoints")
-      .select("url, parameters").eq("target_id", targetId).limit(80);
+      .select("url, parameters").eq("target_id", targetId).limit(200);
 
     const seedUrls = new Set<string>();
     seedUrls.add(origin + "/");

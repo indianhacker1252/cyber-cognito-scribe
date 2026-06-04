@@ -26,14 +26,14 @@ serve(async (req) => {
     // Fix #15 — rotate CVE window per iteration so successive runs see fresh intel
     const iterSalt = Math.floor(Math.random() * 5) * 5; // 0,5,10,15,20
     if (cveIds?.length) {
-      const { data } = await db.from("intel_feeds").select("title,vulnerability_class,extracted_payloads,raw_summary,report_id").in("report_id", cveIds).limit(5);
+      const { data } = await db.from("intel_feeds").select("title,vulnerability_class,extracted_payloads,raw_summary,report_id").in("report_id", cveIds).limit(15);
       intel = data || [];
     } else {
       const { data } = await db.from("intel_feeds").select("title,vulnerability_class,extracted_payloads,raw_summary,report_id").eq("status", "processed").order("ingested_at", { ascending: false }).range(iterSalt, iterSalt + 4);
       intel = data || [];
     }
 
-    const { data: endpoints } = await db.from("discovered_endpoints").select("url,method,parameters").eq("target_id", targetId).limit(20);
+    const { data: endpoints } = await db.from("discovered_endpoints").select("url,method,parameters").eq("target_id", targetId).limit(60);
 
     // Fix #14 — pre-flight HEAD against the first endpoint; if unreachable, skip inline tests entirely
     let targetReachable = true;

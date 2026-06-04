@@ -179,7 +179,7 @@ Deno.serve(async (req) => {
 
     // 2) Collect endpoints — fan out across up to 6
     const { data: eps } = await db.from("discovered_endpoints")
-      .select("url").eq("target_id", targetId).limit(40);
+      .select("url").eq("target_id", targetId).limit(100);
     const urls = new Set<string>([targetUrl]);
     (eps || []).forEach((e) => e.url && urls.add(e.url));
     const urlList = Array.from(urls).slice(0, 6);

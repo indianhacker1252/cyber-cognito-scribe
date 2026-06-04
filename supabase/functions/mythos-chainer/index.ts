@@ -16,10 +16,10 @@ serve(async (req) => {
     const db = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 
     const [findings, endpoints, codeFindings, pending] = await Promise.all([
-      db.from("vulnerability_findings").select("id,title,severity,vuln_class:title,payload,description").eq("target_id", targetId).limit(40),
-      db.from("discovered_endpoints").select("url,method,parameters").eq("target_id", targetId).limit(40),
-      db.from("code_findings").select("vuln_class,file_path,severity").eq("target_id", targetId).limit(20),
-      db.from("pending_approvals").select("title,severity,finding_type,payload_used").eq("target_id", targetId).limit(20),
+      db.from("vulnerability_findings").select("id,title,severity,vuln_class:title,payload,description").eq("target_id", targetId).limit(100),
+      db.from("discovered_endpoints").select("url,method,parameters").eq("target_id", targetId).limit(100),
+      db.from("code_findings").select("vuln_class,file_path,severity").eq("target_id", targetId).limit(50),
+      db.from("pending_approvals").select("title,severity,finding_type,payload_used").eq("target_id", targetId).limit(50),
     ]);
 
     const totalSignals = (findings.data?.length || 0) + (codeFindings.data?.length || 0) + (pending.data?.length || 0);

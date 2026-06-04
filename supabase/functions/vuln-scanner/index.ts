@@ -1803,7 +1803,7 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
       await log(db, targetId, taskId, "thought", "🔍 Cross-referencing intel feed templates against target");
       const { data: intelFeeds } = await db.from("intel_feeds")
         .select("id, title, vulnerability_class, extracted_payloads, affected_tech_stack, test_template, matched_targets")
-        .eq("status", "processed").limit(30);
+        .eq("status", "processed").limit(100);
 
       if (intelFeeds && intelFeeds.length > 0) {
         const targetTech = [
@@ -2345,7 +2345,7 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
         // 2. SSRF-deep — fan out per endpoint+param that smells like a URL/path/redirect
         try {
           const { data: eps } = await db.from("discovered_endpoints")
-            .select("url, parameters").eq("target_id", targetId).limit(40);
+            .select("url, parameters").eq("target_id", targetId).limit(100);
           const ssrfParamRx = /^(url|uri|redirect|redirect_uri|next|return|return_to|callback|dest|destination|target|continue|image|img|src|file|path|fetch|domain|host|proxy|out|to|u|link)$/i;
           let ssrfQueued = 0;
           for (const ep of (eps || [])) {

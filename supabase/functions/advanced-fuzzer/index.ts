@@ -198,7 +198,7 @@ async function testCveTemplates(
     .select("id, title, vulnerability_class, extracted_payloads, severity, source_url, source")
     .not("extracted_payloads", "is", null)
     .order("ingested_at", { ascending: false })
-    .limit(25);
+    .limit(100);
 
   if (!feeds || feeds.length === 0) {
     await db.from("scan_logs").insert({
@@ -316,7 +316,7 @@ Deno.serve(async (req) => {
         { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 200 });
     }
 
-    const { data: endpoints } = await db.from("discovered_endpoints").select("url, method").eq("target_id", targetId).limit(8);
+    const { data: endpoints } = await db.from("discovered_endpoints").select("url, method").eq("target_id", targetId).limit(25);
     if (!endpoints || endpoints.length === 0) {
       return new Response(JSON.stringify({ ok: false, error: "no endpoints — run recon first" }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 200 });

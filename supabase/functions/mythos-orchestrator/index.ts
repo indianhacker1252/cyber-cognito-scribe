@@ -102,7 +102,7 @@ async function executePhase(db: any, run: any, phase: string, payload: any): Pro
 
   if (meta.kind === "iter" && meta.sub === "debate") {
     await log(`🥷 Debate phase (parallel fan-out, max 6)`);
-    const { data: eps } = await db.from("discovered_endpoints").select("url,parameters").eq("target_id", targetId).limit(15);
+    const { data: eps } = await db.from("discovered_endpoints").select("url,parameters").eq("target_id", targetId).limit(50);
     const COMMON = ["q", "id", "search", "url", "redirect"];
 
     // Build the candidate list (endpoint × param) up-front, then fan out in parallel.
@@ -136,7 +136,7 @@ async function executePhase(db: any, run: any, phase: string, payload: any): Pro
     await log(`Debates: ${debates}/${candidates.length} run in parallel, ${tp} TP, ${fp} FP`, { debates, tp, fp, parallel: candidates.length });
     // Browser-exploit pass on top XSS findings
     const { data: xssFindings } = await db.from("vulnerability_findings")
-      .select("id").eq("target_id", targetId).ilike("finding_type", "%xss%").lt("proof_tier", "exploited").limit(3);
+      .select("id").eq("target_id", targetId).ilike("finding_type", "%xss%").lt("proof_tier", "exploited").limit(10);
     for (const xf of xssFindings || []) {
       await call("browser-exploit", { findingId: xf.id }, 35000);
     }
@@ -144,7 +144,7 @@ async function executePhase(db: any, run: any, phase: string, payload: any): Pro
     // Auto-execute high-CVSS chains (combined_cvss >= 7) once per iteration
     const { data: hotChains } = await db.from("mythos_chains")
       .select("id,chain_name,combined_cvss").eq("target_id", targetId).eq("execution_status", "proposed")
-      .gte("combined_cvss", 7).limit(2);
+      .gte("combined_cvss", 7).limit(6);
     for (const c of hotChains || []) {
       await log(`⛓️  Auto-executing chain '${c.chain_name}' (cvss=${c.combined_cvss})`, { chainId: c.id });
       await call("exploit-chain-runner", { chainId: c.id, targetId }, 40000);
@@ -164,7 +164,7 @@ async function executePhase(db: any, run: any, phase: string, payload: any): Pro
   if (phase === "patch") {
     await log(`🩹 Auto-patching top findings`);
     const { data: top } = await db.from("vulnerability_findings")
-      .select("id").eq("target_id", targetId).order("cvss_score", { ascending: false, nullsFirst: false }).limit(3);
+      .select("id").eq("target_id", targetId).order("cvss_score", { ascending: false, nullsFirst: false }).limit(8);
     for (const f of top || []) await call("mythos-patcher", { findingId: f.id, targetId }, 30000);
     return { done: true };
   }
