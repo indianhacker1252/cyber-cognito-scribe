@@ -1820,7 +1820,7 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
 
           const templatePayloads = ((feed.test_template as any)?.payloads || []) as string[];
           const extractedPayloads = (feed.extracted_payloads as string[]) || [];
-          const allPayloads = [...new Set([...templatePayloads, ...extractedPayloads])].slice(0, 5);
+          const allPayloads = [...new Set([...templatePayloads, ...extractedPayloads])].slice(0, 15);
           // Fix #4 — if template has no payloads, synthesize 2-3 from vuln class instead of skipping
           if (allPayloads.length === 0) {
             const FALLBACK_PAYLOADS: Record<string, string[]> = {
@@ -1835,8 +1835,8 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
             };
             const synth = FALLBACK_PAYLOADS[vc] || FALLBACK_PAYLOADS[(feed.vulnerability_class || "").toLowerCase()] || [];
             if (synth.length > 0) {
-              allPayloads.push(...synth.slice(0, 3));
-              await log(db, targetId, taskId, "info", `🧬 Template "${feed.title}" had no payloads — synthesized ${synth.slice(0,3).length} ${vc} probes`);
+              allPayloads.push(...synth.slice(0, 6));
+              await log(db, targetId, taskId, "info", `🧬 Template "${feed.title}" had no payloads — synthesized ${synth.slice(0,6).length} ${vc} probes`);
             } else {
               continue;
             }
@@ -1845,12 +1845,12 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
           const vc = feed.vulnerability_class || "sqli";
           let confirmed = false;
 
-          for (const ep of (endpoints || []).slice(0, 3)) {
+          for (const ep of (endpoints || []).slice(0, 8)) {
             if (isTimedOut()) break;
             const params = (ep.parameters as Record<string, string>) || {};
-            for (const paramName of Object.keys(params).slice(0, 2)) {
+            for (const paramName of Object.keys(params).slice(0, 6)) {
               if (isTimedOut()) break;
-              for (const payload of allPayloads.slice(0, 3)) {
+              for (const payload of allPayloads.slice(0, 8)) {
                 try {
                   const baseResp = await safeFetch(ep.url, { method: "GET", headers: { "User-Agent": "CyberScope/1.0" }, redirect: "manual" }, 5000);
                   const baseBody = await baseResp.text();
