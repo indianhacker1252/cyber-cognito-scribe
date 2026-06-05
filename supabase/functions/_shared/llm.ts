@@ -1,6 +1,10 @@
 // Centralized LLM call with automatic fallback chain.
 // Order: Lovable AI Gateway → OpenAI → Gemini direct → null (caller falls back to heuristic).
 // Catches 402 (credits exhausted) and 429 (rate limit) and tries the next provider.
+// All successful outputs are run through `sanitizeAiOutput` so downstream
+// fuzzers never see stray ```fences or leading prose (Tier 1 #3).
+import { sanitizeAiOutput } from "./exploit-guards.ts";
+
 
 export interface LlmMessage { role: "system" | "user" | "assistant"; content: string }
 
@@ -126,11 +130,16 @@ export async function llmCall(opts: LlmCallOptions): Promise<LlmResult> {
   const errors: string[] = [];
   for (const fn of [callLovable, callOpenAI, callGeminiDirect, callAnthropic]) {
     const out = await fn(opts);
-    if (out.ok && out.text) return out;
+    if (out.ok && out.text) {
+      // T1 #3 — sanitize markdown fences / prose before returning.
+      const cleaned = opts.json ? out.text : sanitizeAiOutput(out.text);
+      return { ...out, text: cleaned };
+    }
     errors.push(`${out.provider}:${out.error || "empty"}`);
   }
   return { ok: false, text: "", provider: "none", error: errors.join(" | ") };
 }
+
 
 /** Convenience: parse JSON from llm response, returns null on failure. */
 export function tryParseJson<T = any>(text: string): T | null {

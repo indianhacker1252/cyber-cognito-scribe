@@ -710,6 +710,42 @@ export type Database = {
         }
         Relationships: []
       }
+      dead_targets: {
+        Row: {
+          banned_at: string
+          created_at: string
+          expires_at: string
+          host: string
+          id: string
+          meta: Json
+          reason: string
+          target_id: string | null
+          zero_streak: number
+        }
+        Insert: {
+          banned_at?: string
+          created_at?: string
+          expires_at?: string
+          host: string
+          id?: string
+          meta?: Json
+          reason?: string
+          target_id?: string | null
+          zero_streak?: number
+        }
+        Update: {
+          banned_at?: string
+          created_at?: string
+          expires_at?: string
+          host?: string
+          id?: string
+          meta?: Json
+          reason?: string
+          target_id?: string | null
+          zero_streak?: number
+        }
+        Relationships: []
+      }
       discovered_endpoints: {
         Row: {
           created_at: string
@@ -750,6 +786,36 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      endpoint_baselines: {
+        Row: {
+          body_len: number
+          checked_at: string
+          content_type: string | null
+          id: string
+          status: number
+          tech: Json
+          url: string
+        }
+        Insert: {
+          body_len?: number
+          checked_at?: string
+          content_type?: string | null
+          id?: string
+          status: number
+          tech?: Json
+          url: string
+        }
+        Update: {
+          body_len?: number
+          checked_at?: string
+          content_type?: string | null
+          id?: string
+          status?: number
+          tech?: Json
+          url?: string
+        }
+        Relationships: []
       }
       evidence_packages: {
         Row: {
@@ -1866,6 +1932,48 @@ export type Database = {
           tags?: Json | null
           topic?: string
           vuln_class?: string | null
+        }
+        Relationships: []
+      }
+      rag_exploits: {
+        Row: {
+          confidence: number
+          created_at: string
+          exploit_pattern: string | null
+          id: string
+          severity: string | null
+          source: string
+          source_ref: string | null
+          summary: string
+          tech_tags: string[]
+          title: string
+          vuln_class: string
+        }
+        Insert: {
+          confidence?: number
+          created_at?: string
+          exploit_pattern?: string | null
+          id?: string
+          severity?: string | null
+          source: string
+          source_ref?: string | null
+          summary: string
+          tech_tags?: string[]
+          title: string
+          vuln_class: string
+        }
+        Update: {
+          confidence?: number
+          created_at?: string
+          exploit_pattern?: string | null
+          id?: string
+          severity?: string | null
+          source?: string
+          source_ref?: string | null
+          summary?: string
+          tech_tags?: string[]
+          title?: string
+          vuln_class?: string
         }
         Relationships: []
       }

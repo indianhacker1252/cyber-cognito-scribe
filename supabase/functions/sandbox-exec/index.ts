@@ -10,6 +10,17 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { safeFetch } from "../_shared/safe-fetch.ts";
 import { applyJar, harvestAndPersist, loadJar } from "../_shared/session-jar.ts";
+import {
+  sanitizeAiOutput,
+  getBaseline,
+  isGhostBaseline,
+  hostOf,
+  isDeadHost,
+  noteStatusZero,
+  noteStatusOk,
+  calculateVerdict,
+} from "../_shared/exploit-guards.ts";
+
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -30,13 +41,20 @@ async function runViaWorker(cfg: any, payload: any, timeoutMs = 45000) {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
+    // T2 #8 — pass TARGET_URL + outbound flag so the container script can fire at the real host.
+    const enriched = {
+      ...payload,
+      env: { ...(payload.env || {}), TARGET_URL: payload.targetUrl || "", CYBERSCOPE_ALLOW_NET: "1" },
+      network: "host",
+      allow_outbound: true,
+    };
     const r = await fetch(`${(cfg.endpoint_url as string).replace(/\/$/,"")}/sandbox`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         ...(cfg.auth_token ? { "Authorization": `Bearer ${cfg.auth_token}` } : {}),
       },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(enriched),
       signal: ctrl.signal,
     });
     const text = await r.text();
@@ -46,6 +64,7 @@ async function runViaWorker(cfg: any, payload: any, timeoutMs = 45000) {
     return { ok: false, status: 0, data: { error: e instanceof Error ? e.message : "err" } };
   } finally { clearTimeout(t); }
 }
+
 
 async function runViaEdge(
   script: string,
@@ -85,6 +104,26 @@ async function runViaEdge(
     return { ok: false, exitCode: 2, output: "edge-sandbox: could not extract a target URL from the script", evidence };
   }
 
+  // T2 #6 — abort early if host is in the dead_targets blacklist
+  const host = hostOf(url);
+  if (await isDeadHost(supa, host)) {
+    return {
+      ok: false, exitCode: 7,
+      output: `[edge-sandbox] aborted: host ${host} is on dead_targets (WAF kill-switch active)`,
+      evidence: { ...evidence, url, dead_host: host },
+    };
+  }
+
+  // T1 #2 — skip 404 ghost-towns BEFORE wasting payload on them
+  const baseline = await getBaseline(supa, url);
+  if (isGhostBaseline(baseline)) {
+    return {
+      ok: false, exitCode: 6,
+      output: `[edge-sandbox] skipped 404 ghost endpoint ${url} (baseline status=${baseline?.status})`,
+      evidence: { ...evidence, url, baseline_skipped: true, baseline_status: baseline?.status },
+    };
+  }
+
   // ── SESSION JAR: load + inject cookies/JWT/CSRF/sticky headers ──
   const jar = await loadJar(supa, targetId);
   const mergedHeaders = applyJar(jar, headers);
@@ -99,13 +138,30 @@ async function runViaEdge(
   try {
     r = await safeFetch(url, { method, headers: mergedHeaders, body, redirect: "follow" }, 8000);
   } catch (e) {
-    return { ok: false, exitCode: 1, output: `edge-sandbox: fetch threw ${e instanceof Error ? e.message : "err"}`, evidence: { ...evidence, url } };
+    // T2 #6 — track WAF Status-0 streak
+    const ks = await noteStatusZero(supa, host, targetId);
+    return { ok: false, exitCode: 1, output: `edge-sandbox: fetch threw ${e instanceof Error ? e.message : "err"} (status-0 streak=${ks.streak}${ks.killed ? " → HOST BANNED" : ""})`, evidence: { ...evidence, url, dead_streak: ks.streak, host_killed: ks.killed } };
   }
-  if (!r) return { ok: false, exitCode: 1, output: `edge-sandbox: fetch failed`, evidence: { ...evidence, url } };
+  if (!r) {
+    const ks = await noteStatusZero(supa, host, targetId);
+    return { ok: false, exitCode: 1, output: `edge-sandbox: fetch failed (status-0 streak=${ks.streak})`, evidence: { ...evidence, url, dead_streak: ks.streak, host_killed: ks.killed } };
+  }
+  noteStatusOk(host);
   const text = (await r.text().catch(() => "")) || "";
   evidence.method = method; evidence.url = url;
   evidence.status = r.status; evidence.length = text.length;
   evidence.snippet = text.slice(0, 400);
+  evidence.baseline_status = baseline?.status;
+  evidence.baseline_len = baseline?.len;
+
+  // T2 #7 — smart verdict (not just byte deltas)
+  const verdict = calculateVerdict({
+    baselineStatus: baseline?.status, baselineLen: baseline?.len,
+    mutatedStatus: r.status, mutatedLen: text.length,
+    mutatedBody: text,
+    payload: body,
+  });
+  evidence.verdict = verdict;
 
   // ── SESSION JAR: harvest fresh cookies/JWT/CSRF for the next attempt ──
   try {
@@ -117,8 +173,9 @@ async function runViaEdge(
   return {
     ok: true,
     exitCode: 0,
-    output: `[edge-sandbox] ${method} ${url}\nstatus=${r.status} length=${text.length}\n--- response (first 400b) ---\n${text.slice(0,400)}`,
+    output: `[edge-sandbox] ${method} ${url}\nstatus=${r.status} length=${text.length} verdict=${verdict.proven ? `PROVEN(${verdict.reason})` : verdict.reason}\n--- response (first 400b) ---\n${text.slice(0,400)}${verdict.proven ? "\n[PROVEN] CYBERSCOPE_PROVEN verdict=" + verdict.reason : ""}`,
     evidence,
+
   };
 }
 
@@ -145,10 +202,25 @@ Deno.serve(async (req) => {
     const language = body.language || "curl";
     const mode = body.mode || "auto";
 
+    // T1 #3 — sanitise any markdown leakage the AI may have slipped through.
+    const cleanScript = sanitizeAiOutput(body.script);
+
+    // T2 #6 — abort immediately if the target host is already on the kill-list.
+    if (body.targetUrl) {
+      const h = hostOf(body.targetUrl);
+      if (await isDeadHost(supa, h)) {
+        return new Response(JSON.stringify({
+          ok: false, executor: "n/a", proven: false,
+          output: `[sandbox] aborted: host ${h} is on dead_targets`,
+          evidence: { dead_host: h },
+        }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+    }
+
     // Insert pending row
     const { data: row } = await supa.from("sandbox_executions").insert({
       user_id: userId, finding_id: body.findingId, target_id: body.targetId,
-      mode, language, script: body.script, status: "running",
+      mode, language, script: cleanScript, status: "running",
     } as any).select().single();
 
     let executor = "edge_function";
@@ -159,8 +231,10 @@ Deno.serve(async (req) => {
       const { data: cfg } = await supa.from("external_infra_config")
         .select("*").eq("service", "docker_worker").maybeSingle();
       if (cfg && (cfg as any).is_active && (cfg as any).endpoint_url) {
+        // T2 #8 — pass targetUrl so the container can inject TARGET_URL env + outbound.
         const r = await runViaWorker(cfg, {
-          script: body.script, language, findingId: body.findingId,
+          script: cleanScript, language, findingId: body.findingId,
+          targetUrl: body.targetUrl,
         });
         if (r.ok) {
           executor = "docker_worker";
@@ -174,6 +248,8 @@ Deno.serve(async (req) => {
       }
     }
 
+
+
     // Fall back to edge sandbox
     if (!runResult && mode !== "worker") {
       // Resolve a fallback target URL when the synthesised script omits one
@@ -184,7 +260,7 @@ Deno.serve(async (req) => {
         const raw = (tgt as any)?.domain || (tgt as any)?.ip_range;
         if (raw) fallbackUrl = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
       }
-      runResult = await runViaEdge(body.script, language, fallbackUrl, supa, body.targetId);
+      runResult = await runViaEdge(cleanScript, language, fallbackUrl, supa, body.targetId);
       executor = "edge_function";
     }
 
@@ -192,7 +268,10 @@ Deno.serve(async (req) => {
       runResult = { ok: false, exitCode: 1, output: "no executor available", evidence: {} };
     }
 
-    const proven = runResult.ok && /\[PROVEN\]|CYBERSCOPE_PROVEN|root:x:0:0:|\[boot loader\]|<\?php|sql syntax|mysql_|pg_query|SQLSTATE|ORA-\d{4,}|unclosed quotation|System\.Data\.SqlClient/i.test(runResult.output || "");
+    // Combine sandbox PROVEN markers with verdict-based proof.
+    const verdictProven = !!(runResult.evidence?.verdict?.proven);
+    const proven = (runResult.ok && /\[PROVEN\]|CYBERSCOPE_PROVEN|root:x:0:0:|\[boot loader\]|<\?php|sql syntax|mysql_|pg_query|SQLSTATE|ORA-\d{4,}|unclosed quotation|System\.Data\.SqlClient/i.test(runResult.output || "")) || verdictProven;
+
 
     await supa.from("sandbox_executions").update({
       status: runResult.ok ? "done" : "failed",
