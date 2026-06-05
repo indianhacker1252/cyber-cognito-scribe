@@ -40,25 +40,30 @@ def run_subprocess(cmd, timeout=120, input_data=None, extra_env=None):
 
 
 def sandbox_run(payload):
-    """Execute a script in /tmp/sandbox-<uuid>/. Whitelist only curl/python/bash."""
+    """Execute a script in /tmp/sandbox-<uuid>/. Whitelist only curl/python/bash.
+    Honors `env` (dict) and `targetUrl` from the payload — both surfaced as TARGET_URL."""
     lang = payload.get("language", "curl")
     script = payload.get("script", "")
+    extra_env = dict(payload.get("env") or {})
+    if payload.get("targetUrl") and "TARGET_URL" not in extra_env:
+        extra_env["TARGET_URL"] = payload["targetUrl"]
+    extra_env.setdefault("CYBERSCOPE_ALLOW_NET", "1")
     if not script: return {"ok": False, "error": "empty script"}
     work = tempfile.mkdtemp(prefix="cs-sbx-")
     if lang == "curl":
-        # Each line treated as args for curl; safer: pass whole script through bash -c
-        result = run_subprocess(["bash", "-c", script], timeout=60)
+        result = run_subprocess(["bash", "-c", script], timeout=60, extra_env=extra_env)
     elif lang == "python":
         path = os.path.join(work, "exploit.py")
         with open(path, "w") as f: f.write(script)
-        result = run_subprocess(["python3", path], timeout=60)
+        result = run_subprocess(["python3", path], timeout=60, extra_env=extra_env)
     elif lang == "bash":
         path = os.path.join(work, "exploit.sh")
         with open(path, "w") as f: f.write(script)
         os.chmod(path, 0o755)
-        result = run_subprocess(["bash", path], timeout=60)
+        result = run_subprocess(["bash", path], timeout=60, extra_env=extra_env)
     else:
         return {"ok": False, "error": "unsupported language"}
+
     output = result["stdout"] + ("\n[STDERR]\n" + result["stderr"] if result["stderr"] else "")
     return {
         "ok": result["exitCode"] == 0,
