@@ -260,7 +260,7 @@ Deno.serve(async (req) => {
         const raw = (tgt as any)?.domain || (tgt as any)?.ip_range;
         if (raw) fallbackUrl = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
       }
-      runResult = await runViaEdge(body.script, language, fallbackUrl, supa, body.targetId);
+      runResult = await runViaEdge(cleanScript, language, fallbackUrl, supa, body.targetId);
       executor = "edge_function";
     }
 
@@ -268,7 +268,10 @@ Deno.serve(async (req) => {
       runResult = { ok: false, exitCode: 1, output: "no executor available", evidence: {} };
     }
 
-    const proven = runResult.ok && /\[PROVEN\]|CYBERSCOPE_PROVEN|root:x:0:0:|\[boot loader\]|<\?php|sql syntax|mysql_|pg_query|SQLSTATE|ORA-\d{4,}|unclosed quotation|System\.Data\.SqlClient/i.test(runResult.output || "");
+    // Combine sandbox PROVEN markers with verdict-based proof.
+    const verdictProven = !!(runResult.evidence?.verdict?.proven);
+    const proven = (runResult.ok && /\[PROVEN\]|CYBERSCOPE_PROVEN|root:x:0:0:|\[boot loader\]|<\?php|sql syntax|mysql_|pg_query|SQLSTATE|ORA-\d{4,}|unclosed quotation|System\.Data\.SqlClient/i.test(runResult.output || "")) || verdictProven;
+
 
     await supa.from("sandbox_executions").update({
       status: runResult.ok ? "done" : "failed",
