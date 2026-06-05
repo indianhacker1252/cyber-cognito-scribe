@@ -1,6 +1,10 @@
 // Centralized LLM call with automatic fallback chain.
 // Order: Lovable AI Gateway → OpenAI → Gemini direct → null (caller falls back to heuristic).
 // Catches 402 (credits exhausted) and 429 (rate limit) and tries the next provider.
+// All successful outputs are run through `sanitizeAiOutput` so downstream
+// fuzzers never see stray ```fences or leading prose (Tier 1 #3).
+import { sanitizeAiOutput } from "./exploit-guards.ts";
+
 
 export interface LlmMessage { role: "system" | "user" | "assistant"; content: string }
 
