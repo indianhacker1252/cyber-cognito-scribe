@@ -202,10 +202,25 @@ Deno.serve(async (req) => {
     const language = body.language || "curl";
     const mode = body.mode || "auto";
 
+    // T1 #3 — sanitise any markdown leakage the AI may have slipped through.
+    const cleanScript = sanitizeAiOutput(body.script);
+
+    // T2 #6 — abort immediately if the target host is already on the kill-list.
+    if (body.targetUrl) {
+      const h = hostOf(body.targetUrl);
+      if (await isDeadHost(supa, h)) {
+        return new Response(JSON.stringify({
+          ok: false, executor: "n/a", proven: false,
+          output: `[sandbox] aborted: host ${h} is on dead_targets`,
+          evidence: { dead_host: h },
+        }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+    }
+
     // Insert pending row
     const { data: row } = await supa.from("sandbox_executions").insert({
       user_id: userId, finding_id: body.findingId, target_id: body.targetId,
-      mode, language, script: body.script, status: "running",
+      mode, language, script: cleanScript, status: "running",
     } as any).select().single();
 
     let executor = "edge_function";
@@ -216,8 +231,10 @@ Deno.serve(async (req) => {
       const { data: cfg } = await supa.from("external_infra_config")
         .select("*").eq("service", "docker_worker").maybeSingle();
       if (cfg && (cfg as any).is_active && (cfg as any).endpoint_url) {
+        // T2 #8 — pass targetUrl so the container can inject TARGET_URL env + outbound.
         const r = await runViaWorker(cfg, {
-          script: body.script, language, findingId: body.findingId,
+          script: cleanScript, language, findingId: body.findingId,
+          targetUrl: body.targetUrl,
         });
         if (r.ok) {
           executor = "docker_worker";
@@ -230,6 +247,8 @@ Deno.serve(async (req) => {
         }
       }
     }
+
+
 
     // Fall back to edge sandbox
     if (!runResult && mode !== "worker") {
