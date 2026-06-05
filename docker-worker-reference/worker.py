@@ -25,15 +25,19 @@ def auth_ok(headers):
     a = headers.get("Authorization", "")
     return a.startswith("Bearer ") and a.split(" ", 1)[1] == TOKEN
 
-def run_subprocess(cmd, timeout=120, input_data=None):
+def run_subprocess(cmd, timeout=120, input_data=None, extra_env=None):
     try:
+        env = os.environ.copy()
+        if extra_env:
+            env.update({str(k): str(v) for k, v in extra_env.items() if v is not None})
         p = subprocess.run(cmd, capture_output=True, text=True,
-                           timeout=timeout, input=input_data)
+                           timeout=timeout, input=input_data, env=env)
         return {"exitCode": p.returncode, "stdout": p.stdout, "stderr": p.stderr}
     except subprocess.TimeoutExpired:
         return {"exitCode": 124, "stdout": "", "stderr": "timeout"}
     except Exception as e:
         return {"exitCode": 1, "stdout": "", "stderr": str(e)}
+
 
 def sandbox_run(payload):
     """Execute a script in /tmp/sandbox-<uuid>/. Whitelist only curl/python/bash."""
