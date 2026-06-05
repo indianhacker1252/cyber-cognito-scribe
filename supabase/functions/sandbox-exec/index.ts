@@ -41,13 +41,20 @@ async function runViaWorker(cfg: any, payload: any, timeoutMs = 45000) {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
+    // T2 #8 — pass TARGET_URL + outbound flag so the container script can fire at the real host.
+    const enriched = {
+      ...payload,
+      env: { ...(payload.env || {}), TARGET_URL: payload.targetUrl || "", CYBERSCOPE_ALLOW_NET: "1" },
+      network: "host",
+      allow_outbound: true,
+    };
     const r = await fetch(`${(cfg.endpoint_url as string).replace(/\/$/,"")}/sandbox`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         ...(cfg.auth_token ? { "Authorization": `Bearer ${cfg.auth_token}` } : {}),
       },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(enriched),
       signal: ctrl.signal,
     });
     const text = await r.text();
@@ -57,6 +64,7 @@ async function runViaWorker(cfg: any, payload: any, timeoutMs = 45000) {
     return { ok: false, status: 0, data: { error: e instanceof Error ? e.message : "err" } };
   } finally { clearTimeout(t); }
 }
+
 
 async function runViaEdge(
   script: string,
