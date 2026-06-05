@@ -130,11 +130,16 @@ export async function llmCall(opts: LlmCallOptions): Promise<LlmResult> {
   const errors: string[] = [];
   for (const fn of [callLovable, callOpenAI, callGeminiDirect, callAnthropic]) {
     const out = await fn(opts);
-    if (out.ok && out.text) return out;
+    if (out.ok && out.text) {
+      // T1 #3 — sanitize markdown fences / prose before returning.
+      const cleaned = opts.json ? out.text : sanitizeAiOutput(out.text);
+      return { ...out, text: cleaned };
+    }
     errors.push(`${out.provider}:${out.error || "empty"}`);
   }
   return { ok: false, text: "", provider: "none", error: errors.join(" | ") };
 }
+
 
 /** Convenience: parse JSON from llm response, returns null on failure. */
 export function tryParseJson<T = any>(text: string): T | null {
