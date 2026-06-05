@@ -10,6 +10,17 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { safeFetch } from "../_shared/safe-fetch.ts";
 import { applyJar, harvestAndPersist, loadJar } from "../_shared/session-jar.ts";
+import {
+  sanitizeAiOutput,
+  getBaseline,
+  isGhostBaseline,
+  hostOf,
+  isDeadHost,
+  noteStatusZero,
+  noteStatusOk,
+  calculateVerdict,
+} from "../_shared/exploit-guards.ts";
+
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
