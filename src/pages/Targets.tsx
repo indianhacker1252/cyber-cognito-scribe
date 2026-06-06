@@ -18,6 +18,8 @@ import {
 import { toast } from "sonner";
 import { WafDriftMonitor } from "@/components/WafDriftMonitor";
 import { AdvancedScannerPanel } from "@/components/AdvancedScannerPanel";
+import { ScopeGateDialog } from "@/components/ScopeGateDialog";
+
 
 const statusColors: Record<string, string> = {
   queued: "bg-cyber-amber/20 text-cyber-amber border-cyber-amber/30",
@@ -383,9 +385,11 @@ export default function Targets() {
                       </Button>
                     )}
                     {/* Pro-Fuzz and Drift Reval auto-chain after Recon — buttons removed by design */}
+                    <ScopeGateDialog targetId={target.id} targetName={target.name} />
                     <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" onClick={() => deleteTarget.mutate(target.id)}>
                       <Trash2 className="h-3 w-3" />
                     </Button>
+
                   </div>
                 </div>
 
