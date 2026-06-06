@@ -93,6 +93,76 @@ export type Database = {
           },
         ]
       }
+      advanced_detector_runs: {
+        Row: {
+          chain_steps: Json
+          created_at: string
+          detector: string
+          duration_ms: number | null
+          endpoint_id: string | null
+          error: string | null
+          evidence: Json
+          finding_id: string | null
+          id: string
+          primitive: string | null
+          proven: boolean
+          status: string
+          target_id: string
+        }
+        Insert: {
+          chain_steps?: Json
+          created_at?: string
+          detector: string
+          duration_ms?: number | null
+          endpoint_id?: string | null
+          error?: string | null
+          evidence?: Json
+          finding_id?: string | null
+          id?: string
+          primitive?: string | null
+          proven?: boolean
+          status?: string
+          target_id: string
+        }
+        Update: {
+          chain_steps?: Json
+          created_at?: string
+          detector?: string
+          duration_ms?: number | null
+          endpoint_id?: string | null
+          error?: string | null
+          evidence?: Json
+          finding_id?: string | null
+          id?: string
+          primitive?: string | null
+          proven?: boolean
+          status?: string
+          target_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "advanced_detector_runs_endpoint_id_fkey"
+            columns: ["endpoint_id"]
+            isOneToOne: false
+            referencedRelation: "discovered_endpoints"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "advanced_detector_runs_finding_id_fkey"
+            columns: ["finding_id"]
+            isOneToOne: false
+            referencedRelation: "vulnerability_findings"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "advanced_detector_runs_target_id_fkey"
+            columns: ["target_id"]
+            isOneToOne: false
+            referencedRelation: "target_workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       agent_tasks: {
         Row: {
           created_at: string
@@ -1789,6 +1859,7 @@ export type Database = {
           description: string | null
           endpoint_id: string | null
           evidence: Json
+          finding_id: string | null
           finding_type: string
           id: string
           mutated_response: Json | null
@@ -1817,6 +1888,7 @@ export type Database = {
           description?: string | null
           endpoint_id?: string | null
           evidence?: Json
+          finding_id?: string | null
           finding_type: string
           id?: string
           mutated_response?: Json | null
@@ -1845,6 +1917,7 @@ export type Database = {
           description?: string | null
           endpoint_id?: string | null
           evidence?: Json
+          finding_id?: string | null
           finding_type?: string
           id?: string
           mutated_response?: Json | null
@@ -1867,6 +1940,13 @@ export type Database = {
             columns: ["endpoint_id"]
             isOneToOne: false
             referencedRelation: "discovered_endpoints"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "pending_approvals_finding_id_fkey"
+            columns: ["finding_id"]
+            isOneToOne: false
+            referencedRelation: "vulnerability_findings"
             referencedColumns: ["id"]
           },
           {
@@ -2342,7 +2422,14 @@ export type Database = {
       target_workspaces: {
         Row: {
           api_schema_url: string | null
+          attestation_accepted: boolean
+          attestation_accepted_at: string | null
+          attestation_accepted_by: string | null
+          authorization_mode: string
+          authorization_notes: string | null
           auto_mythos: boolean
+          bug_bounty_program: string | null
+          bug_bounty_scope_url: string | null
           created_at: string
           domain: string | null
           id: string
@@ -2353,7 +2440,14 @@ export type Database = {
         }
         Insert: {
           api_schema_url?: string | null
+          attestation_accepted?: boolean
+          attestation_accepted_at?: string | null
+          attestation_accepted_by?: string | null
+          authorization_mode?: string
+          authorization_notes?: string | null
           auto_mythos?: boolean
+          bug_bounty_program?: string | null
+          bug_bounty_scope_url?: string | null
           created_at?: string
           domain?: string | null
           id?: string
@@ -2364,7 +2458,14 @@ export type Database = {
         }
         Update: {
           api_schema_url?: string | null
+          attestation_accepted?: boolean
+          attestation_accepted_at?: string | null
+          attestation_accepted_by?: string | null
+          authorization_mode?: string
+          authorization_notes?: string | null
           auto_mythos?: boolean
+          bug_bounty_program?: string | null
+          bug_bounty_scope_url?: string | null
           created_at?: string
           domain?: string | null
           id?: string
@@ -2513,6 +2614,10 @@ export type Database = {
           _role: Database["public"]["Enums"]["app_role"]
           _user_id: string
         }
+        Returns: boolean
+      }
+      target_is_exploit_authorized: {
+        Args: { _target_id: string }
         Returns: boolean
       }
     }
