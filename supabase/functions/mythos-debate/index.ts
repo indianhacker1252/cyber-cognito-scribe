@@ -715,7 +715,7 @@ Propose a CLEAN-SLATE attack with a DIFFERENT vuln class.`;
     // ── Escalation pipeline ──────────────────────────────────────────────────
     if (fpVerdict === "true_positive" && debateRow?.id && confidence >= 55) {
       const validationStatus = confidence >= 75 ? "debate_confirmed" : "needs_review";
-      const title = `Debate-confirmed: ${vulnClassHint || "auto"} via ${paramName}`;
+      const title = `Debate-confirmed: ${winningClass} via ${paramName}`;
 
       const { data: finding } = await db
         .from("vulnerability_findings")
@@ -723,24 +723,24 @@ Propose a CLEAN-SLATE attack with a DIFFERENT vuln class.`;
           target_id: targetId,
           title,
           severity: confidence >= 80 ? "high" : confidence >= 75 ? "medium" : "low",
-          description: `Two-agent debate verdict: ${fpVerdict} (${confidence}% conf)\n\n**Diff reason**: ${probe1.diffReason}\n**XSS unescaped**: ${probe1.xssUnescaped}\n\n**Agent A**: ${a2}\n\n**Agent B**: ${b2}`,
-          payload: proposedPayload,
-          poc: `${endpointUrl}?${paramName}=${encodeURIComponent(proposedPayload)}`,
+          description: `Two-agent debate verdict: ${fpVerdict} (${confidence}% conf)\n\n**Diff reason**: ${winningProbe.diffReason}\n**XSS unescaped**: ${winningProbe.xssUnescaped}\n\n**Agent A**: ${a2}\n\n**Agent B**: ${b2}`,
+          payload: winningPayload,
+          poc: `${endpointUrl}?${paramName}=${encodeURIComponent(winningPayload)}`,
           // Note: vulnerability_findings has no `affected_url` column — URL lives in `poc`.
           confidence_score: confidence,
           confidence_level: confidence >= 75 ? "high" : "medium",
-          triage_reasoning: `Agent A: ${a1}\nAgent B: ${b1}\nResult: ${JSON.stringify(probe1)}\nDebate: ${a2} | ${b2}`,
+          triage_reasoning: `Agent A: ${a1}\nAgent B: ${b1}\nResult: ${JSON.stringify(winningProbe)}\nDebate: ${a2} | ${b2}`,
           validation_status: validationStatus,
           hard_evidence: {
-            baseline_status: probe1.baselineStatus,
-            baseline_length: probe1.baselineLen,
-            mutated_status: probe1.status,
-            mutated_length: probe1.bodyLen,
-            diff_reason: probe1.diffReason,
-            xss_unescaped: probe1.xssUnescaped,
-            timing_delta_ms: probe1.timingDelta,
-            meaningful_diff: probe1.meaningfulDiff,
-            body_snippet: probe1.bodySnippet,
+            baseline_status: winningProbe.baselineStatus,
+            baseline_length: winningProbe.baselineLen,
+            mutated_status: winningProbe.status,
+            mutated_length: winningProbe.bodyLen,
+            diff_reason: winningProbe.diffReason,
+            xss_unescaped: winningProbe.xssUnescaped,
+            timing_delta_ms: winningProbe.timingDelta,
+            meaningful_diff: winningProbe.meaningfulDiff,
+            body_snippet: winningProbe.bodySnippet,
             skeptic_round: probe2
               ? {
                   refined_payload: refinedPayload,
@@ -752,6 +752,7 @@ Propose a CLEAN-SLATE attack with a DIFFERENT vuln class.`;
               ? mutationProbes.map((m) => ({ vuln_class: m.vector, payload: m.payload, status: m.probe.status, baseline_status: m.probe.baselineStatus, body_len: m.probe.bodyLen, diff_reason: m.probe.diffReason }))
               : null,
             classes_attempted: [...triedClasses],
+            winning_class: winningClass,
           },
         })
         .select("id")
