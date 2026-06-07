@@ -573,6 +573,9 @@ State verdict + 1-line reason.`,
     // Up to MAX_MUTATIONS new attack vectors are tried before giving up.
     const MAX_MUTATIONS = 5;
     const mutationProbes: Array<{ vector: string; payload: string; probe: typeof probe1 }> = [];
+    let winningProbe = probe1;
+    let winningPayload = proposedPayload;
+    let winningClass = vulnClassHint || "auto";
     const triedClasses = new Set<string>([(vulnClassHint || "auto").toLowerCase()]);
     let mutationRound = 0;
     while (fpVerdict === "false_positive" && mutationRound < MAX_MUTATIONS && confidence < 95) {
@@ -639,10 +642,16 @@ Propose a CLEAN-SLATE attack with a DIFFERENT vuln class.`;
         metadata: { run_id: runId, phase: "debate-mutation", vuln_class: newClass, payload: newPayload },
       });
 
-      if (mv === "true_positive" && mc > confidence) {
+      // Critical pipeline fix: a later mutation that is deterministically true-positive
+      // must override an earlier high-confidence false-positive. The old `mc > confidence`
+      // guard dropped real findings whenever the initial FP was scored 90% and the TP
+      // mutation was scored 78-88%.
+      if (mv === "true_positive") {
         fpVerdict = mv;
         confidence = mc;
-        // Replace probe1 reference for downstream insert: keep original but stash mutation in evidence
+        winningProbe = mProbe;
+        winningPayload = newPayload;
+        winningClass = newClass;
         probe1.diffReason = `mutation #${mutationRound} [${newClass}] confirmed — ${mProbe.diffReason}`;
         proposedPayload = newPayload;
         break;
@@ -650,8 +659,8 @@ Propose a CLEAN-SLATE attack with a DIFFERENT vuln class.`;
     }
 
     // Self-correlation learnings (now include mutation history)
-    const learnA = `Param ${paramName}: hypothesis "${a1.slice(0, 80)}…". Verdict: ${fpVerdict} (${confidence}%). diffReason: ${probe1.diffReason}${probe2 ? ` | skeptic-retest: ${probe2.diffReason}` : ""}${mutationProbes.length ? ` | mutations: ${mutationProbes.length} tried (${[...triedClasses].join(",")})` : ""}`;
-    const learnB = `Payload "${proposedPayload.slice(0, 60)}" → ${fpVerdict}. ${probe1.meaningfulDiff ? "Meaningful diff — promote pattern." : "No diff — deprioritize this template."}${refinedPayload ? ` | Skeptic refined: "${refinedPayload.slice(0, 40)}"` : ""}${mutationProbes.length ? ` | Mutation classes attempted: ${[...triedClasses].join(",")}` : ""}`;
+    const learnA = `Param ${paramName}: hypothesis "${a1.slice(0, 80)}…". Verdict: ${fpVerdict} (${confidence}%). diffReason: ${winningProbe.diffReason}${probe2 ? ` | skeptic-retest: ${probe2.diffReason}` : ""}${mutationProbes.length ? ` | mutations: ${mutationProbes.length} tried (${[...triedClasses].join(",")})` : ""}`;
+    const learnB = `Payload "${winningPayload.slice(0, 60)}" → ${fpVerdict}. ${winningProbe.meaningfulDiff ? "Meaningful diff — promote pattern." : "No diff — deprioritize this template."}${refinedPayload ? ` | Skeptic refined: "${refinedPayload.slice(0, 40)}"` : ""}${mutationProbes.length ? ` | Mutation classes attempted: ${[...triedClasses].join(",")}` : ""}`;
 
     const { data: debateRow } = await db
       .from("mythos_debates")
@@ -663,9 +672,9 @@ Propose a CLEAN-SLATE attack with a DIFFERENT vuln class.`;
         param_value: paramValue ?? null,
         vuln_class: vulnClassHint ?? null,
         transcript,
-        agreed_payload: proposedPayload,
+        agreed_payload: winningPayload,
         agreed_rationale: b1,
-        test_result: probe1,
+        test_result: winningProbe,
         fp_verdict: fpVerdict,
         fp_reasoning: `${a2}\n---\n${b2}`,
         confidence_score: confidence,
