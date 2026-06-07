@@ -573,6 +573,9 @@ State verdict + 1-line reason.`,
     // Up to MAX_MUTATIONS new attack vectors are tried before giving up.
     const MAX_MUTATIONS = 5;
     const mutationProbes: Array<{ vector: string; payload: string; probe: typeof probe1 }> = [];
+    let winningProbe = probe1;
+    let winningPayload = proposedPayload;
+    let winningClass = vulnClassHint || "auto";
     const triedClasses = new Set<string>([(vulnClassHint || "auto").toLowerCase()]);
     let mutationRound = 0;
     while (fpVerdict === "false_positive" && mutationRound < MAX_MUTATIONS && confidence < 95) {
@@ -639,10 +642,16 @@ Propose a CLEAN-SLATE attack with a DIFFERENT vuln class.`;
         metadata: { run_id: runId, phase: "debate-mutation", vuln_class: newClass, payload: newPayload },
       });
 
-      if (mv === "true_positive" && mc > confidence) {
+      // Critical pipeline fix: a later mutation that is deterministically true-positive
+      // must override an earlier high-confidence false-positive. The old `mc > confidence`
+      // guard dropped real findings whenever the initial FP was scored 90% and the TP
+      // mutation was scored 78-88%.
+      if (mv === "true_positive") {
         fpVerdict = mv;
         confidence = mc;
-        // Replace probe1 reference for downstream insert: keep original but stash mutation in evidence
+        winningProbe = mProbe;
+        winningPayload = newPayload;
+        winningClass = newClass;
         probe1.diffReason = `mutation #${mutationRound} [${newClass}] confirmed — ${mProbe.diffReason}`;
         proposedPayload = newPayload;
         break;
@@ -650,8 +659,8 @@ Propose a CLEAN-SLATE attack with a DIFFERENT vuln class.`;
     }
 
     // Self-correlation learnings (now include mutation history)
-    const learnA = `Param ${paramName}: hypothesis "${a1.slice(0, 80)}…". Verdict: ${fpVerdict} (${confidence}%). diffReason: ${probe1.diffReason}${probe2 ? ` | skeptic-retest: ${probe2.diffReason}` : ""}${mutationProbes.length ? ` | mutations: ${mutationProbes.length} tried (${[...triedClasses].join(",")})` : ""}`;
-    const learnB = `Payload "${proposedPayload.slice(0, 60)}" → ${fpVerdict}. ${probe1.meaningfulDiff ? "Meaningful diff — promote pattern." : "No diff — deprioritize this template."}${refinedPayload ? ` | Skeptic refined: "${refinedPayload.slice(0, 40)}"` : ""}${mutationProbes.length ? ` | Mutation classes attempted: ${[...triedClasses].join(",")}` : ""}`;
+    const learnA = `Param ${paramName}: hypothesis "${a1.slice(0, 80)}…". Verdict: ${fpVerdict} (${confidence}%). diffReason: ${winningProbe.diffReason}${probe2 ? ` | skeptic-retest: ${probe2.diffReason}` : ""}${mutationProbes.length ? ` | mutations: ${mutationProbes.length} tried (${[...triedClasses].join(",")})` : ""}`;
+    const learnB = `Payload "${winningPayload.slice(0, 60)}" → ${fpVerdict}. ${winningProbe.meaningfulDiff ? "Meaningful diff — promote pattern." : "No diff — deprioritize this template."}${refinedPayload ? ` | Skeptic refined: "${refinedPayload.slice(0, 40)}"` : ""}${mutationProbes.length ? ` | Mutation classes attempted: ${[...triedClasses].join(",")}` : ""}`;
 
     const { data: debateRow } = await db
       .from("mythos_debates")
@@ -663,9 +672,9 @@ Propose a CLEAN-SLATE attack with a DIFFERENT vuln class.`;
         param_value: paramValue ?? null,
         vuln_class: vulnClassHint ?? null,
         transcript,
-        agreed_payload: proposedPayload,
+        agreed_payload: winningPayload,
         agreed_rationale: b1,
-        test_result: probe1,
+        test_result: winningProbe,
         fp_verdict: fpVerdict,
         fp_reasoning: `${a2}\n---\n${b2}`,
         confidence_score: confidence,
@@ -706,7 +715,7 @@ Propose a CLEAN-SLATE attack with a DIFFERENT vuln class.`;
     // ── Escalation pipeline ──────────────────────────────────────────────────
     if (fpVerdict === "true_positive" && debateRow?.id && confidence >= 55) {
       const validationStatus = confidence >= 75 ? "debate_confirmed" : "needs_review";
-      const title = `Debate-confirmed: ${vulnClassHint || "auto"} via ${paramName}`;
+      const title = `Debate-confirmed: ${winningClass} via ${paramName}`;
 
       const { data: finding } = await db
         .from("vulnerability_findings")
@@ -714,24 +723,24 @@ Propose a CLEAN-SLATE attack with a DIFFERENT vuln class.`;
           target_id: targetId,
           title,
           severity: confidence >= 80 ? "high" : confidence >= 75 ? "medium" : "low",
-          description: `Two-agent debate verdict: ${fpVerdict} (${confidence}% conf)\n\n**Diff reason**: ${probe1.diffReason}\n**XSS unescaped**: ${probe1.xssUnescaped}\n\n**Agent A**: ${a2}\n\n**Agent B**: ${b2}`,
-          payload: proposedPayload,
-          poc: `${endpointUrl}?${paramName}=${encodeURIComponent(proposedPayload)}`,
+          description: `Two-agent debate verdict: ${fpVerdict} (${confidence}% conf)\n\n**Diff reason**: ${winningProbe.diffReason}\n**XSS unescaped**: ${winningProbe.xssUnescaped}\n\n**Agent A**: ${a2}\n\n**Agent B**: ${b2}`,
+          payload: winningPayload,
+          poc: `${endpointUrl}?${paramName}=${encodeURIComponent(winningPayload)}`,
           // Note: vulnerability_findings has no `affected_url` column — URL lives in `poc`.
           confidence_score: confidence,
           confidence_level: confidence >= 75 ? "high" : "medium",
-          triage_reasoning: `Agent A: ${a1}\nAgent B: ${b1}\nResult: ${JSON.stringify(probe1)}\nDebate: ${a2} | ${b2}`,
+          triage_reasoning: `Agent A: ${a1}\nAgent B: ${b1}\nResult: ${JSON.stringify(winningProbe)}\nDebate: ${a2} | ${b2}`,
           validation_status: validationStatus,
           hard_evidence: {
-            baseline_status: probe1.baselineStatus,
-            baseline_length: probe1.baselineLen,
-            mutated_status: probe1.status,
-            mutated_length: probe1.bodyLen,
-            diff_reason: probe1.diffReason,
-            xss_unescaped: probe1.xssUnescaped,
-            timing_delta_ms: probe1.timingDelta,
-            meaningful_diff: probe1.meaningfulDiff,
-            body_snippet: probe1.bodySnippet,
+            baseline_status: winningProbe.baselineStatus,
+            baseline_length: winningProbe.baselineLen,
+            mutated_status: winningProbe.status,
+            mutated_length: winningProbe.bodyLen,
+            diff_reason: winningProbe.diffReason,
+            xss_unescaped: winningProbe.xssUnescaped,
+            timing_delta_ms: winningProbe.timingDelta,
+            meaningful_diff: winningProbe.meaningfulDiff,
+            body_snippet: winningProbe.bodySnippet,
             skeptic_round: probe2
               ? {
                   refined_payload: refinedPayload,
@@ -743,12 +752,46 @@ Propose a CLEAN-SLATE attack with a DIFFERENT vuln class.`;
               ? mutationProbes.map((m) => ({ vuln_class: m.vector, payload: m.payload, status: m.probe.status, baseline_status: m.probe.baselineStatus, body_len: m.probe.bodyLen, diff_reason: m.probe.diffReason }))
               : null,
             classes_attempted: [...triedClasses],
+            winning_class: winningClass,
           },
         })
         .select("id")
         .single();
 
       if (confidence >= 75 && finding?.id) {
+        const approvalRow = {
+          finding_id: finding.id,
+          target_id: targetId,
+          finding_type: winningClass,
+          severity: confidence >= 80 ? "high" : confidence >= 75 ? "medium" : "low",
+          title,
+          description: `Queued from Mythos debate after mutation-confirmed true positive. ${winningProbe.diffReason}`,
+          payload_used: winningPayload,
+          evidence: { debate_id: debateRow.id, winning_class: winningClass, mutation_rounds: mutationProbes, probe: winningProbe },
+          parameter: paramName,
+          request_data: { method: "GET", url: endpointUrl, parameter: paramName, payload: winningPayload },
+          response_data: { status: winningProbe.status, length: winningProbe.bodyLen, snippet: winningProbe.bodySnippet },
+          baseline_response: { status: winningProbe.baselineStatus, length: winningProbe.baselineLen },
+          mutated_response: { status: winningProbe.status, length: winningProbe.bodyLen, snippet: winningProbe.bodySnippet },
+          confidence_score: confidence,
+          confidence_level: "high",
+          ai_verified: true,
+          ai_verification_notes: `Mythos debate true-positive via ${winningClass}: ${winningProbe.diffReason}`,
+          triage_reasoning: `Auto-queued from debate ${debateRow.id}; winning payload overcame earlier false-positive verdict.`,
+          reachability_status: "reachable",
+          status: "pending",
+          cvss_score: confidence >= 88 ? 8.1 : 6.8,
+        };
+        const { error: approvalErr } = await db.from("pending_approvals").insert(approvalRow as any);
+        if (approvalErr) {
+          await db.from("scan_logs").insert({
+            target_id: targetId,
+            log_type: "warning",
+            message: `❌ Mythos pending_approvals insert FAILED: ${approvalErr.message}`,
+            metadata: { run_id: runId, debate_id: debateRow.id, finding_id: finding.id, approvalRow },
+          });
+        }
+
         fetch(`${SUPABASE_URL}/functions/v1/exploit-engine`, {
           method: "POST",
           headers: {
@@ -774,6 +817,7 @@ Propose a CLEAN-SLATE attack with a DIFFERENT vuln class.`;
             debate_id: debateRow.id,
             finding_id: finding.id,
             phase: "debate-escalate",
+            pending_approval_queued: !approvalErr,
           },
         });
       } else if (finding?.id) {

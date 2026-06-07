@@ -64,15 +64,20 @@ export default function Findings() {
     return Array.from(names.entries()); // [target_id, name][]
   }, [findings]);
 
+  const normalizeValidationStatus = (status?: string | null): "confirmed" | "needs_review" | "inconclusive" => {
+    const s = (status || "").toLowerCase();
+    if (["confirmed", "validated", "verified", "debate_confirmed", "ai_confirmed", "ai_confirmed_reflection", "auto-accepted"].includes(s)) return "confirmed";
+    if (["needs_review", "pending_exploit", "fuzzer_anomaly", "pending", "review"].includes(s)) return "needs_review";
+    return "inconclusive";
+  };
+
   const filteredFindings = useMemo(() => {
     if (!findings) return [];
     let out = findings as any[];
     if (activeTargetFilter) out = out.filter((f: any) => f.target_id === activeTargetFilter);
     if (statusFilter !== "all") {
       out = out.filter((f: any) => {
-        const s = (f.validation_status || "inconclusive") as string;
-        if (statusFilter === "inconclusive") return s === "inconclusive" || s === "unverified" || !f.validation_status;
-        return s === statusFilter;
+        return normalizeValidationStatus(f.validation_status) === statusFilter;
       });
     }
     return out;
@@ -82,7 +87,7 @@ export default function Findings() {
     const base = { confirmed: 0, needs_review: 0, inconclusive: 0 };
     if (!findings) return base;
     for (const f of findings as any[]) {
-      const s = f.validation_status;
+      const s = normalizeValidationStatus(f.validation_status);
       if (s === "confirmed") base.confirmed++;
       else if (s === "needs_review") base.needs_review++;
       else base.inconclusive++;
@@ -196,10 +201,10 @@ export default function Findings() {
   };
 
   const statusBadgeClass = (s?: string) => {
-    if (s === "confirmed") return "bg-cyber-green/20 text-cyber-green border-cyber-green/40";
-    if (s === "needs_review") return "bg-cyber-amber/20 text-cyber-amber border-cyber-amber/40";
-    if (s === "inconclusive") return "bg-muted/30 text-muted-foreground border-muted/40";
-    if (s === "verified" || s === "validated") return "bg-cyber-green/20 text-cyber-green border-cyber-green/30";
+    const normalized = normalizeValidationStatus(s);
+    if (normalized === "confirmed") return "bg-cyber-green/20 text-cyber-green border-cyber-green/40";
+    if (normalized === "needs_review") return "bg-cyber-amber/20 text-cyber-amber border-cyber-amber/40";
+    if (normalized === "inconclusive") return "bg-muted/30 text-muted-foreground border-muted/40";
     return "text-muted-foreground border-muted/40";
   };
 

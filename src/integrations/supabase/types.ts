@@ -2507,6 +2507,7 @@ export type Database = {
           description: string | null
           endpoint_id: string | null
           evidence_package_id: string | null
+          finding_type: string | null
           hard_evidence: Json | null
           id: string
           payload: string | null
@@ -2530,6 +2531,7 @@ export type Database = {
           description?: string | null
           endpoint_id?: string | null
           evidence_package_id?: string | null
+          finding_type?: string | null
           hard_evidence?: Json | null
           id?: string
           payload?: string | null
@@ -2553,6 +2555,7 @@ export type Database = {
           description?: string | null
           endpoint_id?: string | null
           evidence_package_id?: string | null
+          finding_type?: string | null
           hard_evidence?: Json | null
           id?: string
           payload?: string | null
