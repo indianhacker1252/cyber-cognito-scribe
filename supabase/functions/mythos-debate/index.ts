@@ -759,6 +759,39 @@ Propose a CLEAN-SLATE attack with a DIFFERENT vuln class.`;
         .single();
 
       if (confidence >= 75 && finding?.id) {
+        const approvalRow = {
+          finding_id: finding.id,
+          target_id: targetId,
+          finding_type: winningClass,
+          severity: confidence >= 80 ? "high" : confidence >= 75 ? "medium" : "low",
+          title,
+          description: `Queued from Mythos debate after mutation-confirmed true positive. ${winningProbe.diffReason}`,
+          payload_used: winningPayload,
+          evidence: { debate_id: debateRow.id, winning_class: winningClass, mutation_rounds: mutationProbes, probe: winningProbe },
+          parameter: paramName,
+          request_data: { method: "GET", url: endpointUrl, parameter: paramName, payload: winningPayload },
+          response_data: { status: winningProbe.status, length: winningProbe.bodyLen, snippet: winningProbe.bodySnippet },
+          baseline_response: { status: winningProbe.baselineStatus, length: winningProbe.baselineLen },
+          mutated_response: { status: winningProbe.status, length: winningProbe.bodyLen, snippet: winningProbe.bodySnippet },
+          confidence_score: confidence,
+          confidence_level: "high",
+          ai_verified: true,
+          ai_verification_notes: `Mythos debate true-positive via ${winningClass}: ${winningProbe.diffReason}`,
+          triage_reasoning: `Auto-queued from debate ${debateRow.id}; winning payload overcame earlier false-positive verdict.`,
+          reachability_status: "reachable",
+          status: "pending",
+          cvss_score: confidence >= 88 ? 8.1 : 6.8,
+        };
+        const { error: approvalErr } = await db.from("pending_approvals").insert(approvalRow as any);
+        if (approvalErr) {
+          await db.from("scan_logs").insert({
+            target_id: targetId,
+            log_type: "warning",
+            message: `❌ Mythos pending_approvals insert FAILED: ${approvalErr.message}`,
+            metadata: { run_id: runId, debate_id: debateRow.id, finding_id: finding.id, approvalRow },
+          });
+        }
+
         fetch(`${SUPABASE_URL}/functions/v1/exploit-engine`, {
           method: "POST",
           headers: {
@@ -784,6 +817,7 @@ Propose a CLEAN-SLATE attack with a DIFFERENT vuln class.`;
             debate_id: debateRow.id,
             finding_id: finding.id,
             phase: "debate-escalate",
+            pending_approval_queued: !approvalErr,
           },
         });
       } else if (finding?.id) {
