@@ -477,7 +477,8 @@ async function runDifferentialTest(
   paramName: string,
   paramValue: string,
   vulnClass: string,
-  overrideTruthyPayload?: string
+  overrideTruthyPayload?: string,
+  adaptivePayloads: string[] = []
 ): Promise<DiffResult | null> {
   const testPairs = getTestPairs(paramValue);
   const pair = testPairs[vulnClass];
@@ -487,6 +488,7 @@ async function runDifferentialTest(
 
   const payloadsToTry = [
     { payload: truthyPayload, name: overrideTruthyPayload ? "override" : "original" },
+    ...adaptivePayloads.slice(0, 8).map((payload, i) => ({ payload, name: `custom/intel-${i + 1}` })),
     ...MUTATIONS.slice(0, MAX_ADAPTIVE_RETRIES).map((m) => ({
       payload: m.transform(truthyPayload),
       name: m.name,
@@ -684,8 +686,7 @@ async function runDifferentialTest(
       // ─── Intruder Mode: run additional payloads for confirmed vulns ───
       if (result.isVulnerable) {
         const intruderPayloads = getIntruderPayloads(vulnClass, paramValue, [
-          ...(highYieldPayloads.get(vulnClass) || []),
-          ...(secListsPayloadsMap.get(vulnClass) || []).slice(0, 6),
+          ...adaptivePayloads,
         ]);
         const intruderResults: Array<{ payload: string; status: number; length: number; timingMs: number }> = [];
 
