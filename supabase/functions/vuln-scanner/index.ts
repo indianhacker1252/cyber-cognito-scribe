@@ -1289,7 +1289,11 @@ serve(async (req) => {
           `${isExploring ? "🔍 [EXPLORE]" : "🎯 [EXPLOIT]"} Testing ${check.paramName} for ${vulnClass} at ${check.url}`
         );
 
-        const result = await runDifferentialTest(check.url, check.paramName, check.paramValue, vulnClass);
+        const adaptiveQueue = [
+          ...(highYieldPayloads.get(vulnClass) || []),
+          ...(secListsPayloadsMap.get(vulnClass) || []).slice(0, 8),
+        ];
+        const result = await runDifferentialTest(check.url, check.paramName, check.paramValue, vulnClass, undefined, adaptiveQueue);
         if (result) {
           diffResults.push(result);
 
@@ -1346,7 +1350,7 @@ serve(async (req) => {
                 const evolved = gm.mutate(result.truePayload);
                 if (evolved === result.truePayload) continue;
 
-                const evoResult = await runDifferentialTest(check.url, check.paramName, check.paramValue, vulnClass, evolved);
+                const evoResult = await runDifferentialTest(check.url, check.paramName, check.paramValue, vulnClass, evolved, adaptiveQueue);
                 if (evoResult && evoResult.isVulnerable && evoResult.confidenceScore > result.confidenceScore) {
                   diffResults.push(evoResult);
                   experienceRecords.push({
@@ -1596,7 +1600,7 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
 
                   await log(db, targetId, taskId, "action", `🎯 AI Follow-up: Testing ${test.paramName} for ${test.vulnClass} — ${test.reasoning.slice(0, 80)}`);
 
-                  const followResult = await runDifferentialTest(matchEp.url, test.paramName, (matchEp.parameters as Record<string,string>)?.[test.paramName] || "", test.vulnClass, test.payload);
+                  const followResult = await runDifferentialTest(matchEp.url, test.paramName, (matchEp.parameters as Record<string,string>)?.[test.paramName] || "", test.vulnClass, test.payload, highYieldPayloads.get(test.vulnClass) || []);
                   if (followResult) {
                     diffResults.push(followResult);
                     if (followResult.isVulnerable) {
