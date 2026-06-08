@@ -25,6 +25,8 @@ const JOB_ROUTES: Record<string, string> = {
   cve: "cve-version-matcher",
   variant_test: "mythos-variant-test",
   debate: "mythos-debate",
+  template: "template-runner",
+  owasp_template: "template-runner",
   patch_validate: "mythos-patch-validate",
   exploit: "exploit-engine",
   proof: "proof-engine",

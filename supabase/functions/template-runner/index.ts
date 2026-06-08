@@ -85,6 +85,11 @@ const TEMPLATES: Template[] = [
     matcher: (body, status) => status >= 500 || /ami-id|instance-id|SSH-2\.0/i.test(body) },
 ];
 
+const OWASP_CATEGORIES = [
+  "A01:BAC", "A02:Crypto", "A03:Injection", "A04:Design", "A05:Misconfig",
+  "A06:Components", "A07:Auth", "A08:Integrity", "A09:Logging", "A10:SSRF",
+] as const;
+
 async function runTemplate(
   baseUrl: string, tmpl: Template, throttle: AdaptiveThrottle, authHeaders: Record<string, string> = {},
 ): Promise<{ payloadsSent: number; wafBlocked: number; findings: Array<{ payload: string; evidence: string; statusCode: number; endpoint: string }> }> {
@@ -188,10 +193,14 @@ Deno.serve(async (req) => {
     const startedAt = Date.now();
     const perCategory = new Map<string, { checks: number; payloads: number; findings: number; waf: number }>();
     const insertedFindings: any[] = [];
+    for (const cat of OWASP_CATEGORIES) perCategory.set(cat, { checks: 0, payloads: 0, findings: 0, waf: 0 });
 
-    outer: for (const tmpl of TEMPLATES) {
-      for (const url of urlList) {
-        if (Date.now() - startedAt > 42_000) break outer;
+    const testedPairs = new Set<string>();
+    const templatesByCategory = new Map<string, Template[]>();
+    for (const tmpl of TEMPLATES) templatesByCategory.set(tmpl.category, [...(templatesByCategory.get(tmpl.category) || []), tmpl]);
+
+    const runAndRecord = async (tmpl: Template, url: string) => {
+        testedPairs.add(`${tmpl.id}|${url}`);
         const r = await runTemplate(url, tmpl, throttle, authHeaders);
 
         const acc = perCategory.get(tmpl.category) || { checks: 0, payloads: 0, findings: 0, waf: 0 };
@@ -214,6 +223,21 @@ Deno.serve(async (req) => {
           });
         }
         // removed early break — test ALL endpoints per template for multi-point vulns
+    };
+
+    // Fairness pass: hit every OWASP Top 10 category once before spending time on depth.
+    for (const cat of OWASP_CATEGORIES) {
+      const tmpl = templatesByCategory.get(cat)?.[0];
+      const url = urlList[0];
+      if (!tmpl || !url || Date.now() - startedAt > 38_000) continue;
+      await runAndRecord(tmpl, url);
+    }
+
+    outer: for (const tmpl of TEMPLATES) {
+      for (const url of urlList) {
+        if (Date.now() - startedAt > 42_000) break outer;
+        if (testedPairs.has(`${tmpl.id}|${url}`)) continue;
+        await runAndRecord(tmpl, url);
       }
     }
 
@@ -233,7 +257,7 @@ Deno.serve(async (req) => {
     // 5) Insert findings + auto-queue browser verification for XSS-class findings
     let queuedBrowserVerify = 0;
     if (insertedFindings.length) {
-      const xssTmplIds = new Set(insertedFindings.filter(f => /xss|redirect|csti|prototype|dom/i.test(f._tmplId)).map((_, i) => i));
+      const xssTmplIds = new Set(insertedFindings.map((f, i) => /xss|redirect|csti|prototype|dom/i.test(f._tmplId) ? i : -1).filter((i) => i >= 0));
       const rows = insertedFindings.map(({ _tmplId, ...rest }) => rest);
       const { data: inserted } = await db.from("vulnerability_findings").insert(rows).select("id");
       for (let i = 0; i < (inserted || []).length; i++) {

@@ -369,6 +369,39 @@ const OWASP_MAP: Record<string, string> = {
   "insufficient-logging": "A09:2021 Security Logging and Monitoring Failures",
 };
 
+const OWASP_TOP10_CATEGORIES = [
+  "A01:BAC", "A02:Crypto", "A03:Injection", "A04:Design", "A05:Misconfig",
+  "A06:Components", "A07:Auth", "A08:Integrity", "A09:Logging", "A10:SSRF",
+] as const;
+
+function normalizeOwaspCategory(category?: string | null): string {
+  const c = (category || "").toLowerCase();
+  if (c.includes("a01")) return "A01:BAC";
+  if (c.includes("a02")) return "A02:Crypto";
+  if (c.includes("a03")) return "A03:Injection";
+  if (c.includes("a04")) return "A04:Design";
+  if (c.includes("a05")) return "A05:Misconfig";
+  if (c.includes("a06")) return "A06:Components";
+  if (c.includes("a07")) return "A07:Auth";
+  if (c.includes("a08")) return "A08:Integrity";
+  if (c.includes("a09")) return "A09:Logging";
+  if (c.includes("a10")) return "A10:SSRF";
+  return "A03:Injection";
+}
+
+function classifyCustomPayload(payload: string): string[] {
+  const p = payload.toLowerCase();
+  const classes = new Set<string>();
+  if (/select|union|or\s+1=1|sleep\(|waitfor|sqlstate|--/.test(p)) classes.add("sqli");
+  if (/<script|onerror|onload|javascript:|alert\(/.test(p)) classes.add("rxss");
+  if (/169\.254|127\.0\.0\.1|localhost|file:\/\/|gopher:\/\//.test(p)) classes.add("ssrf");
+  if (/\.\.\/|\.\.\\|etc\/passwd|win\.ini|php:\/\/filter/.test(p)) { classes.add("path-traversal"); classes.add("lfi"); }
+  if (/\{\{|\$\{|<%=|freemarker|velocity/.test(p)) classes.add("ssti");
+  if (/;\s*(id|whoami|sleep)|\|\s*(id|whoami|sleep)|`|\$\(/.test(p)) classes.add("cmdi");
+  if (/\$ne|\$where|mongodb|nosql/.test(p)) classes.add("nosqli");
+  return classes.size ? [...classes] : ["generic"];
+}
+
 function getTestPairs(paramValue: string): Record<string, { truthy: string; falsy: string }> {
   return {
     sqli: { truthy: `${paramValue}' AND '1'='1`, falsy: `${paramValue}' AND '1'='0` },
@@ -444,7 +477,8 @@ async function runDifferentialTest(
   paramName: string,
   paramValue: string,
   vulnClass: string,
-  overrideTruthyPayload?: string
+  overrideTruthyPayload?: string,
+  adaptivePayloads: string[] = []
 ): Promise<DiffResult | null> {
   const testPairs = getTestPairs(paramValue);
   const pair = testPairs[vulnClass];
@@ -454,6 +488,7 @@ async function runDifferentialTest(
 
   const payloadsToTry = [
     { payload: truthyPayload, name: overrideTruthyPayload ? "override" : "original" },
+    ...adaptivePayloads.slice(0, 8).map((payload, i) => ({ payload, name: `custom/intel-${i + 1}` })),
     ...MUTATIONS.slice(0, MAX_ADAPTIVE_RETRIES).map((m) => ({
       payload: m.transform(truthyPayload),
       name: m.name,
@@ -651,8 +686,7 @@ async function runDifferentialTest(
       // ─── Intruder Mode: run additional payloads for confirmed vulns ───
       if (result.isVulnerable) {
         const intruderPayloads = getIntruderPayloads(vulnClass, paramValue, [
-          ...(highYieldPayloads.get(vulnClass) || []),
-          ...(secListsPayloadsMap.get(vulnClass) || []).slice(0, 6),
+          ...adaptivePayloads,
         ]);
         const intruderResults: Array<{ payload: string; status: number; length: number; timingMs: number }> = [];
 
@@ -984,6 +1018,9 @@ serve(async (req) => {
         status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
+    const customPayloads = Array.isArray((target as any).custom_payloads)
+      ? (target as any).custom_payloads.map((p: unknown) => String(p).trim()).filter(Boolean).slice(0, 80)
+      : [];
 
     const { data: task } = await db
       .from("agent_tasks")
@@ -1198,8 +1235,21 @@ serve(async (req) => {
       }
     }
 
+    for (const payload of customPayloads) {
+      const classes = classifyCustomPayload(payload);
+      const targetClasses = classes.includes("generic") ? [...uniqueVulnClasses] : classes;
+      for (const cls of targetClasses) {
+        const existing = highYieldPayloads.get(cls) || [];
+        if (!existing.includes(payload) && existing.length < 12) existing.unshift(payload);
+        highYieldPayloads.set(cls, existing);
+      }
+    }
+
     if (highYieldPayloads.size > 0) {
       await log(db, targetId, taskId, "info", `📚 Loaded ${highYieldPayloads.size} vuln classes with proven payloads from Experience Vault`);
+    }
+    if (customPayloads.length > 0) {
+      await log(db, targetId, taskId, "info", `🎯 Loaded ${customPayloads.length} auditor custom payloads into mutation priority queue`);
     }
 
     // ── Step 3: Differential Analysis + Intruder + Evolutionary Fuzzing + SecLists ──
@@ -1239,7 +1289,11 @@ serve(async (req) => {
           `${isExploring ? "🔍 [EXPLORE]" : "🎯 [EXPLOIT]"} Testing ${check.paramName} for ${vulnClass} at ${check.url}`
         );
 
-        const result = await runDifferentialTest(check.url, check.paramName, check.paramValue, vulnClass);
+        const adaptiveQueue = [
+          ...(highYieldPayloads.get(vulnClass) || []),
+          ...(secListsPayloadsMap.get(vulnClass) || []).slice(0, 8),
+        ];
+        const result = await runDifferentialTest(check.url, check.paramName, check.paramValue, vulnClass, undefined, adaptiveQueue);
         if (result) {
           diffResults.push(result);
 
@@ -1296,7 +1350,7 @@ serve(async (req) => {
                 const evolved = gm.mutate(result.truePayload);
                 if (evolved === result.truePayload) continue;
 
-                const evoResult = await runDifferentialTest(check.url, check.paramName, check.paramValue, vulnClass, evolved);
+                const evoResult = await runDifferentialTest(check.url, check.paramName, check.paramValue, vulnClass, evolved, adaptiveQueue);
                 if (evoResult && evoResult.isVulnerable && evoResult.confidenceScore > result.confidenceScore) {
                   diffResults.push(evoResult);
                   experienceRecords.push({
@@ -1546,7 +1600,7 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
 
                   await log(db, targetId, taskId, "action", `🎯 AI Follow-up: Testing ${test.paramName} for ${test.vulnClass} — ${test.reasoning.slice(0, 80)}`);
 
-                  const followResult = await runDifferentialTest(matchEp.url, test.paramName, (matchEp.parameters as Record<string,string>)?.[test.paramName] || "", test.vulnClass, test.payload);
+                  const followResult = await runDifferentialTest(matchEp.url, test.paramName, (matchEp.parameters as Record<string,string>)?.[test.paramName] || "", test.vulnClass, test.payload, highYieldPayloads.get(test.vulnClass) || []);
                   if (followResult) {
                     diffResults.push(followResult);
                     if (followResult.isVulnerable) {
@@ -1703,8 +1757,6 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
         const sqlErrors = [/sql syntax/i, /ORA-\d+/i, /SQLSTATE/i, /pg_query/i, /unclosed quotation/i, /odbc.*error/i, /microsoft.*sql/i];
         if (sqlErrors.some(p => p.test(mb) && !p.test(bb))) {
           proven = true; proofType = "error_based"; mathBasis = "DB error string in mutated only (not in baseline)";
-        } else if (vf.mutated.status >= 500 && vf.baseline.status < 500) {
-          proven = true; proofType = "server_500_differential"; mathBasis = `Mutated returned ${vf.mutated.status} vs baseline ${vf.baseline.status}`;
         } else if (lenDiffPct > 0.15 && lenDiff > 200 && vf.mutated.status === 200) {
           proven = true; proofType = "boolean_differential"; mathBasis = `Body length differential: ${bbLen}b → ${mbLen}b (Δ${Math.round(lenDiffPct*100)}%)`;
         }
@@ -1727,11 +1779,7 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
         }
       }
 
-      // Generic fallback: 500-status differential on ANY vuln class = info disclosure
-      if (!proven && vf.mutated.status >= 500 && vf.baseline.status < 500) {
-        proven = true; proofType = "server_500_differential";
-        mathBasis = `Mutated ${vf.mutated.status} vs baseline ${vf.baseline.status} (payload-triggered server error)`;
-      }
+      // Status-only 500/byte-delta is no longer proof; proof requires content/browser/OOB evidence.
 
       if (!proven) details = `No deterministic proof for ${vf.vulnClass}`;
       else details = mathBasis;
@@ -1818,6 +1866,7 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
           const stackMatch = affectedStack.some((t: string) => targetTech.some(tt => tt.includes(t.toLowerCase())));
           if (!stackMatch) continue;
 
+          const vc = feed.vulnerability_class || "sqli";
           const templatePayloads = ((feed.test_template as any)?.payloads || []) as string[];
           const extractedPayloads = (feed.extracted_payloads as string[]) || [];
           const allPayloads = [...new Set([...templatePayloads, ...extractedPayloads])].slice(0, 15);
@@ -1841,8 +1890,6 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
               continue;
             }
           }
-
-          const vc = feed.vulnerability_class || "sqli";
           let confirmed = false;
 
           for (const ep of (endpoints || []).slice(0, 8)) {
@@ -2242,6 +2289,30 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
       ...vulnFindings.map((v) => v.owaspCategory),
       ...aiAssessments.assessments.map((a) => a.owaspCategory),
     ])];
+
+    const coverageStats = new Map<string, { checks: number; findings: number; payloads: number }>();
+    for (const cat of OWASP_TOP10_CATEGORIES) coverageStats.set(cat, { checks: 0, findings: 0, payloads: 0 });
+    for (const r of diffResults) {
+      const cat = normalizeOwaspCategory(r.owaspCategory);
+      const s = coverageStats.get(cat) || { checks: 0, findings: 0, payloads: 0 };
+      s.checks += 1; s.payloads += (r.intruderResults?.length || 0) + 1; if (r.isVulnerable) s.findings += 1;
+      coverageStats.set(cat, s);
+    }
+    for (const p of passiveResults) {
+      const cat = normalizeOwaspCategory(p.owaspCategory);
+      const s = coverageStats.get(cat) || { checks: 0, findings: 0, payloads: 0 };
+      s.checks += 1; s.findings += 1;
+      coverageStats.set(cat, s);
+    }
+    await db.from("owasp_coverage").insert([...coverageStats.entries()].map(([owasp_category, s]) => ({
+      target_id: targetId,
+      owasp_category,
+      checks_run: s.checks,
+      payloads_sent: s.payloads,
+      findings_count: s.findings,
+      waf_blocked: experienceRecords.filter((e) => e.outcome === "blocked" && normalizeOwaspCategory(OWASP_MAP[e.vuln_class]) === owasp_category).length,
+      metadata: { source: "vuln-scanner", task_id: taskId, complete_top10_matrix: true },
+    })));
 
     await db.from("agent_tasks").update({
       status: "completed",

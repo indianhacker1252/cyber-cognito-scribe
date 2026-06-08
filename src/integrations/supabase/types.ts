@@ -2431,6 +2431,7 @@ export type Database = {
           bug_bounty_program: string | null
           bug_bounty_scope_url: string | null
           created_at: string
+          custom_payloads: Json
           domain: string | null
           id: string
           ip_range: string | null
@@ -2449,6 +2450,7 @@ export type Database = {
           bug_bounty_program?: string | null
           bug_bounty_scope_url?: string | null
           created_at?: string
+          custom_payloads?: Json
           domain?: string | null
           id?: string
           ip_range?: string | null
@@ -2467,6 +2469,7 @@ export type Database = {
           bug_bounty_program?: string | null
           bug_bounty_scope_url?: string | null
           created_at?: string
+          custom_payloads?: Json
           domain?: string | null
           id?: string
           ip_range?: string | null
