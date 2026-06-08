@@ -1018,6 +1018,9 @@ serve(async (req) => {
         status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
+    const customPayloads = Array.isArray((target as any).custom_payloads)
+      ? (target as any).custom_payloads.map((p: unknown) => String(p).trim()).filter(Boolean).slice(0, 80)
+      : [];
 
     const { data: task } = await db
       .from("agent_tasks")
@@ -1232,8 +1235,21 @@ serve(async (req) => {
       }
     }
 
+    for (const payload of customPayloads) {
+      const classes = classifyCustomPayload(payload);
+      const targetClasses = classes.includes("generic") ? [...uniqueVulnClasses] : classes;
+      for (const cls of targetClasses) {
+        const existing = highYieldPayloads.get(cls) || [];
+        if (!existing.includes(payload) && existing.length < 12) existing.unshift(payload);
+        highYieldPayloads.set(cls, existing);
+      }
+    }
+
     if (highYieldPayloads.size > 0) {
       await log(db, targetId, taskId, "info", `📚 Loaded ${highYieldPayloads.size} vuln classes with proven payloads from Experience Vault`);
+    }
+    if (customPayloads.length > 0) {
+      await log(db, targetId, taskId, "info", `🎯 Loaded ${customPayloads.length} auditor custom payloads into mutation priority queue`);
     }
 
     // ── Step 3: Differential Analysis + Intruder + Evolutionary Fuzzing + SecLists ──
