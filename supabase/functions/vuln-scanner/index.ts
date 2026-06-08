@@ -2290,6 +2290,30 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
       ...aiAssessments.assessments.map((a) => a.owaspCategory),
     ])];
 
+    const coverageStats = new Map<string, { checks: number; findings: number; payloads: number }>();
+    for (const cat of OWASP_TOP10_CATEGORIES) coverageStats.set(cat, { checks: 0, findings: 0, payloads: 0 });
+    for (const r of diffResults) {
+      const cat = normalizeOwaspCategory(r.owaspCategory);
+      const s = coverageStats.get(cat) || { checks: 0, findings: 0, payloads: 0 };
+      s.checks += 1; s.payloads += (r.intruderResults?.length || 0) + 1; if (r.isVulnerable) s.findings += 1;
+      coverageStats.set(cat, s);
+    }
+    for (const p of passiveResults) {
+      const cat = normalizeOwaspCategory(p.owaspCategory);
+      const s = coverageStats.get(cat) || { checks: 0, findings: 0, payloads: 0 };
+      s.checks += 1; s.findings += 1;
+      coverageStats.set(cat, s);
+    }
+    await db.from("owasp_coverage").insert([...coverageStats.entries()].map(([owasp_category, s]) => ({
+      target_id: targetId,
+      owasp_category,
+      checks_run: s.checks,
+      payloads_sent: s.payloads,
+      findings_count: s.findings,
+      waf_blocked: experienceRecords.filter((e) => e.outcome === "blocked" && normalizeOwaspCategory(OWASP_MAP[e.vuln_class]) === owasp_category).length,
+      metadata: { source: "vuln-scanner", task_id: taskId, complete_top10_matrix: true },
+    })));
+
     await db.from("agent_tasks").update({
       status: "completed",
       result: {
