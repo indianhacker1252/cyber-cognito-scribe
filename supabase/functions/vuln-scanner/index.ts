@@ -369,6 +369,39 @@ const OWASP_MAP: Record<string, string> = {
   "insufficient-logging": "A09:2021 Security Logging and Monitoring Failures",
 };
 
+const OWASP_TOP10_CATEGORIES = [
+  "A01:BAC", "A02:Crypto", "A03:Injection", "A04:Design", "A05:Misconfig",
+  "A06:Components", "A07:Auth", "A08:Integrity", "A09:Logging", "A10:SSRF",
+] as const;
+
+function normalizeOwaspCategory(category?: string | null): string {
+  const c = (category || "").toLowerCase();
+  if (c.includes("a01")) return "A01:BAC";
+  if (c.includes("a02")) return "A02:Crypto";
+  if (c.includes("a03")) return "A03:Injection";
+  if (c.includes("a04")) return "A04:Design";
+  if (c.includes("a05")) return "A05:Misconfig";
+  if (c.includes("a06")) return "A06:Components";
+  if (c.includes("a07")) return "A07:Auth";
+  if (c.includes("a08")) return "A08:Integrity";
+  if (c.includes("a09")) return "A09:Logging";
+  if (c.includes("a10")) return "A10:SSRF";
+  return "A03:Injection";
+}
+
+function classifyCustomPayload(payload: string): string[] {
+  const p = payload.toLowerCase();
+  const classes = new Set<string>();
+  if (/select|union|or\s+1=1|sleep\(|waitfor|sqlstate|--/.test(p)) classes.add("sqli");
+  if (/<script|onerror|onload|javascript:|alert\(/.test(p)) classes.add("rxss");
+  if (/169\.254|127\.0\.0\.1|localhost|file:\/\/|gopher:\/\//.test(p)) classes.add("ssrf");
+  if (/\.\.\/|\.\.\\|etc\/passwd|win\.ini|php:\/\/filter/.test(p)) { classes.add("path-traversal"); classes.add("lfi"); }
+  if (/\{\{|\$\{|<%=|freemarker|velocity/.test(p)) classes.add("ssti");
+  if (/;\s*(id|whoami|sleep)|\|\s*(id|whoami|sleep)|`|\$\(/.test(p)) classes.add("cmdi");
+  if (/\$ne|\$where|mongodb|nosql/.test(p)) classes.add("nosqli");
+  return classes.size ? [...classes] : ["generic"];
+}
+
 function getTestPairs(paramValue: string): Record<string, { truthy: string; falsy: string }> {
   return {
     sqli: { truthy: `${paramValue}' AND '1'='1`, falsy: `${paramValue}' AND '1'='0` },
