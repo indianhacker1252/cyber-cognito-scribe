@@ -1866,6 +1866,7 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
           const stackMatch = affectedStack.some((t: string) => targetTech.some(tt => tt.includes(t.toLowerCase())));
           if (!stackMatch) continue;
 
+          const vc = feed.vulnerability_class || "sqli";
           const templatePayloads = ((feed.test_template as any)?.payloads || []) as string[];
           const extractedPayloads = (feed.extracted_payloads as string[]) || [];
           const allPayloads = [...new Set([...templatePayloads, ...extractedPayloads])].slice(0, 15);
@@ -1889,8 +1890,6 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
               continue;
             }
           }
-
-          const vc = feed.vulnerability_class || "sqli";
           let confirmed = false;
 
           for (const ep of (endpoints || []).slice(0, 8)) {
