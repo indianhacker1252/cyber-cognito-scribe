@@ -1757,8 +1757,6 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
         const sqlErrors = [/sql syntax/i, /ORA-\d+/i, /SQLSTATE/i, /pg_query/i, /unclosed quotation/i, /odbc.*error/i, /microsoft.*sql/i];
         if (sqlErrors.some(p => p.test(mb) && !p.test(bb))) {
           proven = true; proofType = "error_based"; mathBasis = "DB error string in mutated only (not in baseline)";
-        } else if (vf.mutated.status >= 500 && vf.baseline.status < 500) {
-          proven = true; proofType = "server_500_differential"; mathBasis = `Mutated returned ${vf.mutated.status} vs baseline ${vf.baseline.status}`;
         } else if (lenDiffPct > 0.15 && lenDiff > 200 && vf.mutated.status === 200) {
           proven = true; proofType = "boolean_differential"; mathBasis = `Body length differential: ${bbLen}b → ${mbLen}b (Δ${Math.round(lenDiffPct*100)}%)`;
         }
@@ -1781,11 +1779,7 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
         }
       }
 
-      // Generic fallback: 500-status differential on ANY vuln class = info disclosure
-      if (!proven && vf.mutated.status >= 500 && vf.baseline.status < 500) {
-        proven = true; proofType = "server_500_differential";
-        mathBasis = `Mutated ${vf.mutated.status} vs baseline ${vf.baseline.status} (payload-triggered server error)`;
-      }
+      // Status-only 500/byte-delta is no longer proof; proof requires content/browser/OOB evidence.
 
       if (!proven) details = `No deterministic proof for ${vf.vulnClass}`;
       else details = mathBasis;
