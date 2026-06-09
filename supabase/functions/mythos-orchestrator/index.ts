@@ -84,8 +84,22 @@ async function executePhase(db: any, run: any, phase: string, payload: any): Pro
     await log(`🧪 Nuclei-style template runner (OWASP Top 10 + CVEs, WAF-aware)`);
     const r = await call("template-runner", { targetId, scanRunId: runId }, 48000);
     await log(`Templates: ${r.data?.findings || 0} findings, WAF=${r.data?.waf?.vendor || "none"}`, { template: r.data });
+    return { done: false, nextPhase: "advanced-modules" };
+  }
+
+  if (phase === "advanced-modules") {
+    await log(`🧪 Advanced attack modules: biz-logic, auth-confusion, proto-pollution, AI-surface, differential, param-explorer, desync-v2`);
+    const mods = [
+      "business-logic-fuzzer", "auth-confusion-suite", "prototype-pollution-gadgets",
+      "ai-surface-attacker", "differential-oracle", "symbolic-param-explorer", "desync-smuggling-v2",
+    ];
+    const settled = await Promise.allSettled(mods.map(m => call(m, { targetId }, 42000)));
+    const summary: Record<string, any> = {};
+    settled.forEach((s, i) => { summary[mods[i]] = s.status === "fulfilled" ? (s.value.data ?? s.value) : { error: true }; });
+    await log(`Advanced modules done`, summary);
     return { done: false, nextPhase: "iter-1-chain" };
   }
+
 
   if (meta.kind === "iter" && meta.sub === "chain") {
     await db.from("mythos_runs").update({ iteration: meta.iter }).eq("id", runId);
