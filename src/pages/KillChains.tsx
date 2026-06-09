@@ -42,7 +42,7 @@ export default function KillChains() {
       supabase.from("attack_graph_nodes").select("id,node_type,label,capability_tags").eq("target_id", tid),
       supabase.from("attack_graph_edges").select("id,from_node,to_node,technique,cost").eq("target_id", tid),
     ]);
-    setChains((c.data || []) as Chain[]);
+    setChains(((c.data || []) as unknown) as Chain[]);
     setNodes((n.data || []) as NodeRow[]);
     setEdges((e.data || []) as EdgeRow[]);
   };
