@@ -2656,7 +2656,11 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
         for (const feed of intelFeeds) {
           if (isTimedOut()) break;
           const affectedStack = (feed.affected_tech_stack as string[]) || [];
-          const stackMatch = affectedStack.some((t: string) => targetTech.some((tt) => tt.includes(t.toLowerCase())));
+          const stackMatch =
+            affectedStack.some((t: string) => targetTech.some((tt) => tt.includes(t.toLowerCase()))) ||
+            // Also match if feed is for ASP.NET/IIS and target has IIS
+            (affectedStack.some((t: string) => /asp|iis|\.net/i.test(t)) &&
+              (techStack.server || "").toLowerCase().includes("iis"));
           if (!stackMatch) continue;
 
           const vc = feed.vulnerability_class || "sqli";
