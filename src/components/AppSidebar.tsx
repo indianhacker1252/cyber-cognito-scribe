@@ -1,4 +1,4 @@
-import { LayoutDashboard, Crosshair, Terminal, ShieldAlert, ClipboardCheck, Activity, Rss, Settings, ShieldOff, Swords, Brain, Crown, Package, ShieldCheck } from "lucide-react";
+import { LayoutDashboard, Crosshair, Terminal, ShieldAlert, ClipboardCheck, Activity, Rss, Settings, ShieldOff, Swords, Brain, Crown, Package, ShieldCheck, GitBranch } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
 import { useLocation } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
@@ -21,6 +21,7 @@ const navItems = [
   { title: "Neural Log", url: "/logs", icon: Terminal },
   { title: "Findings", url: "/findings", icon: ShieldAlert },
   { title: "OWASP Coverage", url: "/coverage", icon: ShieldCheck },
+  { title: "Kill Chains", url: "/kill-chains", icon: GitBranch },
   { title: "Approvals", url: "/approvals", icon: ClipboardCheck },
   { title: "System Health", url: "/system-health", icon: Activity },
   { title: "Intel Feed", url: "/intel-feed", icon: Rss },

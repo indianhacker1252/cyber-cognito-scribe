@@ -21,6 +21,7 @@ import AttackVisualization from "./pages/AttackVisualization";
 import MythosResults from "./pages/MythosResults";
 import AppPackages from "./pages/AppPackages";
 import OwaspCoverage from "./pages/OwaspCoverage";
+import KillChains from "./pages/KillChains";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -52,6 +53,7 @@ const App = () => (
                     <Route path="/mythos" element={<MythosResults />} />
                     <Route path="/app-packages" element={<AppPackages />} />
                     <Route path="/coverage" element={<OwaspCoverage />} />
+                    <Route path="/kill-chains" element={<KillChains />} />
                     <Route path="*" element={<NotFound />} />
                   </Routes>
                 </Layout>

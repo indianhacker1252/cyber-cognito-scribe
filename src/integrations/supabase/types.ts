@@ -377,6 +377,105 @@ export type Database = {
         }
         Relationships: []
       }
+      attack_graph_edges: {
+        Row: {
+          confidence: number
+          cost: number
+          created_at: string
+          evidence: Json
+          from_node: string
+          id: string
+          target_id: string
+          technique: string
+          to_node: string
+        }
+        Insert: {
+          confidence?: number
+          cost?: number
+          created_at?: string
+          evidence?: Json
+          from_node: string
+          id?: string
+          target_id: string
+          technique: string
+          to_node: string
+        }
+        Update: {
+          confidence?: number
+          cost?: number
+          created_at?: string
+          evidence?: Json
+          from_node?: string
+          id?: string
+          target_id?: string
+          technique?: string
+          to_node?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "attack_graph_edges_from_node_fkey"
+            columns: ["from_node"]
+            isOneToOne: false
+            referencedRelation: "attack_graph_nodes"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "attack_graph_edges_target_id_fkey"
+            columns: ["target_id"]
+            isOneToOne: false
+            referencedRelation: "target_workspaces"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "attack_graph_edges_to_node_fkey"
+            columns: ["to_node"]
+            isOneToOne: false
+            referencedRelation: "attack_graph_nodes"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      attack_graph_nodes: {
+        Row: {
+          capability_tags: string[]
+          created_at: string
+          id: string
+          label: string
+          metadata: Json
+          node_type: string
+          source_finding_id: string | null
+          target_id: string
+        }
+        Insert: {
+          capability_tags?: string[]
+          created_at?: string
+          id?: string
+          label: string
+          metadata?: Json
+          node_type: string
+          source_finding_id?: string | null
+          target_id: string
+        }
+        Update: {
+          capability_tags?: string[]
+          created_at?: string
+          id?: string
+          label?: string
+          metadata?: Json
+          node_type?: string
+          source_finding_id?: string | null
+          target_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "attack_graph_nodes_target_id_fkey"
+            columns: ["target_id"]
+            isOneToOne: false
+            referencedRelation: "target_workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       auth_profiles: {
         Row: {
           auth_type: string
@@ -1396,6 +1495,56 @@ export type Database = {
           templates_generated?: number | null
         }
         Relationships: []
+      }
+      kill_chains: {
+        Row: {
+          created_at: string
+          execution_result: Json | null
+          goal: string
+          id: string
+          node_path: string[]
+          severity: string
+          status: string
+          step_plan: Json
+          target_id: string
+          total_cost: number
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          execution_result?: Json | null
+          goal: string
+          id?: string
+          node_path: string[]
+          severity?: string
+          status?: string
+          step_plan: Json
+          target_id: string
+          total_cost: number
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          execution_result?: Json | null
+          goal?: string
+          id?: string
+          node_path?: string[]
+          severity?: string
+          status?: string
+          step_plan?: Json
+          target_id?: string
+          total_cost?: number
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "kill_chains_target_id_fkey"
+            columns: ["target_id"]
+            isOneToOne: false
+            referencedRelation: "target_workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       method_discoveries: {
         Row: {

@@ -84,8 +84,22 @@ async function executePhase(db: any, run: any, phase: string, payload: any): Pro
     await log(`🧪 Nuclei-style template runner (OWASP Top 10 + CVEs, WAF-aware)`);
     const r = await call("template-runner", { targetId, scanRunId: runId }, 48000);
     await log(`Templates: ${r.data?.findings || 0} findings, WAF=${r.data?.waf?.vendor || "none"}`, { template: r.data });
+    return { done: false, nextPhase: "advanced-modules" };
+  }
+
+  if (phase === "advanced-modules") {
+    await log(`🧪 Advanced attack modules: biz-logic, auth-confusion, proto-pollution, AI-surface, differential, param-explorer, desync-v2`);
+    const mods = [
+      "business-logic-fuzzer", "auth-confusion-suite", "prototype-pollution-gadgets",
+      "ai-surface-attacker", "differential-oracle", "symbolic-param-explorer", "desync-smuggling-v2",
+    ];
+    const settled = await Promise.allSettled(mods.map(m => call(m, { targetId }, 42000)));
+    const summary: Record<string, any> = {};
+    settled.forEach((s, i) => { summary[mods[i]] = s.status === "fulfilled" ? (s.value.data ?? s.value) : { error: true }; });
+    await log(`Advanced modules done`, summary);
     return { done: false, nextPhase: "iter-1-chain" };
   }
+
 
   if (meta.kind === "iter" && meta.sub === "chain") {
     await db.from("mythos_runs").update({ iteration: meta.iter }).eq("id", runId);
@@ -150,14 +164,20 @@ async function executePhase(db: any, run: any, phase: string, payload: any): Pro
       await call("exploit-chain-runner", { chainId: c.id, targetId }, 40000);
     }
 
-    // Decide next: more iterations or move to patch?
+    // Decide next: more iterations or synthesize kill-chains then patch?
     if (meta.iter! < run.max_iterations) {
-      // Stop early if no progress and we've done at least 2 iters
       if (debates === 0 && tp === 0 && meta.iter! >= 2) {
-        return { done: false, nextPhase: "patch", results: { early_stop: true } };
+        return { done: false, nextPhase: "kill-chain-synthesis", results: { early_stop: true } };
       }
       return { done: false, nextPhase: `iter-${meta.iter! + 1}-chain` };
     }
+    return { done: false, nextPhase: "kill-chain-synthesis" };
+  }
+
+  if (phase === "kill-chain-synthesis") {
+    await log(`⛓️ Synthesizing Kill-Chain Attack Graph`);
+    const r = await call("kill-chain-graph", { targetId }, 45000);
+    await log(`Kill-Chain Graph: ${r.data?.nodes || 0} nodes, ${r.data?.edges || 0} edges, ${r.data?.chains || 0} chains`, r.data);
     return { done: false, nextPhase: "patch" };
   }
 
