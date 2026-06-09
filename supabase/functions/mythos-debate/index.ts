@@ -480,7 +480,7 @@ State verdict + 1-line reason.`,
     } else if (probe1.diffReason === "stack trace exposed") {
       fpVerdict = "true_positive";
       confidence = 85;
-    } else if (probe1.xssUnescaped) {
+    } else if (probe1.xssUnescaped)|| probe1.diffReason?.includes("mutation #")) {
       if (bothAgreeFP) {
         fpVerdict = "true_positive";
         confidence = 70;
