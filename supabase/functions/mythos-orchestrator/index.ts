@@ -150,14 +150,20 @@ async function executePhase(db: any, run: any, phase: string, payload: any): Pro
       await call("exploit-chain-runner", { chainId: c.id, targetId }, 40000);
     }
 
-    // Decide next: more iterations or move to patch?
+    // Decide next: more iterations or synthesize kill-chains then patch?
     if (meta.iter! < run.max_iterations) {
-      // Stop early if no progress and we've done at least 2 iters
       if (debates === 0 && tp === 0 && meta.iter! >= 2) {
-        return { done: false, nextPhase: "patch", results: { early_stop: true } };
+        return { done: false, nextPhase: "kill-chain-synthesis", results: { early_stop: true } };
       }
       return { done: false, nextPhase: `iter-${meta.iter! + 1}-chain` };
     }
+    return { done: false, nextPhase: "kill-chain-synthesis" };
+  }
+
+  if (phase === "kill-chain-synthesis") {
+    await log(`⛓️ Synthesizing Kill-Chain Attack Graph`);
+    const r = await call("kill-chain-graph", { targetId }, 45000);
+    await log(`Kill-Chain Graph: ${r.data?.nodes || 0} nodes, ${r.data?.edges || 0} edges, ${r.data?.chains || 0} chains`, r.data);
     return { done: false, nextPhase: "patch" };
   }
 
