@@ -2587,6 +2587,7 @@ export type Database = {
           name: string
           status: Database["public"]["Enums"]["target_status"]
           updated_at: string
+          waf_profile: Json
         }
         Insert: {
           api_schema_url?: string | null
@@ -2606,6 +2607,7 @@ export type Database = {
           name: string
           status?: Database["public"]["Enums"]["target_status"]
           updated_at?: string
+          waf_profile?: Json
         }
         Update: {
           api_schema_url?: string | null
@@ -2625,6 +2627,7 @@ export type Database = {
           name?: string
           status?: Database["public"]["Enums"]["target_status"]
           updated_at?: string
+          waf_profile?: Json
         }
         Relationships: []
       }
@@ -2667,8 +2670,12 @@ export type Database = {
           proof_tier: string
           reachability_status: string | null
           remediation: string | null
+          request_raw: string | null
+          response_diff: Json | null
+          response_raw: string | null
           sensitive: boolean
           severity: Database["public"]["Enums"]["severity_level"]
+          source: string | null
           target_id: string
           title: string
           triage_reasoning: string | null
@@ -2691,8 +2698,12 @@ export type Database = {
           proof_tier?: string
           reachability_status?: string | null
           remediation?: string | null
+          request_raw?: string | null
+          response_diff?: Json | null
+          response_raw?: string | null
           sensitive?: boolean
           severity?: Database["public"]["Enums"]["severity_level"]
+          source?: string | null
           target_id: string
           title: string
           triage_reasoning?: string | null
@@ -2715,8 +2726,12 @@ export type Database = {
           proof_tier?: string
           reachability_status?: string | null
           remediation?: string | null
+          request_raw?: string | null
+          response_diff?: Json | null
+          response_raw?: string | null
           sensitive?: boolean
           severity?: Database["public"]["Enums"]["severity_level"]
+          source?: string | null
           target_id?: string
           title?: string
           triage_reasoning?: string | null
