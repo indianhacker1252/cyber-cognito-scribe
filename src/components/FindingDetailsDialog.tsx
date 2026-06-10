@@ -36,6 +36,10 @@ interface FindingLike {
   evidence?: any;
   request_data?: any;
   response_data?: any;
+  request_raw?: string | null;
+  response_raw?: string | null;
+  response_diff?: any;
+  source?: string | null;
   baseline_response?: any;
   mutated_response?: any;
   cve_ids?: string[] | null;
@@ -44,6 +48,7 @@ interface FindingLike {
   endpoint_id?: string | null;
   created_at?: string;
 }
+
 
 interface Props {
   open: boolean;
