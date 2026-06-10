@@ -252,9 +252,32 @@ Deno.serve(async (req) => {
         }).select("id").single();
         const sev = "high";
 
+        // Part A — also write directly to vulnerability_findings via central writer
+        // so the OWASP matrix + Findings page show this without depending on the
+        // promoter. (The promoter still runs as a backup for de-dup metadata.)
+        try {
+          const { recordFinding } = await import("../_shared/findings-writer.ts");
+          await recordFinding({
+            targetId,
+            endpointId: ep.id,
+            source: "param-brute-xss",
+            category: "xss",
+            severity: sev as any,
+            title,
+            description: evidence ? `Sink "${bestSink.name}" reflected verbatim in dangerous context on parameter '${pname}'.` : title,
+            payload: bestSink.value,
+            poc: `curl -i '${url}'`,
+            proofTier: "reflected",
+            evidence,
+            request: { method: "GET", url, headers: { "User-Agent": "CyberScope/1.0" } },
+            response: { status: res.status, body: res.body.slice(0, 16384) },
+          });
+        } catch (e) { console.error("recordFinding(xss) failed", e); }
+
         approvals++;
         if (ins?.id) findings.push({ approvalId: ins.id, endpoint: ep.url, param: pname, severity: sev });
         await log(supa, targetId, `${title} on ${ep.url}`, { endpointId: ep.id, param: pname, sink: bestSink?.name });
+
 
         // Move on to next endpoint after first confirmed reflection
         break;
