@@ -1,92 +1,139 @@
+# Why the last scan failed — evidence from the code
 
-# XBOW/Mythos-Beating Chain Exploitation Engine
+I traced your three complaints to concrete gaps in the deployed functions:
 
-Goal: stop testing vulns in isolation. Build a **graph-based kill-chain engine** that combines weak signals (info leak + open redirect + IDOR) into provable critical exploits, plus 5 modern attack modules that go beyond SQLi/XSS.
+1. **Dropped findings (Recon + ParamBrute):**
+   - `supabase/functions/recon-engine/index.ts` — zero references to `vulnerability_findings`. Leaked secrets (Google API keys, JWTs, .env) are logged into `scan_logs` only.
+   - `supabase/functions/param-bruteforce-xss/index.ts` — comment at line 5 says "the xss-reflection-promoter then auto-promotes". The promoter only runs if the reflection row exists with the exact shape it expects. If promotion fails, the 6 confirmed XSS sinks never reach `vulnerability_findings` → never reach `owasp_coverage` → never appear in the report matrix.
 
-## Part 1 — Kill-Chain Graph Engine (the core new capability)
+2. **`bllmerror` mass-crash:**
+   - `supabase/functions/_shared/llm.ts` catches only HTTP 402/429. There is **no concurrency limiter** anywhere. `EvolutionaryFuzzer`, `exploit-engine`, `vuln-scanner` and `mythos-*` all call `llmCall` in parallel `Promise.all` loops, so a single target can fan out 30–50 simultaneous Lovable AI calls. Gateway returns a non-HTTP `bllmerror` string which is not in the retry whitelist → caller treats it as fatal.
 
-Today `mythos-chainer` asks the LLM "propose chains" from a flat list — it misses non-obvious paths. Replace with a real **Attack Graph**:
+3. **WAF 403 wall:**
+   - `EvolutionaryFuzzer.ts` and `exploit-engine` re-issue the same mutation family after a 403. The LLM prompt does not include the previous response status, so the model never learns the target is WAF-protected and keeps emitting `<script>alert(1)</script>`-class payloads.
 
-- New table `attack_graph_nodes` (asset, endpoint, credential, token, capability, secret) and `attack_graph_edges` (precondition → postcondition, with required exploit).
-- New edge function `kill-chain-graph`:
-  1. Ingests every signal: findings, code_findings, oob_callbacks, leaked secrets, JWT decoded claims, discovered routes, auth_profiles, session_jars.
-  2. Models each as a node with **STRIDE capability tags** (Spoof / Tamper / Repudiate / InfoDisclose / DoS / EoP).
-  3. Runs **Dijkstra over exploit cost** to find shortest path from "anonymous attacker" → "admin RCE / PII dump / fund transfer".
-  4. Emits ranked chains (≤6 steps) with concrete request sequences.
-- Chains execute through existing `exploit-chain-runner` (already supports stateful cookie jar + var splicing).
-- Each successful chain auto-promotes to `proof_tier='exploited'` and creates a HITL approval with the full request transcript.
+4. **No request/response evidence in findings** — `vulnerability_findings.evidence` only stores `payload` + `status`. The full request line, headers, and response body diff are discarded, so PoCs aren't reproducible from the UI.
 
-## Part 2 — Five New Attack Modules (beyond SQLi/XSS)
+5. **"Basic VAPT only"** — `mythos-orchestrator` does call the new advanced modules but **only after** the main scan completes, and it does not pass discovered params/auth state into them. They re-discover from scratch and time out.
 
-Each is a new edge function wired into `mythos-orchestrator` and the graph engine.
+---
 
-### 1. `business-logic-fuzzer`
-Catches the bugs scanners miss: price tampering, negative-quantity, coupon stacking, workflow skipping (POST step 3 without step 1/2), tenant-id swap, timestamp replay, integer-overflow on money fields. Uses semantic-diff against baseline + LLM judge for "did state change unexpectedly".
+# Plan — what to build
 
-### 2. `auth-confusion-suite`
-- **JWT**: alg=none, key confusion (RS→HS), kid traversal, embedded-jwk injection, weak HMAC crack.
-- **OAuth**: redirect_uri loose-match, state-fixation, PKCE downgrade, scope upgrade via refresh, authorization-code replay.
-- **SAML**: XML signature wrapping, comment truncation.
-- **Session**: cookie tossing across subdomains, __Host- prefix bypass.
+## Part A — Stop losing findings (the root cause of "scan looks empty")
 
-### 3. `prototype-pollution-and-gadgets`
-Crawls JS bundles, identifies pollution sinks (`Object.assign`, `merge`, `_.set`), then loads a gadget chain database (jQuery, Lodash, Express) and synthesizes a payload that pivots pollution → XSS or RCE. Verifies in headless browser.
+### A1. Central writer module `_shared/findings-writer.ts`
+Single helper `recordFinding({targetId, scanLogId, category, severity, evidence, request, response, source})` that:
+- Inserts into `vulnerability_findings` with full request/response captured
+- Upserts the matching `owasp_coverage` row (so the matrix always reflects reality)
+- Inserts the request/response into `request_replays` for the Findings UI "Repeat" button
+- Returns the finding id so the caller can chain it into `attack_graph_nodes`
 
-### 4. `desync-and-smuggling-v2`
-Already have `smuggler`; extend with: HTTP/2 CRLF, h2c upgrade smuggling, TE.0/0.CL via CDNs (Cloudflare, Akamai, Fastly fingerprints), cache-key normalization attacks, websocket smuggling. Chains naturally with cache-poisoning → stored XSS.
+### A2. Wire it into the leaky modules
+- `recon-engine`: every `secret_found` hit (Google key, AWS key, JWT, .env, private key regex) → `recordFinding({category:'sensitive-data-exposure', severity:'high'})`.
+- `param-bruteforce-xss`: when reflection probe returns canary intact AND browser-verify confirms execution, write directly via `recordFinding` instead of relying on the promoter. Keep promoter as fallback.
+- `differential-oracle`, `symbolic-param-explorer`, `business-logic-fuzzer`, `auth-confusion-suite`, `prototype-pollution-gadgets`, `desync-smuggling-v2`, `ai-surface-attacker`: each currently logs to console — switch to `recordFinding`.
 
-### 5. `ai-surface-attacker` (new, nothing like it in XBOW today)
-For targets that expose LLM features (chatbots, search, copilots):
-- Indirect prompt injection via uploaded docs / web pages / email.
-- System-prompt extraction, tool-call hijacking, RAG poisoning.
-- Output-handler XSS (LLM responses rendered as HTML).
-- Model-extraction probes.
-Findings feed back into the graph as "agent compromise → arbitrary tool call".
+## Part B — Kill the `bllmerror` storm
 
-## Part 3 — Zero-Day Discovery Loop
+### B1. Concurrency-limited LLM gateway
+Patch `_shared/llm.ts`:
+- Add a module-level async semaphore (size 5) that gates every `llmCall`.
+- Catch `bllmerror`, `rate_limit`, `quota`, HTTP 402/429/503 → exponential backoff (1s, 2s, 4s, 8s) before falling through to next provider.
+- New `llmCallBatch(messages[], {concurrency:5})` helper so callers stop using `Promise.all`.
 
-Replace pure-payload fuzzing with **differential + symbolic** discovery:
+### B2. Refactor heavy callers
+- `EvolutionaryFuzzer`, `exploit-engine`, `mythos-chainer`, `mythos-debate`, `mythos-variant-gen` — replace `Promise.all(payloads.map(llmCall))` with `llmCallBatch`.
 
-- `differential-oracle`: send the same request to N similar endpoints; flag any whose response shape diverges (catches access-control bugs no payload can find).
-- `symbolic-param-explorer`: extract every param across the app, cluster by name/type, transplant params across endpoints (mass-assignment, hidden admin flags like `isAdmin=1`, `role=admin`, `debug=1`).
-- `mutation-from-experience`: the existing `experience_vault` already stores winning payloads — wire it into `EvolutionaryFuzzer` so the GA seeds new mutations from real prior wins per-vuln-class.
-- `variant-from-cve`: when `cve-version-matcher` flags a vulnerable library, `mythos-variant-gen` synthesizes a target-specific PoC instead of just reporting the CVE ID.
+## Part C — Adaptive WAF evasion
 
-## Part 4 — Proof Quality (so reports actually get paid)
+### C1. WAF gate inside the mutation loop
+`_shared/waf-detect.ts` already fingerprints (Cloudflare/Akamai/AWS WAF). Extend with:
+- `WafFeedback.observe(prevStatus, newStatus, prevLen, newLen)` → returns a tier: `none | soft-block | hard-403 | challenge-page`.
+- When tier ≠ `none`, the next LLM prompt receives a forced suffix:
+  > "WAF DETECTED (vendor=X, tier=Y). Last payload returned 403. For the next payload you MUST use one of: HTML-entity encoding, Unicode escape, JS template literals, SVG event handlers, double-URL-encoding, comment splitting, or case-mixed keywords. Do NOT repeat `<script>` / `onerror=` literally."
+- After 2 consecutive WAF blocks, switch the fuzzer to the SecLists WAF-bypass corpus (`SecListsLoader.loadWafBypass()`) for the next 10 payloads before resuming LLM.
 
-- All chain successes captured as **HAR + screen recording** via `headless-browser` (already deployed) + Playwright trace.
-- `evidence_packages` row links: graph path, every request/response, video, AI narrative, CVSS, suggested patch from `mythos-patcher`.
-- Strict gate: nothing reaches `bb-submit` without `proof_tier='exploited'` AND chain reproduced twice.
+### C2. Per-target WAF profile
+Persist detected vendor + working bypass families in `target_workspaces.waf_profile` (jsonb). Subsequent scans start from the known-good bypass set.
 
-## Architecture
+## Part D — Request/Response capture + replay
 
-```text
-recon → asset-scan → vuln-scanner ─┐
-auth-deep → authz-grapher ─────────┤
-mythos-codebase-ingest ────────────┼─► kill-chain-graph ─► exploit-chain-runner ─► evidence_packages ─► bb-submit
-business-logic-fuzzer ─────────────┤        ▲                                          (HITL approval)
-auth-confusion-suite ──────────────┤        │
-proto-pollution-gadgets ───────────┤   experience_vault feedback
-desync-smuggling-v2 ───────────────┤
-ai-surface-attacker ───────────────┘
-```
+### D1. Schema additions (`vulnerability_findings`)
+- `request_raw` text — full HTTP request line + headers + body
+- `response_raw` text — status, headers, body (≤32 KB)
+- `response_diff` jsonb — semantic diff vs baseline (length delta, new tokens, removed tokens, status change)
 
-## Deliverables
+### D2. Auto-mutation from captured traffic
+New `request-mutator` edge function:
+- Reads any `request_replays` row, generates 8 mutations (param tamper, type-juggle, verb-swap, header-injection, content-type swap, prototype-pollution param, ID enum, JWT alg swap).
+- Fires each through `request-repeater`, calls `semantic-diff` against the baseline, and feeds confirmed anomalies into `recordFinding` and the kill-chain graph.
+- Runs automatically after every successful finding (chain reaction = more confirmed bugs from one seed).
 
-1. Migration: `attack_graph_nodes`, `attack_graph_edges`, indexes, RLS + GRANTs.
-2. Edge functions: `kill-chain-graph`, `business-logic-fuzzer`, `auth-confusion-suite`, `prototype-pollution-and-gadgets`, `desync-and-smuggling-v2`, `ai-surface-attacker`, `differential-oracle`, `symbolic-param-explorer`.
-3. Orchestrator wiring: new phase `chain-synthesis` after triage; budget = 4 min per target on worker (no edge 50s limit).
-4. UI: new `/kill-chains` page with graph visualisation (react-flow) showing nodes, exploited edges in red, ranked chains list with "Re-run" button.
-5. Findings page: new chip `source=kill-chain` and `source=ai-surface`.
+## Part E — Make the advanced modules actually run with context
 
-## Out of scope (this pass)
+### E1. Orchestrator wiring (`mythos-orchestrator`)
+Two changes:
+- Move `advanced-modules` phase to run **in parallel** with `vuln-scanner` (not after), but only after `recon` + `auth-deep` so they receive discovered endpoints, params, session jars, and auth profiles.
+- Pass a shared `ScanContext` blob (endpoints, params, cookies, JWTs, tech-stack fingerprint) to every advanced module so they don't re-discover.
 
-- Mobile/binary exploit chains.
-- Network-layer attacks (we stay HTTP/HTTPS).
-- Persistent C2; chain runner stays request/response.
+### E2. OWASP coverage fairness
+- `template-runner` already does a "fairness pass" — extend it so every OWASP-2021 category (A01–A10) gets at least N=3 active probes per target, even if earlier modules reported nothing. Currently A04 (Insecure Design) and A08 (Software & Data Integrity) silently skip on most targets.
 
-## Confirm before I build
+### E3. Kill-chain auto-execution
+After every new finding lands, enqueue a `kill-chain-graph` job. When the graph produces a chain with `cost < threshold` AND every edge has `proof_tier='verified'+`, auto-fire `exploit-chain-runner`, capture HAR + screenshot, write the evidence_package, and submit for HITL approval.
 
-1. OK to add the `/kill-chains` graph page (uses react-flow, ~150KB)?
-2. Should `ai-surface-attacker` run by default, or opt-in per target (some programs forbid AI-feature testing)?
-3. Default chain depth cap 6 steps OK, or do you want unbounded with cost budget only?
+## Part F — UI surfacing
+
+### F1. `Findings.tsx`
+- New "Request" / "Response" tabs in the finding details dialog rendering `request_raw` / `response_raw` with syntax highlighting.
+- "Re-run mutations" button → fires `request-mutator` for this finding.
+- New badge `source=recon-secret` and `source=param-brute-xss` so the dropped categories are visible.
+
+### F2. `OwaspCoverage.tsx`
+- Show fairness-pass status per category (probes_attempted / probes_required) so the user sees A04/A08 actually being tested.
+
+---
+
+# Technical details
+
+**New / changed files:**
+
+Edge functions:
+- `_shared/findings-writer.ts` (new) — central recordFinding helper
+- `_shared/llm.ts` (patch) — semaphore(5), bllmerror catch, exp-backoff
+- `_shared/waf-detect.ts` (extend) — WafFeedback tier + prompt suffix
+- `recon-engine/index.ts` (patch) — call recordFinding on secrets
+- `param-bruteforce-xss/index.ts` (patch) — call recordFinding on confirmed sinks
+- `differential-oracle`, `symbolic-param-explorer`, `business-logic-fuzzer`, `auth-confusion-suite`, `prototype-pollution-gadgets`, `desync-smuggling-v2`, `ai-surface-attacker` — switch console logs to recordFinding
+- `request-mutator/index.ts` (new) — auto-mutate every confirmed finding
+- `template-runner/index.ts` (patch) — strict OWASP A01–A10 fairness ≥3 probes
+- `mythos-orchestrator/index.ts` (patch) — parallel advanced phase + ScanContext
+- `exploit-engine`, `EvolutionaryFuzzer`, `mythos-chainer`, `mythos-debate`, `mythos-variant-gen` — switch to `llmCallBatch`
+
+Frontend:
+- `src/services/EvolutionaryFuzzer.ts` (patch) — concurrency limit + WAF feedback wiring
+- `src/pages/Findings.tsx` (patch) — Request/Response tabs, Re-run mutations
+- `src/components/FindingDetailsDialog.tsx` (patch) — raw request/response panes
+- `src/pages/OwaspCoverage.tsx` (patch) — fairness-pass progress
+
+Migration:
+- `vulnerability_findings`: add `request_raw text`, `response_raw text`, `response_diff jsonb`, `source text`
+- `target_workspaces`: add `waf_profile jsonb default '{}'`
+- index on `vulnerability_findings(target_id, source, created_at desc)`
+
+**Verification:**
+1. Trigger a scan on a WAF-protected target → check `_shared/llm.ts` logs show "semaphore wait" messages and 0 `bllmerror` crashes.
+2. After scan: `select source, count(*) from vulnerability_findings group by source` must show `recon-secret`, `param-brute-xss`, `differential-oracle`, etc.
+3. Findings UI: open any finding → Request and Response tabs populated; "Re-run mutations" produces ≥1 new finding for at least 20% of seeds.
+4. OWASP page: all 10 categories show ≥3 probes attempted.
+
+# Out of scope (this pass)
+- Replacing Lovable AI with a self-hosted model
+- Multi-hour persistent worker (would need the Docker worker path)
+- Mobile / binary chains
+
+# Confirm before I build
+1. OK to add `request_raw` / `response_raw` columns (cap 32 KB each, can grow DB size on big scans)?
+2. Semaphore size 5 OK, or do you want 3 (safer) / 10 (faster)?
+3. Should `request-mutator` auto-fire on every confirmed finding, or only on HIGH/CRITICAL to control LLM spend?

@@ -120,3 +120,42 @@ export function isStrictXssReflection(body: string, payload: string): boolean {
   // Must contain at least one of the unescaped HTML control chars to actually fire
   return /[<>"']/.test(payload) && new RegExp(payload.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).test(ctx);
 }
+
+// ───── WAF Feedback Loop (Part C) ─────
+// Observe consecutive responses and decide how strongly the next payload must mutate.
+export type WafTier = "none" | "soft-block" | "hard-403" | "challenge";
+export interface WafObservation {
+  tier: WafTier;
+  consecutive: number;
+  vendor?: string;
+  promptSuffix: string;
+}
+export class WafFeedback {
+  private consecutive = 0;
+  private vendor: string;
+  constructor(vendor?: string) { this.vendor = vendor || "Unknown"; }
+  observe(prevStatus: number, newStatus: number, prevLen: number, newLen: number, body?: string): WafObservation {
+    let tier: WafTier = "none";
+    if (newStatus === 403 || newStatus === 406 || newStatus === 451) tier = "hard-403";
+    else if (newStatus === 429 || newStatus === 503) tier = "soft-block";
+    else if (body && /captcha|just a moment|cloudflare|attention required|challenge/i.test(body)) tier = "challenge";
+    else if (prevStatus === 200 && newStatus >= 400) tier = "soft-block";
+    else if (prevLen > 0 && Math.abs(newLen - prevLen) / Math.max(prevLen, 1) < 0.02 && newStatus >= 400) tier = "soft-block";
+    if (tier === "none") this.consecutive = 0;
+    else this.consecutive++;
+    return { tier, consecutive: this.consecutive, vendor: this.vendor, promptSuffix: this.buildSuffix(tier) };
+  }
+  reset() { this.consecutive = 0; }
+  shouldSwitchToBypassCorpus() { return this.consecutive >= 2; }
+  private buildSuffix(tier: WafTier): string {
+    if (tier === "none") return "";
+    return `\n\n[WAF FEEDBACK] vendor=${this.vendor} tier=${tier} consecutive=${this.consecutive}.\n` +
+      `The previous payload was blocked. For the next payload you MUST use one of: ` +
+      `HTML-entity encoding, Unicode escape (\\u00XX), JS template literals, SVG event handlers ` +
+      `(<svg/onload=...>, <math><mtext>), double-URL-encoding, comment splitting (/**/, <!---->), ` +
+      `case-mixed keywords (ScRiPt), or chunked/fragmented body. ` +
+      `DO NOT repeat literal <script>, onerror=, javascript:, OR 1=1. ` +
+      `Generate a payload that defeats a ${this.vendor} WAF.`;
+  }
+}
+

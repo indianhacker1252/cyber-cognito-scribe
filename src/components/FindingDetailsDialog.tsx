@@ -36,6 +36,10 @@ interface FindingLike {
   evidence?: any;
   request_data?: any;
   response_data?: any;
+  request_raw?: string | null;
+  response_raw?: string | null;
+  response_diff?: any;
+  source?: string | null;
   baseline_response?: any;
   mutated_response?: any;
   cve_ids?: string[] | null;
@@ -44,6 +48,7 @@ interface FindingLike {
   endpoint_id?: string | null;
   created_at?: string;
 }
+
 
 interface Props {
   open: boolean;
@@ -339,11 +344,20 @@ export default function FindingDetailsDialog({ open, onOpenChange, finding }: Pr
 
             <TabsContent value="request" className="space-y-2">
               <div className="flex justify-end gap-1">
-                <Button size="sm" variant="outline" className="font-mono text-[10px] gap-1" onClick={() => copy("Request", buildHttpRequest(finding.request_data, payload))}>
+                <Button size="sm" variant="outline" className="font-mono text-[10px] gap-1" onClick={async () => {
+                  if (!finding.id) return;
+                  toast.info("Firing mutation suite…");
+                  const { data, error } = await supabase.functions.invoke("request-mutator", { body: { findingId: finding.id } });
+                  if (error) toast.error(error.message);
+                  else toast.success(`Mutated ${data?.mutated ?? 0} requests, ${data?.confirmed ?? 0} confirmed bugs`);
+                }}>
+                  <Wand2 className="h-3 w-3" /> Re-run mutations
+                </Button>
+                <Button size="sm" variant="outline" className="font-mono text-[10px] gap-1" onClick={() => copy("Request", finding.request_raw || buildHttpRequest(finding.request_data, payload))}>
                   <Copy className="h-3 w-3" /> Copy
                 </Button>
               </div>
-              <pre className="text-xs font-mono text-cyber-cyan bg-black/40 p-3 rounded border border-border overflow-auto whitespace-pre-wrap max-h-[55vh]">{buildHttpRequest(finding.request_data, payload)}</pre>
+              <pre className="text-xs font-mono text-cyber-cyan bg-black/40 p-3 rounded border border-border overflow-auto whitespace-pre-wrap max-h-[55vh]">{finding.request_raw || buildHttpRequest(finding.request_data, payload)}</pre>
               {finding.baseline_response && (
                 <>
                   <h4 className="text-[10px] font-mono text-muted-foreground mt-3">Baseline Response (no payload)</h4>
@@ -354,12 +368,13 @@ export default function FindingDetailsDialog({ open, onOpenChange, finding }: Pr
 
             <TabsContent value="response" className="space-y-2">
               <div className="flex justify-end gap-1">
-                <Button size="sm" variant="outline" className="font-mono text-[10px] gap-1" onClick={() => copy("Response", buildHttpResponse(finding.response_data || finding.mutated_response))}>
+                <Button size="sm" variant="outline" className="font-mono text-[10px] gap-1" onClick={() => copy("Response", finding.response_raw || buildHttpResponse(finding.response_data || finding.mutated_response))}>
                   <Copy className="h-3 w-3" /> Copy
                 </Button>
               </div>
-              <pre className="text-xs font-mono text-cyber-amber bg-black/40 p-3 rounded border border-border overflow-auto whitespace-pre-wrap max-h-[55vh]">{buildHttpResponse(finding.response_data || finding.mutated_response)}</pre>
+              <pre className="text-xs font-mono text-cyber-amber bg-black/40 p-3 rounded border border-border overflow-auto whitespace-pre-wrap max-h-[55vh]">{finding.response_raw || buildHttpResponse(finding.response_data || finding.mutated_response)}</pre>
             </TabsContent>
+
 
             <TabsContent value="remediation" className="space-y-2">
               <pre className="text-xs font-mono text-card-foreground bg-muted/20 p-3 rounded border border-border whitespace-pre-wrap">{finding.remediation || (finding.evidence as any)?.remediation || "Apply input validation, contextual output encoding, parameterized queries, and least-privilege configuration. Add a WAF rule covering this payload pattern. Re-test after deploying the fix."}</pre>
