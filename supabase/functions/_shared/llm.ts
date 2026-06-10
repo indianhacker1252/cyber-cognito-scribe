@@ -1,23 +1,18 @@
-// Centralized LLM call with automatic fallback chain.
-// Order: Lovable AI Gateway → OpenAI → Gemini direct → null (caller falls back to heuristic).
-// Catches 402 (credits exhausted) and 429 (rate limit) and tries the next provider.
-// All successful outputs are run through `sanitizeAiOutput` so downstream
-// fuzzers never see stray ```fences or leading prose (Tier 1 #3).
+// Centralized LLM call with concurrency limit (semaphore=5),
+// automatic fallback chain (Lovable → OpenAI → Gemini → Anthropic),
+// exponential backoff on rate-limit/quota/bllmerror, and output sanitization.
 import { sanitizeAiOutput } from "./exploit-guards.ts";
 
-
 export interface LlmMessage { role: "system" | "user" | "assistant"; content: string }
-
 export interface LlmCallOptions {
   messages: LlmMessage[];
   temperature?: number;
   maxTokens?: number;
-  /** preferred Lovable model id, e.g. "google/gemini-2.5-flash" */
   model?: string;
-  /** if true, request JSON object response */
   json?: boolean;
+  /** Hint for WAF-aware retry — appended to system prompt automatically. */
+  wafHint?: string;
 }
-
 export interface LlmResult {
   ok: boolean;
   text: string;
@@ -29,6 +24,26 @@ const LOVABLE_KEY = Deno.env.get("LOVABLE_API_KEY");
 const OPENAI_KEY = Deno.env.get("OPENAI_API_KEY");
 const GEMINI_KEY = Deno.env.get("GEMINI_API_KEY");
 const ANTHROPIC_KEY = Deno.env.get("ANTHROPIC_API_KEY");
+
+// ───── Concurrency limiter (Part B) ─────
+const MAX_CONCURRENT = 5;
+let inflight = 0;
+const queue: Array<() => void> = [];
+async function acquire(): Promise<void> {
+  if (inflight < MAX_CONCURRENT) { inflight++; return; }
+  await new Promise<void>(res => queue.push(res));
+  inflight++;
+}
+function release() {
+  inflight--;
+  const next = queue.shift();
+  if (next) next();
+}
+
+function isThrottle(s: string): boolean {
+  return /bllmerror|rate.?limit|quota|exhausted|HTTP\s*(402|429|503)/i.test(s);
+}
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 async function callLovable(opts: LlmCallOptions): Promise<LlmResult> {
   if (!LOVABLE_KEY) return { ok: false, text: "", provider: "lovable", error: "no key" };
@@ -44,11 +59,13 @@ async function callLovable(opts: LlmCallOptions): Promise<LlmResult> {
       }),
       signal: AbortSignal.timeout(30000),
     });
-    if (r.status === 402 || r.status === 429) return { ok: false, text: "", provider: "lovable", error: `HTTP ${r.status}` };
     if (!r.ok) return { ok: false, text: "", provider: "lovable", error: `HTTP ${r.status}` };
     const j = await r.json();
     return { ok: true, text: j.choices?.[0]?.message?.content || "", provider: "lovable" };
-  } catch (e) { return { ok: false, text: "", provider: "lovable", error: e instanceof Error ? e.message : "err" }; }
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "err";
+    return { ok: false, text: "", provider: "lovable", error: msg };
+  }
 }
 
 async function callOpenAI(opts: LlmCallOptions): Promise<LlmResult> {
@@ -123,31 +140,66 @@ async function callAnthropic(opts: LlmCallOptions): Promise<LlmResult> {
 }
 
 /**
- * Run the fallback chain. Returns the first successful provider's response.
- * Caller must handle ok=false (heuristic fallback).
+ * Run the fallback chain under a global semaphore.
+ * On throttle (bllmerror / 429 / 402 / 503) backs off 1s,2s,4s before next provider.
  */
 export async function llmCall(opts: LlmCallOptions): Promise<LlmResult> {
-  const errors: string[] = [];
-  for (const fn of [callLovable, callOpenAI, callGeminiDirect, callAnthropic]) {
-    const out = await fn(opts);
-    if (out.ok && out.text) {
-      // T1 #3 — sanitize markdown fences / prose before returning.
-      const cleaned = opts.json ? out.text : sanitizeAiOutput(out.text);
-      return { ...out, text: cleaned };
+  // WAF hint is injected into system prompt
+  const messages = opts.wafHint
+    ? [{ role: "system" as const, content: opts.wafHint }, ...opts.messages]
+    : opts.messages;
+  const reqOpts: LlmCallOptions = { ...opts, messages };
+
+  await acquire();
+  try {
+    const errors: string[] = [];
+    const providers = [callLovable, callOpenAI, callGeminiDirect, callAnthropic];
+    for (let i = 0; i < providers.length; i++) {
+      let backoff = 1000;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const out = await providers[i](reqOpts);
+        if (out.ok && out.text) {
+          const cleaned = opts.json ? out.text : sanitizeAiOutput(out.text);
+          return { ...out, text: cleaned };
+        }
+        errors.push(`${out.provider}:${out.error || "empty"}`);
+        if (isThrottle(out.error || "")) {
+          await sleep(backoff);
+          backoff *= 2;
+          continue; // retry same provider
+        }
+        break; // non-throttle error → next provider
+      }
     }
-    errors.push(`${out.provider}:${out.error || "empty"}`);
+    return { ok: false, text: "", provider: "none", error: errors.join(" | ") };
+  } finally {
+    release();
   }
-  return { ok: false, text: "", provider: "none", error: errors.join(" | ") };
 }
 
+/** Batch helper — runs N concurrently (default 5, same as global limit). */
+export async function llmCallBatch(
+  items: LlmCallOptions[],
+  concurrency = MAX_CONCURRENT,
+): Promise<LlmResult[]> {
+  const out: LlmResult[] = new Array(items.length);
+  let idx = 0;
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (true) {
+      const i = idx++;
+      if (i >= items.length) return;
+      out[i] = await llmCall(items[i]);
+    }
+  });
+  await Promise.all(workers);
+  return out;
+}
 
-/** Convenience: parse JSON from llm response, returns null on failure. */
+/** Convenience: parse JSON from llm response. */
 export function tryParseJson<T = any>(text: string): T | null {
   if (!text) return null;
-  // strip markdown code fences if present
   const cleaned = text.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "").trim();
   try { return JSON.parse(cleaned) as T; } catch { /* ignore */ }
-  // try extracting first {...} block
   const m = cleaned.match(/\{[\s\S]*\}/);
   if (m) { try { return JSON.parse(m[0]) as T; } catch { /* ignore */ } }
   return null;
