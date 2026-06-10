@@ -786,7 +786,28 @@ serve(async (req) => {
 
     if (jsAnalysis.potentialSecrets.length > 0) {
       await log(db, targetId, taskId, "result", `🔴 SECRETS FOUND IN JS: ${jsAnalysis.potentialSecrets.map(s => `${s.type} in ${s.file}`).join(", ")}`);
+      // Part A — push secrets into the global findings queue (was previously dropped)
+      try {
+        const { recordFinding } = await import("../_shared/findings-writer.ts");
+        for (const sec of jsAnalysis.potentialSecrets) {
+          const sev = /private key|AWS|secret/i.test(sec.type) ? "critical" : "high";
+          await recordFinding({
+            targetId,
+            source: "recon-secret",
+            category: "secret-exposure",
+            severity: sev as any,
+            title: `${sec.type} exposed in JavaScript bundle`,
+            description: `Static analysis of ${sec.file} extracted a literal ${sec.type}. Even read-only keys allow quota abuse, billing fraud, and pivoting; private keys allow full impersonation.`,
+            payload: sec.snippet,
+            poc: `curl -s https://${domain}/${sec.file} | grep -E '${sec.type.replace(/[^a-z0-9]/gi, ".")}'`,
+            proofTier: "exploited", // literal secret in public asset is self-proving
+            evidence: { file: sec.file, type: sec.type, snippet: sec.snippet },
+            scanLogId: taskId,
+          });
+        }
+      } catch (e) { console.error("recordFinding(secret) failed", e); }
     }
+
 
     // ── Step 6: AI Analysis ──
     await log(db, targetId, taskId, "thought", `Running AI attack surface analysis on collected recon data`);
