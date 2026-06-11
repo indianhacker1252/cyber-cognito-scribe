@@ -5,6 +5,11 @@
 // Both learn from outcomes and self-correlate.
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import {
+  AiCreditsExhaustedError,
+  isCreditExhaustionResponse,
+  markCreditsExhausted,
+} from "../_shared/ai-credits.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -16,8 +21,13 @@ const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
 
+// Per-instance fast-fail: once we see one 402, every subsequent callAgent in
+// this isolate throws immediately so we don't fan-out 30 more LLM calls.
+let CREDITS_DEAD = false;
+
 async function callAgent(role: "A" | "B", systemPrompt: string, userMsg: string, history: any[]): Promise<string> {
-  if (!LOVABLE_API_KEY) return `[${role}] (no LLM key) — heuristic mode`;
+  if (CREDITS_DEAD) throw new AiCreditsExhaustedError();
+  if (!LOVABLE_API_KEY) return "";
   try {
     const r = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
       method: "POST",
@@ -32,12 +42,30 @@ async function callAgent(role: "A" | "B", systemPrompt: string, userMsg: string,
       }),
       signal: AbortSignal.timeout(15000),
     });
-    if (!r.ok) return `[${role}] LLM error ${r.status}`;
+    if (!r.ok) {
+      let body = "";
+      try { body = await r.text(); } catch { /* ignore */ }
+      if (isCreditExhaustionResponse(r.status, body)) {
+        CREDITS_DEAD = true;
+        throw new AiCreditsExhaustedError(`HTTP ${r.status}: ${body.slice(0, 120)}`);
+      }
+      // Non-fatal upstream error — return empty so callers can skip safely.
+      return "";
+    }
     const d = await r.json();
-    return d.choices?.[0]?.message?.content?.trim() || `[${role}] (empty)`;
+    return d.choices?.[0]?.message?.content?.trim() || "";
   } catch (e) {
-    return `[${role}] error: ${e instanceof Error ? e.message : "unknown"}`;
+    if (e instanceof AiCreditsExhaustedError) throw e;
+    return "";
   }
+}
+
+/** Guard: never let an LLM-error string become a payload. */
+function isInvalidPayload(p: string): boolean {
+  if (!p || p.length < 1) return true;
+  if (/^\s*\[[A-Z]\]\s/.test(p)) return true;
+  if (/^\s*(LLM error|AI credits|bllmerror|\(empty\)|\(no LLM key\)|error:)/i.test(p)) return true;
+  return false;
 }
 
 // ── Safety gate ──────────────────────────────────────────────────────────────
