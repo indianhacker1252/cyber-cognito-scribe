@@ -364,10 +364,24 @@ serve(async (req) => {
       [],
     );
     transcript.push({ agent: "B", round: 2, msg: b1 });
-    let proposedPayload = b1
+    let proposedPayload = (b1 || "")
       .split("\n")[0]
       .trim()
       .replace(/^[`"']|[`"']$/g, "");
+
+    // 🚫 Refuse to fire LLM-error sentinel strings (e.g. "[B] LLM error 402") as payloads.
+    if (isInvalidPayload(proposedPayload)) {
+      await db.from("scan_logs").insert({
+        target_id: targetId,
+        log_type: "info",
+        message: `🪫 Debate aborted — Agent B returned no valid payload (LLM unavailable or empty).`,
+        metadata: { run_id: runId, phase: "debate-no-payload", raw: b1?.slice(0, 80) },
+      });
+      return new Response(JSON.stringify({ aborted: "no_payload", fpVerdict: "inconclusive", confidence: 0 }), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
 
     // Safety re-prompt
     let safetyCheck = isSafePayload(proposedPayload);
@@ -877,6 +891,17 @@ Propose a CLEAN-SLATE attack with a DIFFERENT vuln class.`;
       { headers: { ...corsHeaders, "Content-Type": "application/json" } },
     );
   } catch (e) {
+    if (e instanceof AiCreditsExhaustedError) {
+      try {
+        const dbErr = createClient(SUPABASE_URL, SERVICE_KEY);
+        const body = await req.clone().json().catch(() => ({}));
+        await markCreditsExhausted(dbErr, { targetId: body?.targetId, runId: body?.runId, phase: "debate" });
+      } catch { /* ignore */ }
+      return new Response(JSON.stringify({ aborted: "ai_credits_exhausted" }), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
     console.error("mythos-debate error:", e);
     return new Response(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }), {
       status: 200,
