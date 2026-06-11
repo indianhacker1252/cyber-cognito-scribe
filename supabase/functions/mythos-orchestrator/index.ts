@@ -6,6 +6,7 @@
 // Phases: init → sast → iter-N-chain → iter-N-variant → iter-N-debate → iter-N+1-chain → … → patch → done
 // Always returns 200 OK.
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { areCreditsRecentlyExhausted } from "../_shared/ai-credits.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -226,6 +227,23 @@ Deno.serve(async (req) => {
     if (!run) return ok({ ok: false, error: "run not found" });
     if (run.status === "complete" || run.status === "failed") {
       return ok({ ok: true, message: `run already ${run.status}` });
+    }
+
+    // 🪫 If a recent credit-exhaustion sentinel exists for this target, pause cleanly
+    // instead of fanning out 6×N more LLM-burning debates.
+    if (await areCreditsRecentlyExhausted(db, run.target_id, 10)) {
+      await db.from("mythos_runs").update({
+        status: "paused", current_phase: phase,
+        thought_log: (run.thought_log || []).concat([{
+          ts: new Date().toISOString(), phase, msg: "Paused: AI credits exhausted. Resume after topping up.",
+        }]),
+      }).eq("id", runId);
+      await db.from("scan_logs").insert({
+        target_id: run.target_id, log_type: "error",
+        message: `⏸️ Mythos run paused — AI credits exhausted. Add credits in Workspace → Usage and re-trigger.`,
+        metadata: { runId, phase, kind: "ai_credits_exhausted" },
+      } as any);
+      return ok({ ok: true, runId, status: "paused", reason: "ai_credits_exhausted" });
     }
 
     const out = await executePhase(db, run, phase, body);
