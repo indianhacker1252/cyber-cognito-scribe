@@ -5,6 +5,11 @@
 // Both learn from outcomes and self-correlate.
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import {
+  AiCreditsExhaustedError,
+  isCreditExhaustionResponse,
+  markCreditsExhausted,
+} from "../_shared/ai-credits.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -16,8 +21,13 @@ const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
 
+// Per-instance fast-fail: once we see one 402, every subsequent callAgent in
+// this isolate throws immediately so we don't fan-out 30 more LLM calls.
+let CREDITS_DEAD = false;
+
 async function callAgent(role: "A" | "B", systemPrompt: string, userMsg: string, history: any[]): Promise<string> {
-  if (!LOVABLE_API_KEY) return `[${role}] (no LLM key) — heuristic mode`;
+  if (CREDITS_DEAD) throw new AiCreditsExhaustedError();
+  if (!LOVABLE_API_KEY) return "";
   try {
     const r = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
       method: "POST",
@@ -32,12 +42,30 @@ async function callAgent(role: "A" | "B", systemPrompt: string, userMsg: string,
       }),
       signal: AbortSignal.timeout(15000),
     });
-    if (!r.ok) return `[${role}] LLM error ${r.status}`;
+    if (!r.ok) {
+      let body = "";
+      try { body = await r.text(); } catch { /* ignore */ }
+      if (isCreditExhaustionResponse(r.status, body)) {
+        CREDITS_DEAD = true;
+        throw new AiCreditsExhaustedError(`HTTP ${r.status}: ${body.slice(0, 120)}`);
+      }
+      // Non-fatal upstream error — return empty so callers can skip safely.
+      return "";
+    }
     const d = await r.json();
-    return d.choices?.[0]?.message?.content?.trim() || `[${role}] (empty)`;
+    return d.choices?.[0]?.message?.content?.trim() || "";
   } catch (e) {
-    return `[${role}] error: ${e instanceof Error ? e.message : "unknown"}`;
+    if (e instanceof AiCreditsExhaustedError) throw e;
+    return "";
   }
+}
+
+/** Guard: never let an LLM-error string become a payload. */
+function isInvalidPayload(p: string): boolean {
+  if (!p || p.length < 1) return true;
+  if (/^\s*\[[A-Z]\]\s/.test(p)) return true;
+  if (/^\s*(LLM error|AI credits|bllmerror|\(empty\)|\(no LLM key\)|error:)/i.test(p)) return true;
+  return false;
 }
 
 // ── Safety gate ──────────────────────────────────────────────────────────────
@@ -336,10 +364,24 @@ serve(async (req) => {
       [],
     );
     transcript.push({ agent: "B", round: 2, msg: b1 });
-    let proposedPayload = b1
+    let proposedPayload = (b1 || "")
       .split("\n")[0]
       .trim()
       .replace(/^[`"']|[`"']$/g, "");
+
+    // 🚫 Refuse to fire LLM-error sentinel strings (e.g. "[B] LLM error 402") as payloads.
+    if (isInvalidPayload(proposedPayload)) {
+      await db.from("scan_logs").insert({
+        target_id: targetId,
+        log_type: "info",
+        message: `🪫 Debate aborted — Agent B returned no valid payload (LLM unavailable or empty).`,
+        metadata: { run_id: runId, phase: "debate-no-payload", raw: b1?.slice(0, 80) },
+      });
+      return new Response(JSON.stringify({ aborted: "no_payload", fpVerdict: "inconclusive", confidence: 0 }), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
 
     // Safety re-prompt
     let safetyCheck = isSafePayload(proposedPayload);
@@ -849,6 +891,17 @@ Propose a CLEAN-SLATE attack with a DIFFERENT vuln class.`;
       { headers: { ...corsHeaders, "Content-Type": "application/json" } },
     );
   } catch (e) {
+    if (e instanceof AiCreditsExhaustedError) {
+      try {
+        const dbErr = createClient(SUPABASE_URL, SERVICE_KEY);
+        const body = await req.clone().json().catch(() => ({}));
+        await markCreditsExhausted(dbErr, { targetId: body?.targetId, runId: body?.runId, phase: "debate" });
+      } catch { /* ignore */ }
+      return new Response(JSON.stringify({ aborted: "ai_credits_exhausted" }), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
     console.error("mythos-debate error:", e);
     return new Response(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }), {
       status: 200,
