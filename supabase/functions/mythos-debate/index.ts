@@ -7,7 +7,7 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import {
   AiCreditsExhaustedError,
-  isCreditExhaustionResponse,
+  isCreditExhaustionResponse, areCreditsRecentlyExhausted,
   markCreditsExhausted,
 } from "../_shared/ai-credits.ts";
 
@@ -334,10 +334,21 @@ async function probe(
 
 // ── Main handler ─────────────────────────────────────────────────────────────
 serve(async (req) => {
+  
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
+  const db = createClient(SUPABASE_URL, SERVICE_KEY);
   try {
-    const { targetId, runId, endpointUrl, paramName, paramValue, vulnClassHint } = await req.json();
+    const body = await req.json();
+    const { targetId, runId, endpointUrl, paramName, paramValue, vulnClassHint } = body;
     if (!targetId || !endpointUrl || !paramName) throw new Error("targetId, endpointUrl, paramName required");
+
+    if (await areCreditsRecentlyExhausted(db, targetId, 10)) {
+      return new Response(JSON.stringify({ aborted: "ai_credits_exhausted" }), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
 
     const db = createClient(SUPABASE_URL, SERVICE_KEY);
     const transcript: any[] = [];
@@ -522,7 +533,7 @@ State verdict + 1-line reason.`,
     } else if (probe1.diffReason === "stack trace exposed") {
       fpVerdict = "true_positive";
       confidence = 85;
-    } else if (probe1.xssUnescaped)|| probe1.diffReason?.includes("mutation #")) {
+    } else if (probe1.xssUnescaped || probe1.diffReason?.includes("mutation #")) {
       if (bothAgreeFP) {
         fpVerdict = "true_positive";
         confidence = 70;
