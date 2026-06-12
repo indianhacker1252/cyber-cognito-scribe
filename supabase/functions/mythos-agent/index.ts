@@ -43,6 +43,9 @@ serve(async (req) => {
     };
 
     let totalFindings = 0, totalChains = 0, totalVariants = 0;
+    const successSteps = chainEvidence.filter(e => e.interesting).length;
+if (successSteps > 0 && chainEvidence.length > 0) {
+  await log(...`Chain confirmed`...);
 
     // Phase 1: SAST (if repo provided)
     if (repoUrl) {
