@@ -122,6 +122,15 @@ select job_type,status,count(*) from scan_jobs group by 1,2;
 -- must include mythos_step/template/browser/kali/mutate/chain rows
 ```
 
+## 1.5 Cron/worker heartbeat guard
+
+Because `mythos-orchestrator` depends on `scan_jobs`, the app must verify the worker is actually picking jobs. Add:
+
+- `scan-job-worker` heartbeat log every run.
+- stuck-job detector: `queued` for >3 minutes → Neural Log error.
+- System Health badge: `worker active`, `worker stale`, `queued backlog`.
+- Manual "Run worker now" action for admins.
+
 ---
 
 # Phase 2 — fix AI routing: Lovable AI + Ollama learn from each other
@@ -154,6 +163,8 @@ Worker endpoints:
 - `GET /health` returns `ollama: true`, models, tools.
 - `POST /ai` calls Ollama `/api/chat`.
 - `POST /learn` stores successful payloads/tool outputs locally and returns embeddings/tags.
+
+Use Ollama's documented local API (`/api/chat`) behind the worker proxy; the browser/cloud backend must never try to call the user's `localhost` directly.
 
 ## 2.3 Co-learning loop
 
@@ -209,6 +220,21 @@ The Kali worker should expose:
 | `POST /ai` | Local Ollama chat/mutation/classification |
 | `POST /sandbox` | Read-only PoC execution |
 | `POST /parse` | Convert raw tool output into structured findings |
+
+## 3.2.1 Dynamic capability discovery
+
+Do not hardcode `nuclei|ffuf|sqlmap` in the cloud dispatcher. Worker `/health` should return:
+
+```json
+{
+  "tools": ["nuclei", "ffuf", "sqlmap", "dalfox", "katana", "httpx"],
+  "endpoints": ["/run", "/browser", "/sandbox", "/ai", "/apkscan"],
+  "ollama": { "ok": true, "models": ["qwen2.5-coder", "llama3.1"] },
+  "browser": { "ok": true, "engine": "chromium" }
+}
+```
+
+The planner should choose only capabilities the worker reports as available.
 
 ## 3.3 Tool set
 
