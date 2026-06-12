@@ -2,7 +2,10 @@
 // Writes a single sentinel scan_log row that other functions can poll.
 
 export class AiCreditsExhaustedError extends Error {
-  constructor(msg = "AI credits exhausted") {
+  status: number = 402;
+  constructor(msg = "AI credits exhausted", status = 402) {
+    super(msg);
+    this.status = status;
     super(msg);
     this.name = "AiCreditsExhaustedError";
   }
@@ -59,5 +62,13 @@ export async function areCreditsRecentlyExhausted(
     return false;
   } catch {
     return false;
+  }
+}
+
+/** Check credits and throw if exhausted. Helper for LLM call sites. */
+export async function checkCreditsAndFailFast(db: any, targetId?: string | null) {
+  if (!db || !targetId) return;
+  if (await areCreditsRecentlyExhausted(db, targetId, 10)) {
+    throw new AiCreditsExhaustedError("AI credits exhausted (cached sentinel)");
   }
 }

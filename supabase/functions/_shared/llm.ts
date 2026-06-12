@@ -1,6 +1,7 @@
 // Centralized LLM call with concurrency limit (semaphore=5),
 // automatic fallback chain (Lovable → OpenAI → Gemini → Anthropic),
 // exponential backoff on rate-limit/quota/bllmerror, and output sanitization.
+import { AiCreditsExhaustedError, isCreditExhaustionResponse, markCreditsExhausted, areCreditsRecentlyExhausted, checkCreditsAndFailFast } from "./ai-credits.ts";
 import { sanitizeAiOutput } from "./exploit-guards.ts";
 
 export interface LlmMessage { role: "system" | "user" | "assistant"; content: string }
@@ -12,6 +13,10 @@ export interface LlmCallOptions {
   json?: boolean;
   /** Hint for WAF-aware retry — appended to system prompt automatically. */
   wafHint?: string;
+  db?: any;
+  targetId?: string;
+  runId?: string;
+  phase?: string;
 }
 export interface LlmResult {
   ok: boolean;
@@ -41,7 +46,7 @@ function release() {
 }
 
 function isThrottle(s: string): boolean {
-  return /bllmerror|rate.?limit|quota|exhausted|HTTP\s*(402|429|503)/i.test(s);
+  return /rate.?limit|HTTP\s*(429|503)/i.test(s);
 }
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
