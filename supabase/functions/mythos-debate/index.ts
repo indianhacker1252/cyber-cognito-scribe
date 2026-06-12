@@ -334,7 +334,6 @@ async function probe(
 
 // ── Main handler ─────────────────────────────────────────────────────────────
 serve(async (req) => {
-  
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
   const db = createClient(SUPABASE_URL, SERVICE_KEY);
   try {
@@ -349,11 +348,8 @@ serve(async (req) => {
       });
     }
 
-
-    const db = createClient(SUPABASE_URL, SERVICE_KEY);
     const transcript: any[] = [];
     const history: any[] = [];
-
     const sysA = `You are Agent A — black-hat recon analyst. You analyze HTTP parameters and hypothesize what vulnerability classes (SQLi, XSS, SSRF, IDOR, RCE, SSTI, LFI, etc) might apply. Be SPECIFIC, terse (≤80 words). Talk to Agent B as a teammate.`;
     const sysB = `You are Agent B — black-hat exploit strategist. You propose CONCRETE payloads given a hypothesis. Be SPECIFIC (raw payload), terse (≤80 words). Talk to Agent A as a teammate.`;
 
@@ -677,7 +673,7 @@ Propose a CLEAN-SLATE attack with a DIFFERENT vuln class.`;
 
       // Score this mutation
       const sql_m = SQL_ERROR_RX.test(mProbe.bodySnippet);
-      let mv: typeof fpVerdict = "false_positive";
+      let mv: any = "false_positive";
       let mc = 60;
       if (mProbe.status === 0 || mProbe.baselineStatus === 0) { mv = "inconclusive"; mc = 0; }
       else if (mProbe.diffReason === "sensitive data pattern matched") { mv = "true_positive"; mc = 95; }

@@ -1,7 +1,7 @@
-import { areCreditsRecentlyExhausted } from "../_shared/ai-credits.ts";
 // Pillar 2: Autonomous exploit-chain discoverer
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { areCreditsRecentlyExhausted } from "../_shared/ai-credits.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -10,13 +10,12 @@ const corsHeaders = {
 };
 
 serve(async (req) => {
-  
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
-  const db_val = db; // cleaned
   try {
-    const body = await req.json();
-    const { targetId, runId } = body;
+    const { targetId, runId } = await req.json();
     if (!targetId) throw new Error("targetId required");
+
+    const db = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 
     if (await areCreditsRecentlyExhausted(db, targetId, 10)) {
       return new Response(JSON.stringify({ chainsCount: 0, skipped: true, reason: "credits_exhausted" }), {
@@ -24,14 +23,6 @@ serve(async (req) => {
       });
     }
 
-    if (!targetId) throw new Error("targetId required");
-
-    const db = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
-    const db = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
-    const { areCreditsRecentlyExhausted } from "../_shared/ai-credits.ts";
-    if (await areCreditsRecentlyExhausted(db, targetId, 10)) {
-      return new Response(JSON.stringify({ chainsCount: 0, skipped: true, reason: "credits_exhausted" }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
-    }
     const [findings, endpoints, codeFindings, pending] = await Promise.all([
       db
         .from("vulnerability_findings")
