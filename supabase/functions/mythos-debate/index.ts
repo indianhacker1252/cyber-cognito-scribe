@@ -7,7 +7,7 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import {
   AiCreditsExhaustedError,
-  isCreditExhaustionResponse,
+  isCreditExhaustionResponse, areCreditsRecentlyExhausted,
   markCreditsExhausted,
 } from "../_shared/ai-credits.ts";
 
@@ -335,14 +335,21 @@ async function probe(
 // ── Main handler ─────────────────────────────────────────────────────────────
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
+  const db = createClient(SUPABASE_URL, SERVICE_KEY);
   try {
-    const { targetId, runId, endpointUrl, paramName, paramValue, vulnClassHint } = await req.json();
+    const body = await req.json();
+    const { targetId, runId, endpointUrl, paramName, paramValue, vulnClassHint } = body;
     if (!targetId || !endpointUrl || !paramName) throw new Error("targetId, endpointUrl, paramName required");
 
-    const db = createClient(SUPABASE_URL, SERVICE_KEY);
+    if (await areCreditsRecentlyExhausted(db, targetId, 10)) {
+      return new Response(JSON.stringify({ aborted: "ai_credits_exhausted" }), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
     const transcript: any[] = [];
     const history: any[] = [];
-
     const sysA = `You are Agent A — black-hat recon analyst. You analyze HTTP parameters and hypothesize what vulnerability classes (SQLi, XSS, SSRF, IDOR, RCE, SSTI, LFI, etc) might apply. Be SPECIFIC, terse (≤80 words). Talk to Agent B as a teammate.`;
     const sysB = `You are Agent B — black-hat exploit strategist. You propose CONCRETE payloads given a hypothesis. Be SPECIFIC (raw payload), terse (≤80 words). Talk to Agent A as a teammate.`;
 
@@ -522,7 +529,7 @@ State verdict + 1-line reason.`,
     } else if (probe1.diffReason === "stack trace exposed") {
       fpVerdict = "true_positive";
       confidence = 85;
-    } else if (probe1.xssUnescaped)|| probe1.diffReason?.includes("mutation #")) {
+    } else if (probe1.xssUnescaped || probe1.diffReason?.includes("mutation #")) {
       if (bothAgreeFP) {
         fpVerdict = "true_positive";
         confidence = 70;
@@ -666,7 +673,7 @@ Propose a CLEAN-SLATE attack with a DIFFERENT vuln class.`;
 
       // Score this mutation
       const sql_m = SQL_ERROR_RX.test(mProbe.bodySnippet);
-      let mv: typeof fpVerdict = "false_positive";
+      let mv: any = "false_positive";
       let mc = 60;
       if (mProbe.status === 0 || mProbe.baselineStatus === 0) { mv = "inconclusive"; mc = 0; }
       else if (mProbe.diffReason === "sensitive data pattern matched") { mv = "true_positive"; mc = 95; }
