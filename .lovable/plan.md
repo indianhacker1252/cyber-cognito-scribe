@@ -12,12 +12,13 @@ This is not a "payload quality" problem first. The implementation is fragmented:
 | Main scan button | `Targets.tsx` calls `recon-engine`, `advanced-fuzzer`, drift, then optionally `mythos-agent` | It does **not** start the resumable `mythos-orchestrator`; it still fires older `mythos-agent` in places. |
 | Resumable orchestrator | `mythos-orchestrator` supports phases: asset scan, templates, advanced modules, chain, variant, debate, kill-chain synthesis | It only runs when a `scan_jobs` row of `job_type='mythos_step'` exists. Recent jobs show only `drift_canary` and `exploit`; no `mythos_step`, so the orchestrator is not actually driving scans. |
 | Scan worker | `scan-job-worker` routes `mythos_step → mythos-orchestrator`, `mutate → request-mutator` | It only picks `status='queued'`; no global pause/credit handling at worker level, no Kali/local tool routing jobs. |
+| Background execution | Many modules write to Neural Log | They are fire-and-forget, so the UI has no task state, progress bar, or failure surface. If `scan-job-worker`/cron does not run, queued phases remain invisible. |
 | Chaining UI | `KillChains.tsx` can build graph and show chains | `Execute` creates dummy steps with `url: "{{base}}"`, so chain execution cannot perform real attack paths. |
 | Chain executor | `exploit-chain-runner` can do multi-step stateful requests with extraction/cookie jar | It needs real steps; current KillChains UI does not translate graph steps into executable HTTP requests. |
 | Request mutator | `request-mutator` parses captured raw HTTP requests and mutates them | It only works if findings have `request_raw`; many older/direct insert paths still insert `hard_evidence` only, not raw request/response. |
 | External worker | Docker reference has nuclei, ffuf, sqlmap, Playwright, sandbox, APK scan | Dispatcher only supports `/run` for `nuclei|ffuf|sqlmap`; Playwright/APK/sandbox are not unified into the worker dispatcher or orchestrator. |
 | Ollama/local AI | Settings page has an Ollama provider field | `_shared/llm.ts` never reads `ai_provider_config`; no Ollama provider is actually called. |
-| Kali tools | Docker reference is Debian-based with a few tools | There is no Kali install profile, no tool capability handshake, no automatic tool planner, no result parser back into findings. |
+| Kali tools | Docker reference is Debian-based with a few tools | There is no Kali install profile, no dynamic tool capability handshake, no automatic tool planner, no result parser back into findings. |
 
 ## Root cause
 
@@ -48,6 +49,7 @@ Add a `scanner_capabilities` health view in System Health:
 - Browser automation: available / missing
 - OOB callback collector: available
 - Orchestrator: last run / current phase / queued jobs
+- Job worker/cron: last heartbeat, picked jobs, stuck queued jobs
 - Kill-chain graph: nodes / edges / executable chains
 
 ## 0.2 Wiring audit logs
@@ -59,6 +61,17 @@ At scan start, write one Neural Log banner:
 ```
 
 No more silent fallback.
+
+## 0.3 Background task visibility
+
+Every fire-and-forget module must create a visible task/log row before it starts and update completion/failure:
+
+- `module_started`
+- `module_progress`
+- `module_completed`
+- `module_failed`
+
+The UI should show these in Neural Log and System Health so the user can tell whether an engine is running, queued, skipped, or dead.
 
 ---
 
