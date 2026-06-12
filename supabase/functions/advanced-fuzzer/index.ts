@@ -95,7 +95,12 @@ const FUZZ_GRAMMARS: Record<string, string[]> = {
 function mutate(seed: string): string[] {
   const variants: string[] = [];
   // Case toggle
-  variants.push(seed.split("").map((c, i) => (i % 2 ? c.toUpperCase() : c.toLowerCase())).join(""));
+  variants.push(
+    seed
+      .split("")
+      .map((c, i) => (i % 2 ? c.toUpperCase() : c.toLowerCase()))
+      .join(""),
+  );
   // Comment injection (SQL/JS)
   variants.push(seed.replace(/ /g, "/**/"));
   // Double URL encode
@@ -125,19 +130,23 @@ async function fuzzEndpoint(
   url: string,
   vulnClass: string,
   payloads: string[],
-  strategy: string
+  strategy: string,
 ): Promise<FuzzResult[]> {
   const results: FuzzResult[] = [];
 
   // Baseline
-  let baselineStatus = 0, baselineLen = 0, baselineMs = 0;
+  let baselineStatus = 0,
+    baselineLen = 0,
+    baselineMs = 0;
   try {
     const t0 = Date.now();
     const r = await safeFetch(url, { method: "GET", headers: { "User-Agent": "CyberScope-ProFuzz/1.0" } }, 5000);
     baselineMs = Date.now() - t0;
     baselineStatus = r.status;
     baselineLen = (await r.text()).length;
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
 
   for (const payload of payloads) {
     if (timeLeft() < 4000) break;
@@ -160,26 +169,35 @@ async function fuzzEndpoint(
 
       const anomaly = timeAnomaly || statusAnomaly || bodyAnomaly || errLeak;
       const signal: FuzzResult["signal"] =
-        timeAnomaly || errLeak ? "high"
-        : statusAnomaly ? "medium"
-        : bodyAnomaly ? "low"
-        : "none";
+        timeAnomaly || errLeak ? "high" : statusAnomaly ? "medium" : bodyAnomaly ? "low" : "none";
 
       results.push({
-        url: probeUrl, vulnClass, payload, strategy,
-        baselineStatus, probeStatus: r.status,
+        url: probeUrl,
+        vulnClass,
+        payload,
+        strategy,
+        baselineStatus,
+        probeStatus: r.status,
         bodyDeltaPct: Number((delta * 100).toFixed(2)),
         responseTimeMs: ms,
-        anomaly, signal,
+        anomaly,
+        signal,
         notes: anomaly
           ? `${timeAnomaly ? "TIME-based" : ""}${errLeak ? " ERROR-leak" : ""}${statusAnomaly ? " STATUS-shift" : ""}${bodyAnomaly ? " BODY-delta" : ""}`.trim()
           : "no anomaly",
       });
     } catch (e) {
       results.push({
-        url: probeUrl, vulnClass, payload, strategy,
-        baselineStatus, probeStatus: 0, bodyDeltaPct: 0, responseTimeMs: 0,
-        anomaly: false, signal: "none",
+        url: probeUrl,
+        vulnClass,
+        payload,
+        strategy,
+        baselineStatus,
+        probeStatus: 0,
+        bodyDeltaPct: 0,
+        responseTimeMs: 0,
+        anomaly: false,
+        signal: "none",
         notes: `error: ${(e as Error).message}`,
       });
     }
@@ -191,7 +209,7 @@ async function fuzzEndpoint(
 async function testCveTemplates(
   db: ReturnType<typeof createClient>,
   targetId: string,
-  endpoints: Array<{ url: string }>
+  endpoints: Array<{ url: string }>,
 ): Promise<{ tested: number; confirmed: number; failed: number; details: Array<Record<string, unknown>> }> {
   const { data: feeds } = await db
     .from("intel_feeds")
@@ -202,25 +220,30 @@ async function testCveTemplates(
 
   if (!feeds || feeds.length === 0) {
     await db.from("scan_logs").insert({
-      target_id: targetId, log_type: "info",
+      target_id: targetId,
+      log_type: "info",
       message: `📡 Intel templates: 0 available in intel_feeds — run Intel Sync first.`,
     });
     return { tested: 0, confirmed: 0, failed: 0, details: [] };
   }
 
   await db.from("scan_logs").insert({
-    target_id: targetId, log_type: "action",
+    target_id: targetId,
+    log_type: "action",
     message: `📡 Testing ${feeds.length} CVE templates from intel_feeds against ${Math.min(endpoints.length, 3)} live endpoints`,
     metadata: { templateCount: feeds.length, endpointCount: Math.min(endpoints.length, 3) },
   });
 
   const details: Array<Record<string, unknown>> = [];
-  let tested = 0, confirmed = 0, failed = 0;
+  let tested = 0,
+    confirmed = 0,
+    failed = 0;
 
   for (const feed of feeds) {
     if (timeLeft() < 5000) {
       await db.from("scan_logs").insert({
-        target_id: targetId, log_type: "info",
+        target_id: targetId,
+        log_type: "info",
         message: `⏱️ Template testing halted at ${tested}/${feeds.length} — time budget exhausted.`,
       });
       break;
@@ -228,7 +251,8 @@ async function testCveTemplates(
     const payloads = (feed.extracted_payloads as string[] | null) || [];
     if (payloads.length === 0) {
       await db.from("scan_logs").insert({
-        target_id: targetId, log_type: "info",
+        target_id: targetId,
+        log_type: "info",
         message: `⊘ [${feed.vulnerability_class || "unknown"}] "${(feed.title || "").slice(0, 80)}" — no payloads in template, skipped`,
         metadata: { feedId: feed.id, source: feed.source, sourceUrl: feed.source_url },
       });
@@ -250,15 +274,22 @@ async function testCveTemplates(
         const errLeak = /SQL syntax|stack trace|Exception|ORA-\d|MySQL|PostgreSQL/i.test(body);
         const matched = r.status >= 500 || errLeak;
         const reason = matched
-          ? (errLeak ? "error-leak in body" : `5xx status (${r.status})`)
+          ? errLeak
+            ? "error-leak in body"
+            : `5xx status (${r.status})`
           : `no-anomaly (${r.status})`;
         perEndpoint.push({ url: ep.url, status: r.status, matched, reason });
 
         if (matched) {
-          templatePassed = true; confirmed++;
+          templatePassed = true;
+          confirmed++;
           details.push({
-            cveTitle: feed.title, vulnClass: feed.vulnerability_class,
-            endpoint: ep.url, status: r.status, payload, severity: feed.severity,
+            cveTitle: feed.title,
+            vulnClass: feed.vulnerability_class,
+            endpoint: ep.url,
+            status: r.status,
+            payload,
+            severity: feed.severity,
             sourceUrl: feed.source_url,
           });
           await db.from("vulnerability_findings").insert({
@@ -277,7 +308,12 @@ async function testCveTemplates(
         }
       } catch (e) {
         failed++;
-        perEndpoint.push({ url: ep.url, status: 0, matched: false, reason: `network: ${(e as Error).message.slice(0, 40)}` });
+        perEndpoint.push({
+          url: ep.url,
+          status: 0,
+          matched: false,
+          reason: `network: ${(e as Error).message.slice(0, 40)}`,
+        });
       }
     }
 
@@ -285,12 +321,17 @@ async function testCveTemplates(
     const icon = templatePassed ? "✅" : "❌";
     const resultType: "result" | "info" = templatePassed ? "result" : "info";
     await db.from("scan_logs").insert({
-      target_id: targetId, log_type: resultType,
+      target_id: targetId,
+      log_type: resultType,
       message: `${icon} [${feed.vulnerability_class || "unknown"}] "${(feed.title || "").slice(0, 80)}" — ${templatePassed ? "MATCH" : "no-match"} on ${perEndpoint.length} endpoints`,
       metadata: {
-        feedId: feed.id, severity: feed.severity, source: feed.source,
-        sourceUrl: feed.source_url, payload: payloads[0]?.slice(0, 200),
-        perEndpoint, templatePassed,
+        feedId: feed.id,
+        severity: feed.severity,
+        source: feed.source,
+        sourceUrl: feed.source_url,
+        payload: payloads[0]?.slice(0, 200),
+        perEndpoint,
+        templatePassed,
       },
     });
   }
@@ -304,26 +345,37 @@ Deno.serve(async (req) => {
   try {
     const { targetId } = await req.json().catch(() => ({}));
     if (!targetId) {
-      return new Response(JSON.stringify({ ok: false, error: "targetId required" }),
-        { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 200 });
+      return new Response(JSON.stringify({ ok: false, error: "targetId required" }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+        status: 200,
+      });
     }
 
     const db = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 
     const { data: target } = await db.from("target_workspaces").select("*").eq("id", targetId).single();
     if (!target) {
-      return new Response(JSON.stringify({ ok: false, error: "target not found" }),
-        { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 200 });
+      return new Response(JSON.stringify({ ok: false, error: "target not found" }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+        status: 200,
+      });
     }
 
-    const { data: endpoints } = await db.from("discovered_endpoints").select("url, method").eq("target_id", targetId).limit(25);
+    const { data: endpoints } = await db
+      .from("discovered_endpoints")
+      .select("url, method")
+      .eq("target_id", targetId)
+      .limit(25);
     if (!endpoints || endpoints.length === 0) {
-      return new Response(JSON.stringify({ ok: false, error: "no endpoints — run recon first" }),
-        { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 200 });
+      return new Response(JSON.stringify({ ok: false, error: "no endpoints — run recon first" }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+        status: 200,
+      });
     }
 
     await db.from("scan_logs").insert({
-      target_id: targetId, log_type: "info",
+      target_id: targetId,
+      log_type: "info",
       message: `🚀 Pro-Level Fuzzer engaged on ${endpoints.length} endpoints (${Object.keys(FUZZ_GRAMMARS).length} strategies)`,
     });
 
@@ -339,12 +391,12 @@ Deno.serve(async (req) => {
         allResults.push(...r);
         summary[vc] = summary[vc] || { total: 0, anomalies: 0 };
         summary[vc].total += r.length;
-        summary[vc].anomalies += r.filter(x => x.anomaly).length;
+        summary[vc].anomalies += r.filter((x) => x.anomaly).length;
       }
     }
 
     // Round 2: genetic mutation on top-signal payloads
-    const topSignals = allResults.filter(r => r.signal === "high" || r.signal === "medium").slice(0, 15);
+    const topSignals = allResults.filter((r) => r.signal === "high" || r.signal === "medium").slice(0, 15);
     for (const seed of topSignals) {
       if (timeLeft() < 5000) break;
       const variants = mutate(seed.payload);
@@ -356,7 +408,7 @@ Deno.serve(async (req) => {
     const cveReport = await testCveTemplates(db, targetId, endpoints);
 
     // Persist high-signal anomalies as findings
-    const anomalies = allResults.filter(r => r.signal === "high");
+    const anomalies = allResults.filter((r) => r.signal === "high");
     for (const a of anomalies.slice(0, 30)) {
       await db.from("vulnerability_findings").insert({
         target_id: targetId,
@@ -370,23 +422,58 @@ Deno.serve(async (req) => {
         triage_reasoning: `Strategy=${a.strategy}, vuln=${a.vulnClass}, signal=${a.signal}`,
       });
     }
+    // After the vulnerability_findings.insert() call for anomalies:
+    for (const a of anomalies.slice(0, 30)) {
+      const { data: inserted } = await db
+        .from("vulnerability_findings")
+        .insert({
+          target_id: targetId,
+          title: `[Pro-Fuzz] ${a.vulnClass} anomaly via ${a.strategy}`,
+          severity: a.signal === "high" ? "high" : "medium",
+          payload: a.payload,
+          description: `Pro-level fuzzer detected ${a.notes} on ${a.url}. Status ${a.probeStatus}, ${a.bodyDeltaPct}% body delta, ${a.responseTimeMs}ms.`,
+          confidence_score: a.signal === "high" ? 75 : 55,
+          confidence_level: a.signal === "high" ? "high" : "medium",
+          validation_status: "fuzzer_anomaly",
+          triage_reasoning: `Strategy=${a.strategy}, vuln=${a.vulnClass}, signal=${a.signal}`,
+        })
+        .select("id")
+        .single();
 
+      // ADD THIS — fire exploit engine immediately
+      if (inserted?.id) {
+        fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/exploit-engine`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ findingId: inserted.id, targetId }),
+        }).catch(console.error);
+      }
+    }
     await db.from("scan_logs").insert({
-      target_id: targetId, log_type: "result",
+      target_id: targetId,
+      log_type: "result",
       message: `✅ Pro-Fuzz complete — ${allResults.length} probes, ${anomalies.length} high-signal anomalies | 📡 Templates: ${cveReport.tested} tested, ${cveReport.confirmed} ✅ matched, ${cveReport.failed} ❌ no-match`,
       metadata: { summary, cveReport },
     });
 
-    return new Response(JSON.stringify({
-      ok: true,
-      totalProbes: allResults.length,
-      anomalies: anomalies.length,
-      summary,
-      cveReport,
-      topResults: allResults.filter(r => r.anomaly).slice(0, 20),
-    }), { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 200 });
+    return new Response(
+      JSON.stringify({
+        ok: true,
+        totalProbes: allResults.length,
+        anomalies: anomalies.length,
+        summary,
+        cveReport,
+        topResults: allResults.filter((r) => r.anomaly).slice(0, 20),
+      }),
+      { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 200 },
+    );
   } catch (err) {
-    return new Response(JSON.stringify({ ok: false, error: (err as Error).message }),
-      { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 200 });
+    return new Response(JSON.stringify({ ok: false, error: (err as Error).message }), {
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+      status: 200,
+    });
   }
 });
