@@ -58,7 +58,20 @@ if (successSteps > 0 && chainEvidence.length > 0) {
         await append("sast", `SAST failed: ${JSON.stringify(r.data).slice(0, 200)}`);
       }
     }
+const debatePhaseKey = `debate-${i}-${runId}`;
+const { data: alreadyRunning } = await db.from("scan_logs")
+  .select("id").eq("target_id", targetId)
+  .like("message", `%${debatePhaseKey}%`).limit(1);
 
+if (alreadyRunning && alreadyRunning.length > 0) {
+  await append(`iter-${i}-debate`, "⚠️ Debate phase already running — skipping duplicate");
+  continue;
+}
+await db.from("scan_logs").insert({
+  target_id: targetId, log_type: "info",
+  message: `debate-lock:${debatePhaseKey}`,
+  metadata: { run_id: runId },
+});
     // Phase 2: iterative chain + variant + debate loop
     for (let i = 1; i <= maxIterations; i++) {
       await db.from("mythos_runs").update({ iteration: i }).eq("id", runId);
