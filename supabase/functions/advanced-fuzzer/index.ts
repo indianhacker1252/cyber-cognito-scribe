@@ -250,13 +250,25 @@ async function testCveTemplates(
     }
     const payloads = (feed.extracted_payloads as string[] | null) || [];
     if (payloads.length === 0) {
+      const FALLBACKS: Record<string, string[]> = {
+        sqli: ["' OR '1'='1", "1 AND SLEEP(3)--", "' UNION SELECT NULL,NULL--"],
+        rxss: ["<svg onload=alert(1)>", '"><script>alert(1)</script>'],
+        ssrf: ["http://169.254.169.254/latest/meta-data/", "http://127.0.0.1:22"],
+        ssti: ["{{7*7}}", "${7*7}", "<%= 7*7 %>"],
+        lfi: ["../../../../etc/passwd", "....//....//etc/passwd"],
+        cmdi: ["; id", "| whoami", "$(id)"],
+        "path-traversal": ["../../../../etc/passwd", "..%2f..%2f..%2fetc%2fpasswd"],
+        xxe: ["<?xml version='1.0'?><!DOCTYPE x [<!ENTITY xxe SYSTEM 'file:///etc/passwd'>]><x>&xxe;</x>"],
+        "auth-bypass": ["' OR '1'='1", "admin'--", "' OR 1=1--"],
+      };
+      const vc = (feed.vulnerability_class || "").toLowerCase();
+      const synth = FALLBACKS[vc] || FALLBACKS["sqli"];
+      payloads.push(...synth);
       await db.from("scan_logs").insert({
         target_id: targetId,
         log_type: "info",
-        message: `⊘ [${feed.vulnerability_class || "unknown"}] "${(feed.title || "").slice(0, 80)}" — no payloads in template, skipped`,
-        metadata: { feedId: feed.id, source: feed.source, sourceUrl: feed.source_url },
+        message: `🧬 [${vc}] "${(feed.title || "").slice(0, 60)}" — no payloads, synthesized ${synth.length} from class`,
       });
-      continue;
     }
 
     let templatePassed = false;
@@ -266,7 +278,16 @@ async function testCveTemplates(
       if (timeLeft() < 4000) break;
       const payload = payloads[0];
       const sep = ep.url.includes("?") ? "&" : "?";
-      const probeUrl = `${ep.url}${sep}q=${encodeURIComponent(payload)}`;
+      const { data: epParams } = await db.from("discovered_endpoints").select("parameters").eq("url", ep.url).single();
+      const params = Object.keys((epParams?.parameters as Record<string, string>) || {});
+      const testParams = params.length > 0 ? params.slice(0, 3) : ["q", "id", "search"];
+
+      for (const paramName of testParams) {
+        const u = new URL(ep.url);
+        u.searchParams.set(paramName, payload);
+        const probeUrl = u.toString();
+        // ... rest of the test
+      }
       try {
         const r = await safeFetch(probeUrl, { headers: { "User-Agent": "CyberScope-CVE/1.0" } }, 5000);
         const body = await r.text().catch(() => "");
