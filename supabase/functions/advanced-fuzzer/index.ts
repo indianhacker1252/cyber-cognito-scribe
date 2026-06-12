@@ -2,7 +2,7 @@ import { corsHeaders } from "https://esm.sh/@supabase/supabase-js@2.95.0/cors";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.95.0";
 
 const SCAN_START = Date.now();
-const MAX_MS = 50000;
+const MAX_MS = 480000;
 const timeLeft = () => MAX_MS - (Date.now() - SCAN_START);
 
 async function safeFetch(url: string, opts: RequestInit = {}, ms = 6000): Promise<Response> {
