@@ -64,7 +64,7 @@ async function callLovable(opts: LlmCallOptions): Promise<LlmResult> {
       }),
       signal: AbortSignal.timeout(30000),
     });
-    if (!r.ok) return { ok: false, text: "", provider: "lovable", error: `HTTP ${r.status}` };
+    if (!r.ok) { let b = ""; try { b = await r.text(); } catch {} return { ok: false, text: b, provider: "lovable", error: `HTTP ${r.status}` }; }
     const j = await r.json();
     return { ok: true, text: j.choices?.[0]?.message?.content || "", provider: "lovable" };
   } catch (e) {
