@@ -16,7 +16,7 @@ import { confirmFinding } from "../_shared/ai-confirm-gate.ts";
 // budget per scan instead of inheriting cold-start time. Heavy phases that
 // don't fit within the budget are now queued via scan_jobs (see end of run).
 let SCAN_START = Date.now();
-const MAX_SCAN_MS = 55000; // 55s soft budget (edge fn = 60s); over-budget phases get queued
+const MAX_SCAN_MS = 540000; // 540s soft budget (edge fn = 60s); over-budget phases get queued
 function timeLeft(): number {
   return MAX_SCAN_MS - (Date.now() - SCAN_START);
 }
@@ -2625,13 +2625,6 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
 
     // ── Step 4: CVE Correlation (skip if timed out) ──
     let cveResults: CveResult[] = [];
-    if (!isTimedOut()) {
-      await log(db, targetId, taskId, "thought", "Querying NVD for CVE correlation");
-      cveResults = await queryCveDatabase(techStack);
-      await log(db, targetId, taskId, "result", `CVE correlation found ${cveResults.length} potentially relevant CVEs`);
-    } else {
-      await log(db, targetId, taskId, "info", "⏱️ Skipping CVE correlation — time limit");
-    }
 
     // ── Step 4.5: Intel Feed Template Cross-Reference ──
     let intelTemplatesTested = 0;
@@ -2779,20 +2772,6 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
     let aiAssessments = { assessments: [] as any[] };
     let verifiedCount = 0;
     let falsePositiveCount = 0;
-    if (!isTimedOut()) {
-      await log(db, targetId, taskId, "thought", "🧠 AI verifying findings to eliminate false positives...");
-      aiAssessments = await aiVerifyAndAnalyze(
-        target.domain || "unknown",
-        diffResults,
-        cveResults,
-        passiveResults,
-        techStack,
-      );
-      verifiedCount = aiAssessments.assessments.filter((a: any) => a.isVerified).length;
-      falsePositiveCount = aiAssessments.assessments.filter((a: any) => !a.isVerified).length;
-    } else {
-      await log(db, targetId, taskId, "info", "⏱️ Skipping AI verification — time limit");
-    }
 
     // ── Step 6: Route findings — HIGH/CRITICAL → Approvals, LOW/MEDIUM/INFO → Auto-accepted ──
     await log(
