@@ -246,9 +246,9 @@ export async function llmCallBatch(
 /** Convenience: parse JSON from llm response. */
 export function tryParseJson<T = any>(text: string): T | null {
   if (!text) return null;
-  const cleaned = text.replace(/^\`\`\`(?:json)?\\s\*/i, "").replace(/\`\`\`\\s\*$/i, "").trim();
+  const cleaned = text.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "").trim();
   try { return JSON.parse(cleaned) as T; } catch { /* ignore */ }
-  const m = cleaned.match(/\\{[\\s\\S]*\\}/);
+  const m = cleaned.match(/\{[\s\S]*\}/);
   if (m) { try { return JSON.parse(m[0]) as T; } catch { /* ignore */ } }
   return null;
 }
