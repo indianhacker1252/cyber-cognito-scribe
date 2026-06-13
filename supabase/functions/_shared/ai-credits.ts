@@ -6,7 +6,6 @@ export class AiCreditsExhaustedError extends Error {
   constructor(msg = "AI credits exhausted", status = 402) {
     super(msg);
     this.status = status;
-    super(msg);
     this.name = "AiCreditsExhaustedError";
   }
 }

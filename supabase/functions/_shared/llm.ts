@@ -195,8 +195,8 @@ export async function llmCall(opts: LlmCallOptions): Promise<LlmResult> {
         }
         
         // Detect credit exhaustion (402 or explicit bllmerror)
-        const status = parseInt(out.error?.match(/\\d+/)?.[0] || "0");
-        const isCreditExhausted = isCreditExhaustionResponse(status, out.text) || /bllmerror/i.test(out.error || "");
+        const status = parseInt(out.error?.match(/\d+/)?.[0] || "0");
+        const isCreditExhausted = isCreditExhaustionResponse(status, out.text) || /bllmerror/i.test(out.error || "") || /bllmerror/i.test(out.text || "");
 
         if (isCreditExhausted) {
           if (opts.db && opts.targetId) {
@@ -246,9 +246,9 @@ export async function llmCallBatch(
 /** Convenience: parse JSON from llm response. */
 export function tryParseJson<T = any>(text: string): T | null {
   if (!text) return null;
-  const cleaned = text.replace(/^\`\`\`(?:json)?\\s\*/i, "").replace(/\`\`\`\\s\*$/i, "").trim();
+  const cleaned = text.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "").trim();
   try { return JSON.parse(cleaned) as T; } catch { /* ignore */ }
-  const m = cleaned.match(/\\{[\\s\\S]*\\}/);
+  const m = cleaned.match(/\{[\s\S]*\}/);
   if (m) { try { return JSON.parse(m[0]) as T; } catch { /* ignore */ } }
   return null;
 }

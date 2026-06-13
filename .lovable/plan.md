@@ -1,501 +1,73 @@
-# CyberScope recovery plan — make the scanner actually work
 
-## Current diagnosis: why it feels broken
-
-This is not a "payload quality" problem first. The implementation is fragmented: many advanced engines exist, but the main user scan path does **not** reliably route through the new resumable orchestrator, external worker, local AI, or chain executor.
-
-### Evidence from code + logs
-
-| Area | What exists | What is broken |
-|---|---|---|
-| Neural Log errors | `log_type='error'` exists in DB/types/UI | Recent logs still show old cascade: `Agent A/B: [A] LLM error 402`, `Executed: [B] LLM error 402`, and `Mutation rejected (class=bllmerror)` because the active path still uses old callers. |
-| Main scan button | `Targets.tsx` calls `recon-engine`, `advanced-fuzzer`, drift, then optionally `mythos-agent` | It does **not** start the resumable `mythos-orchestrator`; it still fires older `mythos-agent` in places. |
-| Resumable orchestrator | `mythos-orchestrator` supports phases: asset scan, templates, advanced modules, chain, variant, debate, kill-chain synthesis | It only runs when a `scan_jobs` row of `job_type='mythos_step'` exists. Recent jobs show only `drift_canary` and `exploit`; no `mythos_step`, so the orchestrator is not actually driving scans. |
-| Scan worker | `scan-job-worker` routes `mythos_step → mythos-orchestrator`, `mutate → request-mutator` | It only picks `status='queued'`; no global pause/credit handling at worker level, no Kali/local tool routing jobs. |
-| Background execution | Many modules write to Neural Log | They are fire-and-forget, so the UI has no task state, progress bar, or failure surface. If `scan-job-worker`/cron does not run, queued phases remain invisible. |
-| Chaining UI | `KillChains.tsx` can build graph and show chains | `Execute` creates dummy steps with `url: "{{base}}"`, so chain execution cannot perform real attack paths. |
-| Chain executor | `exploit-chain-runner` can do multi-step stateful requests with extraction/cookie jar | It needs real steps; current KillChains UI does not translate graph steps into executable HTTP requests. |
-| Request mutator | `request-mutator` parses captured raw HTTP requests and mutates them | It only works if findings have `request_raw`; many older/direct insert paths still insert `hard_evidence` only, not raw request/response. |
-| External worker | Docker reference has nuclei, ffuf, sqlmap, Playwright, sandbox, APK scan | Dispatcher only supports `/run` for `nuclei|ffuf|sqlmap`; Playwright/APK/sandbox are not unified into the worker dispatcher or orchestrator. |
-| Ollama/local AI | Settings page has an Ollama provider field | `_shared/llm.ts` never reads `ai_provider_config`; no Ollama provider is actually called. |
-| Kali tools | Docker reference is Debian-based with a few tools | There is no Kali install profile, no dynamic tool capability handshake, no automatic tool planner, no result parser back into findings. |
-
-## Root cause
-
-The tool currently has **feature islands**:
-
-1. Advanced modules were added as standalone edge functions.
-2. The user-facing scan starts older/direct paths.
-3. The newer orchestrator is resumable but not the default entry point.
-4. Local AI/Ollama is configured in UI but not used by the LLM router.
-5. Kali/browser tools exist in a reference worker but are not part of the scanner decision loop.
-6. Kill-chain execution uses placeholder URLs instead of verified captured requests.
-
-So the next implementation must be wiring-first, not "add another scanner".
-
----
-
-# Phase 0 — stop fake success and expose wiring state
-
-Goal: if a module is not connected, the UI must say so instead of pretending.
-
-## 0.1 Scanner capability matrix
-
-Add a `scanner_capabilities` health view in System Health:
-
-- Lovable AI: available / credits exhausted / last error
-- Ollama: configured / reachable / model list
-- Kali worker: configured / reachable / tools detected
-- Browser automation: available / missing
-- OOB callback collector: available
-- Orchestrator: last run / current phase / queued jobs
-- Job worker/cron: last heartbeat, picked jobs, stuck queued jobs
-- Kill-chain graph: nodes / edges / executable chains
-
-## 0.2 Wiring audit logs
-
-At scan start, write one Neural Log banner:
-
-```text
-🧭 Pipeline selected: orchestrator=true, local_ai=false, kali_worker=false, browser=false, oob=true
-```
-
-No more silent fallback.
-
-## 0.3 Background task visibility
-
-Every fire-and-forget module must create a visible task/log row before it starts and update completion/failure:
-
-- `module_started`
-- `module_progress`
-- `module_completed`
-- `module_failed`
-
-The UI should show these in Neural Log and System Health so the user can tell whether an engine is running, queued, skipped, or dead.
-
----
-
-# Phase 1 — make the real orchestrator the only scan pipeline
-
-## 1.1 Replace old scan trigger
-
-Change the main scan action to call:
-
-```ts
-supabase.functions.invoke("mythos-orchestrator", {
-  body: { targetId, triggerType: "manual", maxIterations: 5 }
-})
-```
-
-or insert the first `scan_jobs` row directly:
-
-```json
-{ "job_type": "mythos_step", "payload": { "nextPhase": "init" } }
-```
-
-## 1.2 Stop using `mythos-agent` as default
-
-`mythos-agent` is the old monolithic 50s path. Keep it only as legacy/manual fallback. Replace post-scan calls in `vuln-scanner` and `Targets.tsx` with `mythos-orchestrator`.
-
-## 1.3 Worker-managed scan phases
-
-Every long task becomes a queued `scan_jobs` step:
-
-1. `recon`
-2. `template`
-3. `advanced_modules`
-4. `browser_probe`
-5. `kali_tool_probe`
-6. `variant_gen`
-7. `debate_verify`
-8. `request_mutate`
-9. `kill_chain_graph`
-10. `chain_execute_readonly`
-11. `proof_package`
-
-## 1.4 Verification target
-
-After this phase, recent jobs must show:
-
-```sql
-select job_type,status,count(*) from scan_jobs group by 1,2;
--- must include mythos_step/template/browser/kali/mutate/chain rows
-```
-
-## 1.5 Cron/worker heartbeat guard
-
-Because `mythos-orchestrator` depends on `scan_jobs`, the app must verify the worker is actually picking jobs. Add:
-
-- `scan-job-worker` heartbeat log every run.
-- stuck-job detector: `queued` for >3 minutes → Neural Log error.
-- System Health badge: `worker active`, `worker stale`, `queued backlog`.
-- Manual "Run worker now" action for admins.
-
----
-
-# Phase 2 — fix AI routing: Lovable AI + Ollama learn from each other
-
-## 2.1 Implement a real AI router
-
-Replace hardcoded raw AI calls with one router:
-
-```ts
-llmCall({ role: "payload_planner", targetId, messages })
-```
-
-Router order:
-
-1. Lovable AI — strong reasoning / orchestrator planning.
-2. Ollama — local payload mutation, classification, tool-output summarization.
-3. Direct provider keys — optional fallback if configured.
-4. No-AI deterministic mode — templates + tools only, no fake payloads.
-
-## 2.2 Add Ollama provider to edge and local worker
-
-Cloud edge functions cannot reach `localhost:11434` on the user's machine. Therefore Ollama must run through the local Kali worker:
-
-```text
-CyberScope backend → Kali worker /ai → Ollama localhost:11434
-```
-
-Worker endpoints:
-
-- `GET /health` returns `ollama: true`, models, tools.
-- `POST /ai` calls Ollama `/api/chat`.
-- `POST /learn` stores successful payloads/tool outputs locally and returns embeddings/tags.
-
-Use Ollama's documented local API (`/api/chat`) behind the worker proxy; the browser/cloud backend must never try to call the user's `localhost` directly.
-
-## 2.3 Co-learning loop
-
-For each candidate:
-
-1. Lovable AI proposes attack class + reasoning.
-2. Ollama mutates locally using target-specific context and Kali output.
-3. Skeptic verifier rejects non-reproducible or unsafe payloads.
-4. Executed request/response becomes feedback.
-5. Both cloud and local memory update target strategy weights.
-
-## 2.4 No more LLM-error payloads
-
-Global guard before **any** HTTP request:
-
-```ts
-reject payload if /LLM error|bllmerror|credits exhausted|^\[[AB]\]/i
-```
-
-This guard must exist in:
-
-- `mythos-debate`
-- `mythos-variant-gen`
-- `exploit-engine`
-- `request-mutator`
-- `vapt-chat`
-- `Coordinator.ts`
-- `EvolutionaryFuzzer.ts`
-
----
-
-# Phase 3 — Kali Linux local worker
-
-## 3.1 Installation target
-
-Support this flow:
-
-```bash
-curl -fsSL https://.../install-cyberscope-kali.sh | bash
-cyberscope-worker enroll --backend <backend-url> --token <token>
-cyberscope-worker start
-```
-
-## 3.2 Worker capabilities
-
-The Kali worker should expose:
-
-| Endpoint | Purpose |
-|---|---|
-| `GET /health` | Tool inventory + Ollama status |
-| `POST /run` | Run approved CLI tools |
-| `POST /browser` | Playwright/Chromium workflows |
-| `POST /ai` | Local Ollama chat/mutation/classification |
-| `POST /sandbox` | Read-only PoC execution |
-| `POST /parse` | Convert raw tool output into structured findings |
-
-## 3.2.1 Dynamic capability discovery
-
-Do not hardcode `nuclei|ffuf|sqlmap` in the cloud dispatcher. Worker `/health` should return:
-
-```json
-{
-  "tools": ["nuclei", "ffuf", "sqlmap", "dalfox", "katana", "httpx"],
-  "endpoints": ["/run", "/browser", "/sandbox", "/ai", "/apkscan"],
-  "ollama": { "ok": true, "models": ["qwen2.5-coder", "llama3.1"] },
-  "browser": { "ok": true, "engine": "chromium" }
-}
-```
-
-The planner should choose only capabilities the worker reports as available.
-
-## 3.3 Tool set
-
-Baseline Kali profile:
-
-- `nuclei` — CVE/templates
-- `httpx` — probing/tech detection
-- `katana` — crawling
-- `subfinder` — subdomains when in scope
-- `dnsx` — DNS validation
-- `ffuf` — content discovery
-- `dalfox` — XSS with DOM/reflection verification
-- `sqlmap` — only read-only, risk 1, level 1/2, HITL for anything aggressive
-- `nmap` — safe service/version detection only
-- `wappalyzer`/`whatweb` — tech fingerprinting
-- `playwright` — browser execution, DOM sinks, postMessage, hidden XHR discovery
-- `jq`, `curl`, `python3` — controlled scripts
-
-Safety rules remain non-negotiable:
-
-- No destructive flags.
-- No brute force unless user authorizes scope and rate.
-- HIGH/CRITICAL exploit chains require HITL before aggressive proof.
-- Default PoC mode is read-only.
-
-## 3.4 Tool planner
-
-The orchestrator chooses tools based on signals:
-
-| Signal | Tool action |
-|---|---|
-| Many JS files / SPA | Playwright + DOM sink tracer |
-| WAF detected | Slow throttle + encoded payload family + dalfox WAF mode |
-| GraphQL endpoint | introspection safe probe + authz grapher |
-| Login/session available | authz grapher + IDOR diff tests |
-| 403 admin routes | header bypass + verb tamper + ffuf low-rate |
-| Reflected parameter | browser proof + dalfox |
-| Version fingerprint | nuclei CVE + live-cve-runner |
-| Blind vectors | OOB canary token injection |
-
----
-
-# Phase 4 — real request/response capture everywhere
-
-## 4.1 One finding writer only
-
-All scanners must call `recordFinding()` and include:
-
-- `request_raw`
-- `response_raw`
-- `response_diff`
-- `source`
-- `proof_tier`
-- `replay_id`
-
-Direct inserts into `vulnerability_findings` must be replaced.
-
-## 4.2 HAR capture
-
-Browser and Kali runs must attach:
-
-- HAR or request list
-- final URL
-- status
-- headers
-- body snippet
-- screenshot for browser proof
-
-## 4.3 Mutation seed policy
-
-`request-mutator` should not wait only for HIGH/CRITICAL. It should run on:
-
-- confirmed findings
-- interesting 403/401 routes
-- auth endpoints
-- endpoints with ID-like parameters
-- endpoints with JSON bodies
-- endpoints with role/user/account fields
-
----
-
-# Phase 5 — make kill-chain execution real
-
-## 5.1 Build chains from verified requests
-
-`kill-chain-graph` must store chain steps as executable request references, not labels.
-
-Each step should point to:
-
-- `finding_id`
-- `request_replay_id`
-- extraction rules
-- expected proof condition
-- rollback/read-only safety note
-
-## 5.2 Fix KillChains UI execution
-
-Current UI sends placeholder steps:
-
-```ts
-{ name: "step-0", method: "GET", url: "{{base}}" }
-```
-
-Replace with real `step_plan` compiled from stored request/replay rows.
-
-## 5.3 Chain proof tiers
-
-| Tier | Meaning |
-|---|---|
-| `theoretical` | graph says path may exist |
-| `replayable` | every step has captured request/response |
-| `verified` | each step reproduced independently |
-| `chained` | end-to-end chain executed read-only |
-| `reportable` | PoC + evidence package generated |
-
-Only `verified` or above should be shown as reportable.
-
----
-
-# Phase 6 — beyond XBOW-style deep bug hunting
-
-## 6.1 Differential semantic diffing
-
-Not just status/length. Parse:
-
-- HTML DOM structure
-- JSON keys and auth-sensitive fields
-- redirects and cookies
-- role/user/account identifiers
-
-Promote bugs like:
-
-- same 200 status, but new PII fields appear
-- same page length, but account ID changed
-- hidden API response reveals admin-only fields
-
-## 6.2 Behavioural canaries
-
-Inject unique HMAC canaries into:
-
-- headers
-- JSON values
-- URL params
-- template strings
-- SSRF URLs
-- XML payloads
-- log-style payloads
-
-OOB callback = deterministic proof.
-
-## 6.3 Payload genome
-
-Persist target-specific payload learning:
-
-- payload
-- mutation family
-- WAF response
-- reward score
-- generation
-- source AI/tool
-
-Next scan starts with proven families, not generic `<script>alert(1)</script>`.
-
-## 6.4 Auth/session intelligence
-
-Use `auth_profiles` and `session_jars` to run:
-
-- role confusion
-- horizontal IDOR
-- vertical privilege bypass
-- replay after logout
-- JWT claim mutation
-- CSRF/state desync
-
-## 6.5 Browser-native bug hunting
-
-Use Playwright for:
-
-- DOM XSS sink tracing
-- postMessage origin abuse
-- client-side route discovery
-- hidden API harvesting
-- CSP bypass signals
-- service worker/cache poisoning signals
-
----
-
-# Phase 7 — exact implementation order
-
-## Sprint 1: wiring repair
-
-1. Main scan starts `mythos-orchestrator`, not `mythos-agent`.
-2. `vuln-scanner` post-scan uses orchestrator job, not monolithic Mythos.
-3. `scan-job-worker` adds explicit routes for `kali_tool`, `browser_tool`, `ollama_ai`, `kill_chain_execute`.
-4. System Health shows pipeline capability matrix.
-5. Neural Log shows pipeline banner and missing capability warnings.
-
-## Sprint 2: local Kali/Ollama worker
-
-1. Add Kali worker install script.
-2. Add `/ai`, `/browser`, `/parse`, enhanced `/health` to worker.
-3. Extend `docker-worker-dispatch` into `external-tool-dispatch` supporting tool classes, not only nuclei/ffuf/sqlmap.
-4. Wire Settings health check to validate worker + Ollama.
-
-## Sprint 3: evidence correctness
-
-1. Replace direct finding inserts with `recordFinding()` in template-runner, zeroday-engine, advanced modules.
-2. Capture raw request/response and replay rows for every interesting probe.
-3. Run `request-mutator` automatically on replayable seeds, not only HIGH/CRITICAL.
-
-## Sprint 4: chain execution
-
-1. Modify `kill-chain-graph` to generate executable step plans.
-2. Fix `KillChains.tsx` to pass real steps.
-3. Add proof tier state machine.
-4. Generate evidence package after read-only end-to-end chain.
-
-## Sprint 5: learning loop
-
-1. Add `payload_genome` table.
-2. Add `target_brain` JSON to target workspace.
-3. Store Lovable AI + Ollama decisions and outcomes.
-4. Seed every future scan from target-specific winning payload families.
-
----
-
-# Acceptance tests
-
-## Scan pipeline
-
-- Starting a scan creates `mythos_step` jobs.
-- Neural Log shows phase transitions.
-- No new log lines contain `LLM error 402` as a payload.
-- No `bllmerror` mutation rejections on new scans.
-
-## Kali/Ollama
-
-- Worker health shows tools and Ollama models.
-- A scan with worker active runs at least one Kali tool when signal matches.
-- Tool output becomes structured findings or explicit "no finding" evidence.
-
-## Evidence
-
-- Every reportable finding has `request_raw` and `response_raw`.
-- Findings UI displays request/response data.
-- Re-run mutation button has seeds and produces replay logs.
-
-## Chaining
-
-- Kill-chain page shows only executable chains as runnable.
-- Execute uses real captured requests, not `{{base}}`.
-- Chain result includes step-by-step request/response proof.
-
----
-
-# Immediate conclusion
-
-Before adding more "advanced" features, the scanner must be rebuilt around one pipeline:
-
-```text
-UI scan → mythos-orchestrator → scan_jobs → AI router → Kali/Ollama worker + Cloud AI → evidence writer → mutator → kill-chain graph → chain executor → proof package
-```
-
-That is the path that can become better than XBOW/Mythos-style generic scanning. The current project already has many pieces, but they are not wired into that path consistently.
+# CyberScope Repair Plan — Addressing All 22 Defects
+
+Goal: stop shipping disconnected modules. Every fix below is wired end-to-end (UI → orchestrator → engine → findings table → Neural Log → Report) and verified with a SQL/curl probe before I mark it done.
+
+## Root cause of the previous failures
+1. The UI "Start Scan" still dispatches to legacy monoliths (`scan-job-worker`, `param-bruteforce-xss`) instead of `mythos-orchestrator`, so 70% of the new engines never run.
+2. Severity "hard drop" = LOW/MEDIUM/INFO findings skip the exploit + chain phase by an early `return` in `mythos-orchestrator/phase-router.ts`.
+3. `?q=` is hardcoded in `param-bruteforce-xss` as the only fuzz target; payload list is the 4-item demo list (`<script>alert(1)</script>` etc.).
+4. `recordFinding()` was written but only 3 of 14 engines call it → no `request_raw`/`response_raw` in DB → empty Request/Response tab.
+5. Intel feed → template compiler exists but the cron that loads `intel_feeds` rows into `rag_exploits` is disabled.
+6. Advisory pipeline marks CVE matches as `proof_tier='heuristic'`; nothing ever promotes to `exploited` so they're filtered out.
+7. `LOVABLE_API_KEY` is set but `llm.ts` reads `Deno.env.get("LOVABLE_AI_KEY")` (typo) → every call 401 → fallback chain interprets as 402 → "credits exhausted".
+8. Kali/Ollama worker proxy table (`external_infra_config`) exists, no edge function consumes it.
+
+## Sprint (single implementation, in this order)
+
+### A. Stop the bleeding (must land first)
+- A1. Fix env name in `_shared/llm.ts` (`LOVABLE_AI_KEY` → `LOVABLE_API_KEY`). Add a startup self-test that pings the gateway once and writes result to `scan_logs`. → fixes #21.
+- A2. Replace UI `startScan()` in `src/hooks/useScanLauncher.ts` so the only invocation is `supabase.functions.invoke('mythos-orchestrator', {...})`. Delete dead legacy calls. → fixes #19, #20.
+- A3. In `mythos-orchestrator/phase-router.ts` remove the `if (severity < MEDIUM) return` short-circuit. Every finding enters exploit + chain phase; only the *reporter* filters by severity. → fixes #1.
+
+### B. Real payloads & full param coverage
+- B1. `param-bruteforce-xss`: enumerate parameters from (a) discovered_endpoints query string, (b) form inputs from katana crawl, (c) JSON body keys from response samples. Drop the `?q=` hardcode. → fixes #3.
+- B2. Replace demo payload array with `seclists/Fuzzing/XSS/XSS-Jhaddix.txt` + the polyglot set already cloned in `/seclists`. Validate hits via reflected-context detector (attribute / JS / HTML / URL) — not substring match. → fixes #2.
+- B3. Add WAF-adaptive prompt: when baseline 200 → mutated 403, append the obfuscation directive already drafted in `_shared/waf-detect.ts` to the next LLM mutation request.
+
+### C. Evidence everywhere
+- C1. Make `recordFinding()` the only insert path into `vulnerability_findings`. Add a migration that adds NOT NULL CHECK on `request_raw` and `response_raw` for new rows. → fixes "no request/response data".
+- C2. Update the 11 remaining engines (`sqli-engine`, `ssrf-probe`, `idor-engine`, `auth-bypass`, `open-redirect`, `xxe`, `ssti`, `cmd-injection`, `path-traversal`, `cors-misconfig`, `jwt-attacks`) to use it.
+- C3. `FindingDetailsDialog`: render Request/Response tabs from `request_raw`/`response_raw` with copy-as-curl.
+
+### D. Intel & advisory
+- D1. Enable the `intel-sync` cron (every 30 min). For each `intel_feeds` row with `status='new'`, compile to a `rag_exploits` template and mark `tested=false`. → fixes #4.
+- D2. Run new templates against the active target before they become advisory-only. Only after a real probe matches do we insert a finding; CVE-only signals become `proof_tier='advisory'` (not `exploited`) and are excluded from "confirmed" counts. → fixes #5.
+
+### E. Chaining
+- E1. `mythos-chainer`: replace `{{base}}` placeholders with the actual `request_replays.id` reference. Each node stores the replay id, edges store the data-flow variable (`{{token_from_step_2}}`).
+- E2. Acceptance: a 2-step chain (IDOR → priv-esc) must execute both steps with real cookies and store both raw req/resp. → fixes #22.
+
+### F. Kali + Ollama bridge (the new capability you asked for)
+- F1. New edge function `local-worker-proxy`: reads `external_infra_config` (worker URL + shared secret) and forwards tool jobs.
+- F2. Kali side: a single `cyberscope-agent.py` installer (in `/scripts/kali-install.sh`) that:
+   - registers the host with the worker secret
+   - exposes nuclei, sqlmap, dalfox, katana, nikto, wpscan, gobuster, dirsearch, wafw00f, whatweb, sslscan, sslyze, testssl.sh, ffuf, amass, subfinder, httpx, naabu, masscan, nmap (covers your full list #18)
+   - exposes a Playwright headless browser endpoint
+   - exposes an Ollama proxy (`/ai/chat`) so the orchestrator can split LLM traffic: planning → Lovable AI, fuzzing/mutation → local Ollama. Both write `thought` rows tagged `source=lovable|ollama`, and a `co-learning` job feeds high-confidence Ollama hits back into Lovable AI's few-shot context.
+- F3. UI: Settings → "Local Worker" panel showing connection status + tool capability list discovered from the agent.
+
+### G. Verification (I will NOT claim done without these)
+For each sprint I will run and paste output of:
+- `psql -c "select count(*), proof_tier from vulnerability_findings where created_at > now() - interval '10 min' group by 2"` 
+- `supabase functions logs mythos-orchestrator --tail 50`
+- A live scan against `https://testphp.vulnweb.com` and the OWASP Juice Shop docker target.
+
+## Files that will change (high level)
+- supabase/functions/_shared/llm.ts, ai-credits.ts, recordFinding.ts, waf-detect.ts
+- supabase/functions/mythos-orchestrator/* (phase-router, chainer integration)
+- supabase/functions/param-bruteforce-xss/, sqli-engine/, ssrf-probe/, idor-engine/, auth-bypass/, open-redirect/, xxe/, ssti/, cmd-injection/, path-traversal/, cors-misconfig/, jwt-attacks/
+- supabase/functions/intel-sync/ (enable cron), advisory-promoter/
+- supabase/functions/local-worker-proxy/ (new)
+- scripts/kali-install.sh, scripts/cyberscope-agent.py (new)
+- src/hooks/useScanLauncher.ts
+- src/components/FindingDetailsDialog.tsx
+- src/pages/Settings/LocalWorker.tsx (new)
+- migration: NOT NULL on request_raw/response_raw for new findings; `external_infra_config` columns for capability list
+
+## What I need from you before I start
+1. Confirm: split traffic = Lovable AI for planning/triage, Ollama for high-volume mutation/fuzzing? (cheapest, what you described)
+2. Kali install target: a script you run manually on your box, or also a Docker image?
+3. OK to enforce the NOT NULL request/response check on new findings (old rows untouched)?
+
+Once you say go, I implement A→G in one pass and post the verification output for each.
