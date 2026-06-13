@@ -195,8 +195,8 @@ export async function llmCall(opts: LlmCallOptions): Promise<LlmResult> {
         }
         
         // Detect credit exhaustion (402 or explicit bllmerror)
-        const status = parseInt(out.error?.match(/\\d+/)?.[0] || "0");
-        const isCreditExhausted = isCreditExhaustionResponse(status, out.text) || /bllmerror/i.test(out.error || "");
+        const status = parseInt(out.error?.match(/\d+/)?.[0] || "0");
+        const isCreditExhausted = isCreditExhaustionResponse(status, out.text) || /bllmerror/i.test(out.error || "") || /bllmerror/i.test(out.text || "");
 
         if (isCreditExhausted) {
           if (opts.db && opts.targetId) {
