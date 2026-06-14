@@ -44,6 +44,11 @@ async function enqueueNext(db: any, runId: string, targetId: string, nextPhase: 
     status: "queued",
     priority: 7,
   });
+  fetch(`${SUPABASE_URL}/functions/v1/scan-job-worker`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${SERVICE_KEY}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ source: "mythos-orchestrator", runId, nextPhase }),
+  }).catch(() => {});
 }
 
 async function executePhase(db: any, run: any, phase: string, payload: any): Promise<{ done: boolean; nextPhase?: string; results?: any }> {
