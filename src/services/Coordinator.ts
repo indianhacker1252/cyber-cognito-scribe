@@ -71,19 +71,19 @@ export function decomposeMissions(
 export async function launchCoordinatedScan(
   targetId: string
 ): Promise<{ totalMissions: number; taskId: string }> {
-  const { data, error } = await supabase.functions.invoke("vuln-scanner", {
+  const { data, error } = await supabase.functions.invoke("mythos-orchestrator", {
     body: {
       targetId,
-      scanType: "coordinated",
-      useMultiAgent: true,
+      triggerType: "coordinated",
+      maxIterations: 4,
     },
   });
 
   if (error) throw error;
 
   return {
-    totalMissions: data?.totalMissions || 0,
-    taskId: data?.taskId || "",
+    totalMissions: data?.queued ? 1 : 0,
+    taskId: data?.runId || "",
   };
 }
 

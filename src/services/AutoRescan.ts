@@ -142,9 +142,9 @@ export async function triggerDeltaScan(params: {
       metadata: { intelFeedId: params.intelFeedId, vulnClass: params.vulnClass },
     });
 
-    // Trigger the vuln scanner with the specific vuln class focus
-    const { error: scanErr } = await supabase.functions.invoke("vuln-scanner", {
-      body: { targetId: params.targetId },
+    // Trigger the unified Mythos orchestrator with intel context
+    const { error: scanErr } = await supabase.functions.invoke("mythos-orchestrator", {
+      body: { targetId: params.targetId, triggerType: "intel-delta", maxIterations: 3, vulnClass: params.vulnClass, intelFeedId: params.intelFeedId },
     });
 
     if (scanErr) {

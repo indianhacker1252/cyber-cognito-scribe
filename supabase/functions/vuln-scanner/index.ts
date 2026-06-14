@@ -3285,15 +3285,15 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
         message: `🧠 Auto-triggering Mythos agent + XSS reflection sweep post-scan`,
         metadata: { trigger: "post_scan_auto" },
       } as any);
-      // fire-and-forget Mythos loop
-      fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/mythos-agent`, {
+      // fire-and-forget unified Mythos loop
+      fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/mythos-orchestrator`, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}`,
           "Content-Type": "application/json",
         },
         body: JSON.stringify({ targetId, triggerType: "post_scan_auto", maxIterations: 3 }),
-      }).catch((e) => console.error("mythos-agent dispatch failed:", e));
+      }).catch((e) => console.error("mythos-orchestrator dispatch failed:", e));
 
       // fire-and-forget reflection-based XSS auto-promotion (no LLM required)
       fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/xss-reflection-promoter`, {

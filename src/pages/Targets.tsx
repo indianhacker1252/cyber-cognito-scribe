@@ -217,10 +217,10 @@ export default function Targets() {
       try {
         const { data: tgt } = await supabase.from("target_workspaces").select("auto_mythos").eq("id", targetId).maybeSingle();
         if ((tgt as any)?.auto_mythos) {
-          toast.info("🧠 Auto-Mythos enabled — launching long-horizon agent run");
-          supabase.functions.invoke("mythos-agent", { body: { targetId, triggerType: "auto", maxIterations: 3 } })
+          toast.info("🧠 Auto-Mythos enabled — queueing long-horizon run");
+          supabase.functions.invoke("mythos-orchestrator", { body: { targetId, triggerType: "auto", maxIterations: 3 } })
             .then(({ data: mr }: any) => {
-              if (mr?.runId) toast.success(`Mythos run ${mr.runId.slice(0, 8)}: ${mr.totalChains} chains, ${mr.totalVariants} variants`);
+              if (mr?.runId) toast.success(`Mythos run ${mr.runId.slice(0, 8)} queued`);
             })
             .catch((e) => console.warn("mythos auto:", e?.message));
         }
@@ -243,28 +243,27 @@ export default function Targets() {
   const startVulnScan = async (targetId: string) => {
     if (!(await consumeCredit(targetId, "vuln-scan"))) return;
     setVulnScanTargets((prev) => new Set(prev).add(targetId));
-    toast.info("Vuln scan started — findings will appear in Approvals queue (watch Neural Log)");
+    toast.info("Mythos scan queued — findings will stream into Neural Log");
     try {
-      const { data, error } = await supabase.functions.invoke("vuln-scanner", { body: { targetId } });
+      const { data, error } = await supabase.functions.invoke("mythos-orchestrator", { body: { targetId, triggerType: "manual", maxIterations: 4 } });
       if (error) {
         if (isTimeoutOrNetworkError(error)) {
-          toast.info("OWASP scan running in background — check Neural Log + Approvals");
+          toast.info("Mythos scan running in background — check Neural Log");
         } else {
-          toast.error(`Vuln scan failed: ${error.message}`);
+          toast.error(`Mythos scan failed: ${error.message}`);
         }
-      } else if (data?.error) toast.error(`Vuln scan failed: ${data.error}`);
+      } else if (data?.error) toast.error(`Mythos scan failed: ${data.error}`);
       else {
-        const coverageCount = data.owaspCoverage?.length || 0;
-        toast.success(`OWASP scan complete: ${data.vulnsFound} active, ${data.passiveIssues || 0} passive, ${data.approvalsQueued} queued (${coverageCount} OWASP categories)`);
+        toast.success(`Mythos run ${data?.runId?.slice?.(0, 8) || ""} queued`);
       }
       queryClient.invalidateQueries({ queryKey: ["targets"] });
       queryClient.invalidateQueries({ queryKey: ["approvals"] });
       queryClient.invalidateQueries({ queryKey: ["recent-logs"] });
     } catch (e: any) {
       if (isTimeoutOrNetworkError(e)) {
-        toast.info("OWASP scan running in background — check Neural Log");
+        toast.info("Mythos scan running in background — check Neural Log");
       } else {
-        toast.error(`Vuln scan error: ${e.message}`);
+        toast.error(`Mythos scan error: ${e.message}`);
       }
     } finally {
       setVulnScanTargets((prev) => { const n = new Set(prev); n.delete(targetId); return n; });

@@ -137,14 +137,14 @@ export const AdvancedScannerPanel = ({ targetId, baseUrl }: Props) => {
 
   const runMythos = async () => {
     setBusy("mythos");
-    toast.info("🧠 Mythos agent starting — this may take 1-3 minutes");
-    const { data, error } = await supabase.functions.invoke("mythos-agent", {
+    toast.info("🧠 Mythos orchestrator queued — phases will run in the background");
+    const { data, error } = await supabase.functions.invoke("mythos-orchestrator", {
       body: { targetId, triggerType: "manual", maxIterations: 3, repoUrl: repoUrl || undefined },
     });
     setBusy(null);
     if (error) return toast.error(error.message);
     if (data?.error) return toast.error(data.error);
-    toast.success(`✅ Mythos: ${data.totalChains} chains, ${data.totalVariants} variants, ${data.totalFindings} SAST findings`);
+    toast.success(`✅ Mythos run ${data?.runId?.slice?.(0, 8) || ""} queued`);
     void loadAll();
   };
 

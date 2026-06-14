@@ -157,10 +157,10 @@ export default function MythosResults() {
     if (!targetId) return;
     setRunning(true);
     try {
-      const { error } = await supabase.functions.invoke("mythos-agent", {
+      const { error } = await supabase.functions.invoke("mythos-orchestrator", {
         body: { targetId, triggerType: "manual", maxIterations: 4 },
       });
-      if (error) console.error("mythos-agent error", error);
+      if (error) console.error("mythos-orchestrator error", error);
       setTimeout(() => reload(targetId), 2000);
     } finally {
       setRunning(false);
@@ -171,7 +171,7 @@ export default function MythosResults() {
     if (!targetId) return;
     setRunning(true);
     try {
-      await supabase.functions.invoke("vuln-scanner", { body: { targetId } });
+      await supabase.functions.invoke("mythos-orchestrator", { body: { targetId, triggerType: "manual", maxIterations: 4 } });
       setTimeout(() => reload(targetId), 2000);
     } finally {
       setRunning(false);

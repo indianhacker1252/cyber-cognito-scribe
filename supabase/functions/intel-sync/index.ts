@@ -469,10 +469,10 @@ serve(async (req) => {
 
       const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
       const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-      fetch(`${supabaseUrl}/functions/v1/vuln-scanner`, {
+      fetch(`${supabaseUrl}/functions/v1/mythos-orchestrator`, {
         method: "POST",
         headers: { Authorization: `Bearer ${serviceKey}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ targetId }),
+        body: JSON.stringify({ targetId, triggerType: "intel-delta", maxIterations: 3, vulnClass, intelFeedId }),
       }).catch(e => console.error("Rescan trigger error:", e));
 
       return new Response(JSON.stringify({ triggered: true, message: `Rescan triggered for target ${targetId}` }), {

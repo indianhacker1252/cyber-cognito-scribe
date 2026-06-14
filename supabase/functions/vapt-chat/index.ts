@@ -194,10 +194,10 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
       }
 
       case "run_vuln_scan": {
-        const resp = await safeFetch(`${supabaseUrl}/functions/v1/vuln-scanner`, {
+        const resp = await safeFetch(`${supabaseUrl}/functions/v1/mythos-orchestrator`, {
           method: "POST",
           headers: { Authorization: `Bearer ${serviceKey}`, "Content-Type": "application/json" },
-          body: JSON.stringify({ targetId: args.targetId, targetUrl: args.targetUrl }),
+          body: JSON.stringify({ targetId: args.targetId, triggerType: "chat", maxIterations: 4, targetUrl: args.targetUrl }),
         }, 55000);
         const data = await resp.json();
         return JSON.stringify(data);
@@ -503,10 +503,10 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
         }, 55000);
         const reconData = await reconResp.json();
         // Step 2: Vuln Scan
-        const vulnResp = await safeFetch(`${supabaseUrl}/functions/v1/vuln-scanner`, {
+        const vulnResp = await safeFetch(`${supabaseUrl}/functions/v1/mythos-orchestrator`, {
           method: "POST",
           headers: { Authorization: `Bearer ${serviceKey}`, "Content-Type": "application/json" },
-          body: JSON.stringify({ targetId: args.targetId, targetUrl: `https://${args.domain}` }),
+          body: JSON.stringify({ targetId: args.targetId, triggerType: "chat-full-hunt", maxIterations: 4, targetUrl: `https://${args.domain}` }),
         }, 55000);
         const vulnData = await vulnResp.json();
         return JSON.stringify({ recon: reconData, vulnScan: vulnData });
