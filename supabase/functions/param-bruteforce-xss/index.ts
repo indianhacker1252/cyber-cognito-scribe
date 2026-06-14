@@ -154,29 +154,56 @@ Deno.serve(async (req) => {
       const u = (e.url as string) || "";
       // skip static assets
       if (/\.(gif|png|jpg|jpeg|css|js|ico|svg|woff2?|map)(\?|$)/i.test(u)) return false;
-      // skip already-parameterized
-      if (u.includes("?")) return false;
-      const params = (e.parameters as Record<string,string>) || {};
-      if (Object.keys(params).length > 0) return false;
       return true;
     }).slice(0, maxEndpoints);
 
-    await log(supa, targetId, `starting param brute on ${candidates.length} endpoints`, { endpointCount: candidates.length });
+    await log(supa, targetId, `starting param brute on ${candidates.length} endpoints (existing + common)`, { endpointCount: candidates.length });
 
     let probes = 0, reflections = 0, approvals = 0;
     const findings: any[] = [];
 
     for (const ep of candidates) {
-      const baseUrl = (ep.url as string).replace(/\/$/, "");
-      const paramNames = COMMON_PARAMS.slice(0, maxParamsPerEndpoint);
+      const rawUrl = ep.url as string;
+      let basePath = rawUrl;
+      const existingParams: Record<string, string> = {};
+      try {
+        const u = new URL(rawUrl);
+        u.searchParams.forEach((v, k) => { existingParams[k] = v; });
+        u.search = "";
+        basePath = u.toString().replace(/\/$/, "");
+      } catch {
+        basePath = rawUrl.split("?")[0].replace(/\/$/, "");
+      }
+      // Also merge stored parameters column (form/body params discovered by katana)
+      const storedParams = (ep.parameters as Record<string, string>) || {};
+      for (const [k, v] of Object.entries(storedParams)) {
+        if (!(k in existingParams)) existingParams[k] = String(v ?? "");
+      }
+
+      // Test existing params FIRST (they're real attack surface), then fall back
+      // to common-name guessing only if the endpoint has none.
+      const existingNames = Object.keys(existingParams).slice(0, maxParamsPerEndpoint);
+      const commonNames = existingNames.length === 0
+        ? COMMON_PARAMS.slice(0, maxParamsPerEndpoint)
+        : COMMON_PARAMS.filter(n => !(n in existingParams)).slice(0, Math.max(0, maxParamsPerEndpoint - existingNames.length));
+      const paramNames = [...existingNames, ...commonNames];
 
       for (const pname of paramNames) {
         const canary = rand();
         const payloads = buildPayloads(canary);
 
+        // Build URL with the canary on `pname` while preserving every OTHER existing param.
+        const buildProbeUrl = (val: string) => {
+          const merged: Record<string, string> = { ...existingParams, [pname]: val };
+          const qs = Object.entries(merged)
+            .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
+            .join("&");
+          return `${basePath}?${qs}`;
+        };
+
         // Probe 1: raw canary
         const raw = payloads[0];
-        const url = `${baseUrl}?${encodeURIComponent(pname)}=${encodeURIComponent(raw.value)}`;
+        const url = buildProbeUrl(raw.value);
         const res = await safeFetch(url);
         probes++;
         await new Promise(r => setTimeout(r, 200)); // 5 req/s
@@ -189,23 +216,17 @@ Deno.serve(async (req) => {
         // reflected verbatim AND in a dangerous (non-URL/non-encoded) context.
         reflections++;
 
-        // Find the reflection sites and check whether ANY are in dangerous context.
-        // If every occurrence of the canary sits inside a URL attribute
-        // (href=, src=, content=, action=, formaction=, data-*-url=, JSON "url":)
-        // we treat the parameter as safe and move on.
         if (!hasDangerousReflectionContext(res.body, canary)) continue;
 
         let bestSink: { name: string; value: string; reason: string; bodySnippet: string } | null = null;
         for (const p of payloads.slice(1)) {
           const c2 = rand();
           const sinkVal = p.value.replaceAll(canary, c2);
-          const sinkUrl = `${baseUrl}?${encodeURIComponent(pname)}=${encodeURIComponent(sinkVal)}`;
+          const sinkUrl = buildProbeUrl(sinkVal);
           const sr = await safeFetch(sinkUrl);
           probes++;
           await new Promise(r => setTimeout(r, 200));
           if (!sr || sr.status >= 500) continue;
-          // Verbatim reflection of the sink string (raw HTML, no entity-encoding)
-          // AND in a dangerous context (not inside href/src/content/action attribute).
           if (!sr.body.includes(sinkVal)) continue;
           if (!hasDangerousReflectionContext(sr.body, sinkVal)) continue;
           const idx = sr.body.indexOf(sinkVal);
@@ -229,6 +250,7 @@ Deno.serve(async (req) => {
           sink: { kind: bestSink.name, payload: bestSink.value, snippet: bestSink.bodySnippet },
           contentType: res.headers["content-type"] || null,
           discoveredBy: "param-bruteforce-xss",
+          paramSource: pname in existingParams ? "existing" : "guessed-common",
         };
 
         const { data: ins } = await supa.from("pending_approvals").insert({
@@ -252,9 +274,6 @@ Deno.serve(async (req) => {
         }).select("id").single();
         const sev = "high";
 
-        // Part A — also write directly to vulnerability_findings via central writer
-        // so the OWASP matrix + Findings page show this without depending on the
-        // promoter. (The promoter still runs as a backup for de-dup metadata.)
         try {
           const { recordFinding } = await import("../_shared/findings-writer.ts");
           await recordFinding({
@@ -264,7 +283,7 @@ Deno.serve(async (req) => {
             category: "xss",
             severity: sev as any,
             title,
-            description: evidence ? `Sink "${bestSink.name}" reflected verbatim in dangerous context on parameter '${pname}'.` : title,
+            description: `Sink "${bestSink.name}" reflected verbatim in dangerous context on parameter '${pname}'.`,
             payload: bestSink.value,
             poc: `curl -i '${url}'`,
             proofTier: "reflected",
@@ -276,10 +295,9 @@ Deno.serve(async (req) => {
 
         approvals++;
         if (ins?.id) findings.push({ approvalId: ins.id, endpoint: ep.url, param: pname, severity: sev });
-        await log(supa, targetId, `${title} on ${ep.url}`, { endpointId: ep.id, param: pname, sink: bestSink?.name });
+        await log(supa, targetId, `${title} on ${ep.url}`, { endpointId: ep.id, param: pname, sink: bestSink?.name, paramSource: evidence.paramSource });
 
-
-        // Move on to next endpoint after first confirmed reflection
+        // Move on to next endpoint after first confirmed reflection per endpoint
         break;
       }
 
