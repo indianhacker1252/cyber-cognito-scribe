@@ -94,7 +94,7 @@ Deno.serve(async (req) => {
     return new Response(JSON.stringify({ picked: jobs.length, results }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } });
   } catch (e) {
-    return new Response(JSON.stringify({ error: e instanceof Error ? e.message : "err" }),
-      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    return new Response(JSON.stringify({ ok: false, error: e instanceof Error ? e.message : "err" }),
+      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
   }
 });
