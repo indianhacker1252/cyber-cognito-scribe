@@ -133,14 +133,23 @@ export async function recordFinding(input: RecordFindingInput): Promise<RecordFi
     // replay row (best-effort)
     if (input.request) {
       await supa.from("request_replays").insert({
+        user_id: "00000000-0000-0000-0000-000000000000",
         target_id: input.targetId,
         finding_id: inserted.id,
-        method: input.request.method,
-        url: input.request.url,
-        request_headers: input.request.headers ?? {},
-        request_body: input.request.body ?? null,
-        response_status: input.response?.status ?? null,
-        response_body: clip(input.response?.body, 16384),
+        label: input.source,
+        request: {
+          method: input.request.method,
+          url: input.request.url,
+          headers: input.request.headers ?? {},
+          body: input.request.body ?? null,
+        },
+        response: input.response ? {
+          status: input.response.status,
+          headers: input.response.headers ?? {},
+          body: clip(input.response.body, 16384),
+        } : null,
+        diff: responseDiff,
+        is_interesting: true,
       }).then(() => {}, () => {}); // ignore schema diffs
     }
 
