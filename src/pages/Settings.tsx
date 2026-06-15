@@ -35,7 +35,7 @@ const PROVIDERS = [
 // ──────────────────────────────────────────────────────────────────────────
 interface InfraRow {
   id?: string;
-  service: "docker_worker" | "browserless" | "oob";
+  service: "docker_worker" | "local_worker" | "browserless" | "oob";
   mode: string;
   endpoint_url: string | null;
   auth_token: string | null;
@@ -52,6 +52,17 @@ const INFRA_DEFS = [
     description: "Container that runs nuclei, ffuf, and sqlmap and streams output back into your Live Neural Log.",
     modes: [
       { value: "self_hosted", label: "Self-hosted", hint: "Fly.io / Railway / VPS — see docker-worker-reference/README.md" },
+    ],
+    needsToken: true,
+    healthPath: "/health",
+  },
+  {
+    service: "local_worker" as const,
+    name: "Local Worker (Kali + Ollama)",
+    icon: Brain,
+    description: "Private worker that exposes Kali tools, Playwright, and Ollama for high-volume mutation jobs.",
+    modes: [
+      { value: "self_hosted", label: "Self-hosted", hint: "Run scripts/kali-install.sh on your box, then paste its URL and token here" },
     ],
     needsToken: true,
     healthPath: "/health",
