@@ -1,6 +1,6 @@
 # CyberScope Docker Worker — Quick Deploy
 
-Builds a small container that exposes nuclei, ffuf, and sqlmap over HTTP for
+Builds a small container that exposes Kali-style tools, Playwright, and an optional Ollama proxy over HTTP for
 your CyberScope instance to call. All output is streamed line-by-line back into
 your Live Neural Log.
 
@@ -30,13 +30,23 @@ fly secrets list  # copy the token
 3. Networking → expose `8080` publicly
 4. Copy the public URL + token
 
+## Kali / local VM
+
+```bash
+chmod +x scripts/kali-install.sh
+./scripts/kali-install.sh
+```
+
+The installer prints the endpoint URL and token. If Ollama is installed locally,
+`/ai/chat` is available automatically through `OLLAMA_URL=http://127.0.0.1:11434`.
+
 ## Plug into CyberScope
 
-Open **Settings → External Infrastructure → Docker Worker**:
+Open **Settings → External Infrastructure → Local Worker** or **Docker Worker**:
 
 - **Endpoint URL**: `https://your-worker-host` (no trailing slash)
 - **Auth token**: the `WORKER_TOKEN` you generated
 - Toggle **Active**
 
 Test with the **Test Connection** button — it pings `/health` and confirms the
-three tools are available.
+available tools/endpoints.

@@ -35,7 +35,7 @@ const PROVIDERS = [
 // ──────────────────────────────────────────────────────────────────────────
 interface InfraRow {
   id?: string;
-  service: "docker_worker" | "browserless" | "oob";
+  service: "docker_worker" | "local_worker" | "browserless" | "oob";
   mode: string;
   endpoint_url: string | null;
   auth_token: string | null;
@@ -52,6 +52,17 @@ const INFRA_DEFS = [
     description: "Container that runs nuclei, ffuf, and sqlmap and streams output back into your Live Neural Log.",
     modes: [
       { value: "self_hosted", label: "Self-hosted", hint: "Fly.io / Railway / VPS — see docker-worker-reference/README.md" },
+    ],
+    needsToken: true,
+    healthPath: "/health",
+  },
+  {
+    service: "local_worker" as const,
+    name: "Local Worker (Kali + Ollama)",
+    icon: Brain,
+    description: "Private worker that exposes Kali tools, Playwright, and Ollama for high-volume mutation jobs.",
+    modes: [
+      { value: "self_hosted", label: "Self-hosted", hint: "Run scripts/kali-install.sh on your box, then paste its URL and token here" },
     ],
     needsToken: true,
     healthPath: "/health",
@@ -407,6 +418,7 @@ function ReadinessDashboard({
 }) {
   const llmActive = providers.some((p) => p.is_active && p.api_key);
   const docker = infraRows.find((r) => r.service === "docker_worker");
+  const localWorker = infraRows.find((r) => r.service === "local_worker");
   const browser = infraRows.find((r) => r.service === "browserless");
   const oob = infraRows.find((r) => r.service === "oob");
 
@@ -426,6 +438,14 @@ function ReadinessDashboard({
       live: !!(docker?.is_active && docker?.endpoint_url),
       liveText: `ACTIVE — streaming output from ${docker?.endpoint_url?.slice(0, 40)}...`,
       degradedText: "OFFLINE — real exploit tooling disabled. Deploy docker-worker-reference and add URL.",
+    },
+    {
+      key: "local_worker",
+      icon: Brain,
+      label: "Local Worker (Kali/Ollama)",
+      live: !!(localWorker?.is_active && localWorker?.endpoint_url),
+      liveText: `ACTIVE — Kali tools and Ollama available from ${localWorker?.endpoint_url?.slice(0, 40)}...`,
+      degradedText: "OFFLINE — local Kali tooling and Ollama mutations disabled. Configure Local Worker to enable them.",
     },
     {
       key: "browser",

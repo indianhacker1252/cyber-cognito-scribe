@@ -6,6 +6,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { safeFetch, readBodySafe } from "../_shared/safe-fetch.ts";
 import { detectWaf, AdaptiveThrottle, encodingVariants, isStrictXssReflection } from "../_shared/waf-detect.ts";
+import { recordFinding } from "../_shared/findings-writer.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -254,17 +255,34 @@ Deno.serve(async (req) => {
     }));
     if (coverageRows.length) await db.from("owasp_coverage").insert(coverageRows);
 
-    // 5) Insert findings + auto-queue browser verification for XSS-class findings
+    // 5) Insert findings through shared writer + auto-queue browser verification for XSS-class findings
     let queuedBrowserVerify = 0;
     if (insertedFindings.length) {
       const xssTmplIds = new Set(insertedFindings.map((f, i) => /xss|redirect|csti|prototype|dom/i.test(f._tmplId) ? i : -1).filter((i) => i >= 0));
-      const rows = insertedFindings.map(({ _tmplId, ...rest }) => rest);
-      const { data: inserted } = await db.from("vulnerability_findings").insert(rows).select("id");
-      for (let i = 0; i < (inserted || []).length; i++) {
+      const inserted: Array<{ id: string }> = [];
+      for (const f of insertedFindings) {
+        const endpoint = f.hard_evidence?.endpoint || targetUrl;
+        const written = await recordFinding({
+          targetId,
+          source: "template-runner",
+          category: f.hard_evidence?.category || "template-runner",
+          severity: f.severity,
+          title: f.title,
+          description: f.description,
+          payload: f.payload,
+          proofTier: f.hard_evidence?.cve ? "advisory" : "signal",
+          evidence: f.hard_evidence,
+          request: { method: "GET", url: endpoint, headers: authHeaders },
+          response: { status: f.hard_evidence?.statusCode || 200, body: String(f.hard_evidence?.snippet || "") },
+          scanLogId: scanRunId,
+        });
+        if (written.findingId) inserted.push({ id: written.findingId });
+      }
+      for (let i = 0; i < inserted.length; i++) {
         if (!xssTmplIds.has(i)) continue;
         await db.from("scan_jobs").insert({
           target_id: targetId, job_type: "browser_verify",
-          payload: { findingId: inserted![i].id }, status: "queued", priority: 8,
+          payload: { findingId: inserted[i].id }, status: "queued", priority: 8,
         });
         queuedBrowserVerify++;
       }

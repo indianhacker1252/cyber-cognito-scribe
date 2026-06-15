@@ -2654,6 +2654,7 @@ export type Database = {
       }
       vulnerability_findings: {
         Row: {
+          affected_url: string | null
           ai_verified: boolean | null
           confidence_level: string | null
           confidence_score: number | null
@@ -2661,6 +2662,7 @@ export type Database = {
           cvss_score: number | null
           description: string | null
           endpoint_id: string | null
+          evidence: Json | null
           evidence_package_id: string | null
           finding_type: string | null
           hard_evidence: Json | null
@@ -2680,8 +2682,10 @@ export type Database = {
           title: string
           triage_reasoning: string | null
           validation_status: string | null
+          vuln_class: string | null
         }
         Insert: {
+          affected_url?: string | null
           ai_verified?: boolean | null
           confidence_level?: string | null
           confidence_score?: number | null
@@ -2689,6 +2693,7 @@ export type Database = {
           cvss_score?: number | null
           description?: string | null
           endpoint_id?: string | null
+          evidence?: Json | null
           evidence_package_id?: string | null
           finding_type?: string | null
           hard_evidence?: Json | null
@@ -2708,8 +2713,10 @@ export type Database = {
           title: string
           triage_reasoning?: string | null
           validation_status?: string | null
+          vuln_class?: string | null
         }
         Update: {
+          affected_url?: string | null
           ai_verified?: boolean | null
           confidence_level?: string | null
           confidence_score?: number | null
@@ -2717,6 +2724,7 @@ export type Database = {
           cvss_score?: number | null
           description?: string | null
           endpoint_id?: string | null
+          evidence?: Json | null
           evidence_package_id?: string | null
           finding_type?: string | null
           hard_evidence?: Json | null
@@ -2736,6 +2744,7 @@ export type Database = {
           title?: string
           triage_reasoning?: string | null
           validation_status?: string | null
+          vuln_class?: string | null
         }
         Relationships: [
           {

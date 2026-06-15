@@ -2,6 +2,7 @@
 // system-prompt extraction, tool-call hijack, output-handler XSS, RAG poisoning.
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { safeFetch, readBodySafe } from "../_shared/safe-fetch.ts";
+import { recordFinding } from "../_shared/findings-writer.ts";
 
 const cors = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type" };
 const db = () => createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
@@ -70,6 +71,8 @@ Deno.serve(async (req) => {
                 confidence_score: 0.8,
                 source: "ai-surface-attacker", proof_tier: "exploited",
                 evidence: { probe: probe.name, snippet: body.slice(0, 500) },
+                request: { method: "POST", url, headers: { "Content-Type": "application/json" }, body: JSON.stringify(tmpl(probe.text)) },
+                response: { status: r.status, body },
               });
               break; // found, next probe
             }
@@ -81,7 +84,19 @@ Deno.serve(async (req) => {
       if (probes > 60) break;
     }
 
-    if (findings.length) await supa.from("vulnerability_findings").insert(findings);
+    for (const f of findings) await recordFinding({
+      targetId,
+      source: "ai-surface-attacker",
+      category: "ai-surface",
+      severity: f.severity,
+      title: f.title,
+      description: f.description,
+      payload: f.payload,
+      proofTier: "exploited",
+      evidence: f.evidence,
+      request: f.request,
+      response: f.response,
+    });
     await supa.from("scan_logs").insert({
       target_id: targetId, log_type: findings.length ? "warning" : "info",
       message: `🤖 AI-Surface Attacker: ${probes} probes, ${findings.length} prompt-injection / LLM findings`,
