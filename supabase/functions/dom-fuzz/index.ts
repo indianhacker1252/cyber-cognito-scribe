@@ -117,7 +117,7 @@ Deno.serve(async (req) => {
     }
 
     await supa.from("scan_logs").insert({
-      target_id: body.targetId, log_type: findings.length ? "warn" : "info",
+      target_id: body.targetId, log_type: findings.length ? "warning" : "info",
       message: `🎭 DOM-Fuzz finished on ${body.url} via ${executor} — ${findings.length} signals (${findings.filter(f=>f.proven).length} proven)`,
       metadata: { executor, findings: findings.length },
     } as any);
