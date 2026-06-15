@@ -34,6 +34,8 @@ const JOB_ROUTES: Record<string, string> = {
   browser_verify: "browser-exploit",
   chain_exec: "exploit-chain-runner",
   mutate: "request-mutator",
+  local_tool: "local-worker-proxy",
+  ollama_mutate: "local-worker-proxy",
 
 };
 
@@ -41,10 +43,11 @@ async function runJob(job: any): Promise<{ ok: boolean; result?: any; error?: st
   const route = JOB_ROUTES[job.job_type];
   if (!route) return { ok: false, error: `unknown job_type: ${job.job_type}` };
   try {
+    const modePayload = job.job_type === "ollama_mutate" ? { mode: "ai" } : job.job_type === "local_tool" ? { mode: "tool" } : {};
     const r = await fetch(`${FN_BASE}/${route}`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${SERVICE_KEY}` },
-      body: JSON.stringify({ targetId: job.target_id, ...job.payload }),
+      body: JSON.stringify({ targetId: job.target_id, ...modePayload, ...job.payload }),
       signal: AbortSignal.timeout(45000),
     });
     const text = await r.text();
