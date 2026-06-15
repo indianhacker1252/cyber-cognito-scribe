@@ -16,7 +16,7 @@ export interface RecordFindingInput {
   description?: string;
   payload?: string;
   poc?: string;
-  proofTier?: "signal" | "reflected" | "exploited";
+  proofTier?: "signal" | "reflected" | "exploited" | "suspected" | "indicator" | "advisory";
   evidence?: Record<string, unknown>;
   request?: { method: string; url: string; headers?: Record<string,string>; body?: string };
   response?: { status: number; headers?: Record<string,string>; body?: string };
@@ -120,6 +120,7 @@ export async function recordFinding(input: RecordFindingInput): Promise<RecordFi
       source: input.source,
       finding_type: input.category ?? input.source,
       hard_evidence: input.evidence ?? {},
+      evidence: input.evidence ?? {},
       request_raw: requestRaw,
       response_raw: responseRaw,
       response_diff: responseDiff,
@@ -153,15 +154,18 @@ export async function recordFinding(input: RecordFindingInput): Promise<RecordFi
       }).then(() => {}, () => {}); // ignore schema diffs
     }
 
-    // OWASP coverage upsert (best-effort)
+    // OWASP coverage insert (best-effort). The table intentionally has no
+    // uniqueness constraint, so insert a run breadcrumb instead of an upsert.
     const cat = OWASP_MAP[input.category ?? input.source] ?? OWASP_MAP[input.source] ?? "A03_injection";
-    await supa.from("owasp_coverage").upsert({
+    await supa.from("owasp_coverage").insert({
       target_id: input.targetId,
-      category: cat,
-      tested: true,
+      owasp_category: cat,
+      checks_run: 1,
+      payloads_sent: input.payload ? 1 : 0,
       findings_count: 1,
-      last_tested_at: new Date().toISOString(),
-    }, { onConflict: "target_id,category", ignoreDuplicates: false }).then(() => {}, () => {});
+      waf_blocked: 0,
+      metadata: { source: input.source, finding_type: input.category ?? input.source },
+    }).then(() => {}, () => {});
 
     // scan log breadcrumb
     if (input.scanLogId) {
