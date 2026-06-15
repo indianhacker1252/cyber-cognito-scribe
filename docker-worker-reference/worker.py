@@ -3,7 +3,8 @@
 CyberScope Docker Worker — extended HTTP server.
 Endpoints:
   GET  /health      -> capabilities listing
-  POST /run         -> nuclei | ffuf | sqlmap (streamed stdout)
+  POST /run         -> Kali/security tools (streamed stdout)
+  POST /ai/chat     -> Ollama chat proxy for mutation/fuzzing prompts
   POST /sandbox     -> isolated execution of curl/python/bash script (one-shot)
   POST /playwright  -> Playwright DOM XSS / DOM-fuzz against a URL
   POST /apkscan     -> deep static analysis (apktool/jadx) on uploaded APK URL
@@ -14,9 +15,26 @@ import os, json, subprocess, tempfile, shlex, time, uuid, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 TOOLS = {
-    "nuclei":  ["nuclei", "-jsonl", "-silent", "-rate-limit", "50"],
-    "ffuf":    ["ffuf", "-mc", "200,201,204,301,302,307,401,403,500"],
-    "sqlmap":  ["sqlmap", "--batch", "--random-agent", "--level=2", "--risk=1", "--smart"],
+    "nuclei":     ["nuclei", "-jsonl", "-silent", "-rate-limit", "50"],
+    "ffuf":       ["ffuf", "-mc", "200,201,204,301,302,307,401,403,500"],
+    "sqlmap":     ["sqlmap", "--batch", "--random-agent", "--level=2", "--risk=1", "--smart"],
+    "dalfox":     ["dalfox", "url", "--silence"],
+    "katana":     ["katana", "-silent"],
+    "nikto":      ["nikto", "-nointeractive", "-Tuning", "1234567890abcx"],
+    "wpscan":     ["wpscan", "--no-banner", "--random-user-agent"],
+    "gobuster":   ["gobuster", "dir", "-q"],
+    "dirsearch":  ["dirsearch", "-q", "-u"],
+    "wafw00f":    ["wafw00f", "-a"],
+    "whatweb":    ["whatweb", "--no-errors"],
+    "sslscan":    ["sslscan", "--no-colour"],
+    "sslyze":     ["sslyze", "--regular"],
+    "testssl":    ["testssl.sh", "--quiet"],
+    "amass":      ["amass", "enum", "-passive", "-d"],
+    "subfinder":  ["subfinder", "-silent", "-d"],
+    "httpx":      ["httpx", "-silent"],
+    "naabu":      ["naabu", "-silent"],
+    "masscan":    ["masscan", "--rate", "100"],
+    "nmap":       ["nmap", "-sV", "--version-light", "-T2"],
 }
 TOKEN = os.environ.get("WORKER_TOKEN", "changeme")
 PORT  = int(os.environ.get("PORT", "8080"))
