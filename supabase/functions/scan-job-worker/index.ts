@@ -57,10 +57,39 @@ async function runJob(job: any): Promise<{ ok: boolean; result?: any; error?: st
   } catch (e) { return { ok: false, error: e instanceof Error ? e.message : "err" }; }
 }
 
+async function sweepStuck(supa: any) {
+  // Any job marked running >10min is presumed dead → requeue or fail.
+  const cutoff = new Date(Date.now() - 10 * 60_000).toISOString();
+  const { data: stuck } = await supa.from("scan_jobs")
+    .select("id, attempts, max_attempts, target_id, job_type")
+    .eq("status", "running").lt("started_at", cutoff).limit(20);
+  for (const j of stuck || []) {
+    const isFinal = j.attempts >= j.max_attempts;
+    await supa.from("scan_jobs").update({
+      status: isFinal ? "failed" : "queued",
+      error_message: "stuck >10min — auto-recovered",
+      next_run_at: new Date().toISOString(),
+      completed_at: isFinal ? new Date().toISOString() : null,
+    }).eq("id", j.id);
+    await supa.from("scan_logs").insert({
+      target_id: j.target_id, log_type: "warn",
+      message: `⏱️ Job ${j.job_type} stuck >10min, ${isFinal ? "failed" : "requeued"}`,
+      metadata: { kind: "stuck_job_sweep", job_id: j.id },
+    });
+  }
+}
+
+function detectCreditExhaustion(result: any, error?: string): boolean {
+  const blob = JSON.stringify(result || {}) + " " + (error || "");
+  return /402|credits.{0,20}exhaust|insufficient.{0,20}credit|bllmerror|AI credits/i.test(blob);
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   try {
     const supa = db();
+    await sweepStuck(supa).catch(() => {});
+
     const limit = 5;
     const { data: jobs } = await supa.from("scan_jobs")
       .select("*").eq("status", "queued").lte("next_run_at", new Date().toISOString())
@@ -71,13 +100,47 @@ Deno.serve(async (req) => {
         { headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
+    // Targets recently flagged as AI-exhausted → skip AI-heavy job types for 10min.
+    const aiHeavy = new Set(["mythos_step", "debate", "variant_test", "ollama_mutate", "patch_validate"]);
+    const recentExhausted = new Set<string>();
+    const targetIds = [...new Set(jobs.map((j: any) => j.target_id).filter(Boolean))];
+    if (targetIds.length) {
+      const since = new Date(Date.now() - 10 * 60_000).toISOString();
+      const { data: sentinels } = await supa.from("scan_logs")
+        .select("target_id, metadata").in("target_id", targetIds)
+        .eq("log_type", "error").gte("created_at", since);
+      for (const s of sentinels || []) {
+        if ((s.metadata as any)?.kind === "ai_credits_exhausted") recentExhausted.add(s.target_id);
+      }
+    }
+
     const results: any[] = [];
     for (const job of jobs) {
+      if (recentExhausted.has(job.target_id) && aiHeavy.has(job.job_type)) {
+        await supa.from("scan_jobs").update({
+          status: "queued",
+          error_message: "deferred: AI credits exhausted",
+          next_run_at: new Date(Date.now() + 10 * 60_000).toISOString(),
+        }).eq("id", job.id);
+        results.push({ id: job.id, type: job.job_type, deferred: true });
+        continue;
+      }
+
       await supa.from("scan_jobs").update({
         status: "running", started_at: new Date().toISOString(), attempts: job.attempts + 1,
       }).eq("id", job.id);
 
       const out = await runJob(job);
+
+      // Hard-stop on AI credit exhaustion — write sentinel so other jobs/UI react.
+      if (detectCreditExhaustion(out.result, out.error)) {
+        await supa.from("scan_logs").insert({
+          target_id: job.target_id, log_type: "error",
+          message: `🪫 AI credits exhausted during ${job.job_type} — scan paused.`,
+          metadata: { kind: "ai_credits_exhausted", phase: job.job_type, job_id: job.id, until: new Date(Date.now() + 10 * 60_000).toISOString() },
+        });
+      }
+
       if (out.ok) {
         await supa.from("scan_jobs").update({
           status: "done", completed_at: new Date().toISOString(), result: out.result || {},
@@ -90,6 +153,11 @@ Deno.serve(async (req) => {
           next_run_at: new Date(Date.now() + 60_000 * Math.pow(2, job.attempts)).toISOString(),
           completed_at: isFinal ? new Date().toISOString() : null,
         }).eq("id", job.id);
+        await supa.from("scan_logs").insert({
+          target_id: job.target_id, log_type: "error",
+          message: `❌ ${job.job_type} failed: ${String(out.error).slice(0, 200)}`,
+          metadata: { kind: "job_failure", job_id: job.id, attempts: job.attempts + 1, final: isFinal },
+        }).catch(() => {});
       }
       results.push({ id: job.id, type: job.job_type, ok: out.ok, error: out.error });
     }
@@ -101,3 +169,4 @@ Deno.serve(async (req) => {
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
   }
 });
+
