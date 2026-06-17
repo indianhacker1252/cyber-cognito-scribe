@@ -22,14 +22,20 @@ export interface RecordFindingInput {
   response?: { status: number; headers?: Record<string,string>; body?: string };
   scanLogId?: string;
   endpointId?: string | null;
+  vulnClass?: string;
+  /** When true, queue a scan_jobs row of type "exploit" so the exploit engine picks this up. */
+  autoEnqueueExploit?: boolean;
+  runId?: string | null;
 }
 
 export interface RecordFindingResult {
   ok: boolean;
   findingId?: string;
   duplicate?: boolean;
+  exploitJobId?: string;
   error?: string;
 }
+
 
 function db(): SupabaseClient {
   return createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
