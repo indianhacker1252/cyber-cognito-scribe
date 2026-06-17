@@ -2,9 +2,11 @@
 // OAuth (loose redirect_uri), Session (cookie tossing, __Host- bypass).
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { safeFetch, readBodySafe } from "../_shared/safe-fetch.ts";
+import { recordFinding } from "../_shared/findings-writer.ts";
 
 const cors = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type" };
 const db = () => createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
+
 
 function b64url(s: string) { return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, ""); }
 
