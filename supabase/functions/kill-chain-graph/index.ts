@@ -210,13 +210,29 @@ Deno.serve(async (req) => {
       })),
       status: "proposed",
     }));
-    if (chainRows.length) await supa.from("kill_chains").insert(chainRows);
+    let chainExecQueued = 0;
+    if (chainRows.length) {
+      const inserted = await supa.from("kill_chains").insert(chainRows).select("id, severity, total_cost");
+      // Gap 6: enqueue chain_exec for every persisted chain so exploit-chain-runner actually executes them.
+      for (const ch of inserted.data || []) {
+        try {
+          await supa.from("scan_jobs").insert({
+            target_id: targetId, job_type: "chain_exec",
+            priority: ch.severity === "critical" ? 9 : ch.severity === "high" ? 8 : 6,
+            payload: { chainId: ch.id, source: "kill-chain-graph", total_cost: ch.total_cost },
+            status: "queued", next_run_at: new Date().toISOString(),
+          });
+          chainExecQueued++;
+        } catch { /* best-effort */ }
+      }
+    }
 
     await supa.from("scan_logs").insert({
       target_id: targetId, log_type: chains.length ? "result" : "info",
-      message: `⛓️ Kill-Chain Graph: ${dbNodes.length} nodes, ${edges.length} edges, ${chains.length} chains discovered`,
-      metadata: { nodes: dbNodes.length, edges: edges.length, chains: chains.length },
+      message: `⛓️ Kill-Chain Graph: ${dbNodes.length} nodes, ${edges.length} edges, ${chains.length} chains discovered, ${chainExecQueued} chain_exec jobs queued`,
+      metadata: { nodes: dbNodes.length, edges: edges.length, chains: chains.length, chainExecQueued },
     });
+
 
     return new Response(JSON.stringify({
       nodes: dbNodes.length, edges: edges.length, chains: chainRows.length,
