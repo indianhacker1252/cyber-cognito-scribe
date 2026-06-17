@@ -184,8 +184,69 @@ export async function recordFinding(input: RecordFindingInput): Promise<RecordFi
       }).then(() => {}, () => {});
     }
 
-    return { ok: true, findingId: inserted.id };
+    // Auto-enqueue exploit-engine job (Section 1 of plan).
+    let exploitJobId: string | undefined;
+    const shouldQueue = input.autoEnqueueExploit
+      || ["high", "critical"].includes(input.severity)
+      || ["indicator", "suspected", "reflected"].includes(input.proofTier || "");
+    if (shouldQueue) {
+      try {
+        const { data: job } = await supa.from("scan_jobs").insert({
+          target_id: input.targetId,
+          job_type: "exploit",
+          priority: input.severity === "critical" ? 9 : input.severity === "high" ? 8 : 5,
+          payload: {
+            findingId: inserted.id,
+            vuln_class: input.vulnClass || input.category || input.source,
+            url: input.request?.url,
+            payload: input.payload,
+            evidence: input.evidence || {},
+            runId: input.runId || null,
+          },
+          status: "queued",
+          next_run_at: new Date().toISOString(),
+        }).select("id").single();
+        exploitJobId = job?.id;
+        if (exploitJobId) {
+          await supa.from("scan_logs").insert({
+            target_id: input.targetId,
+            log_type: "action",
+            message: `💀 Exploit Engine engaging — finding ${inserted.id} queued (${input.severity} ${input.source})`,
+            metadata: { kind: "exploit_enqueued", finding_id: inserted.id, job_id: exploitJobId, run_id: input.runId },
+          }).then(() => {}, () => {});
+        }
+      } catch { /* best-effort */ }
+    }
+
+    return { ok: true, findingId: inserted.id, exploitJobId };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
 }
+
+// ───────────────────────── Heuristic surface ranker (gap 11) ─────────────────────────
+// Fallback used when AI-driven surface analysis is unavailable (credits exhausted).
+export interface RankedEndpoint { url: string; method: string; parameters?: Record<string, unknown>; score: number; reason: string }
+export function heuristicRankSurface(eps: Array<{ url: string; method?: string; parameters?: Record<string, unknown>; status_code?: number; response_length?: number }>, limit = 30): RankedEndpoint[] {
+  const scored: RankedEndpoint[] = [];
+  for (const e of eps) {
+    if (!e.url) continue;
+    let score = 0;
+    const reasons: string[] = [];
+    const params = e.parameters || {};
+    const paramCount = Object.keys(params).length;
+    if (paramCount > 0) { score += 20 + Math.min(paramCount, 5) * 3; reasons.push(`${paramCount} params`); }
+    if (e.status_code === 200) { score += 10; }
+    else if (e.status_code === 302 || e.status_code === 301) { score += 7; }
+    else if (e.status_code === 401 || e.status_code === 403) { score += 8; reasons.push("auth-gated"); }
+    if (/admin|api|login|upload|debug|graphql|console|actuator|swagger|internal/i.test(e.url)) { score += 15; reasons.push("juicy-path"); }
+    if (/\?.*(?:url|redirect|callback|next|target|file|path|id|user|cmd)=/i.test(e.url)) { score += 12; reasons.push("dangerous-param"); }
+    if ((e.method || "GET").toUpperCase() !== "GET") { score += 5; reasons.push(e.method!); }
+    const rl = e.response_length || 0;
+    if (rl > 5000) score += Math.min(8, Math.floor(rl / 5000));
+    scored.push({ url: e.url, method: (e.method || "GET").toUpperCase(), parameters: params, score, reason: reasons.join("+") || "baseline" });
+  }
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, limit);
+}
+
