@@ -121,39 +121,44 @@ async function executePhase(db: any, run: any, phase: string, payload: any): Pro
   }
 
   if (meta.kind === "iter" && meta.sub === "debate") {
-    await log(`🥷 Debate phase (parallel fan-out, max 6)`);
+    await log(`🥷 Debate phase (parallel fan-out, max 6) — iter ${meta.iter}`);
     const { data: eps } = await db.from("discovered_endpoints").select("url,parameters").eq("target_id", targetId).limit(50);
-    const COMMON = ["q", "id", "search", "url", "redirect"];
+    const COMMON = ["q", "id", "search", "url", "redirect", "page", "file", "user", "token", "next"];
 
-    // Build the candidate list (endpoint × param) up-front, then fan out in parallel.
-    const candidates: Array<{ url: string; param: string; value: string }> = [];
+    // Gap 1 fix: rotate candidate window by iteration so debates 2/3/4 see DIFFERENT pairs.
+    const iterOffset = ((meta.iter || 1) - 1) * 5;
+    // Build candidate list (endpoint × param), then slice the iteration window.
+    const allCandidates: Array<{ url: string; param: string; value: string }> = [];
     for (const ep of eps || []) {
       let params = (ep.parameters as Record<string, string>) || {};
       if (Object.keys(params).length === 0) {
         try { params = Object.fromEntries(new URL(ep.url).searchParams); } catch {}
       }
       if (Object.keys(params).length === 0) params = Object.fromEntries(COMMON.map(p => [p, "test"]));
-      for (const pk of Object.keys(params).slice(0, 5)) {
-        candidates.push({ url: ep.url, param: pk, value: params[pk] });
-        if (candidates.length >= 20) break;
+      for (const pk of Object.keys(params).slice(0, 6)) {
+        allCandidates.push({ url: ep.url, param: pk, value: params[pk] });
       }
-      if (candidates.length >= 20) break;
     }
+    const candidates = allCandidates.slice(iterOffset, iterOffset + 20).length >= 5
+      ? allCandidates.slice(iterOffset, iterOffset + 20)
+      : allCandidates.slice(0, 20); // fall back to head if exhausted
 
     const settled = await Promise.allSettled(
       candidates.map(c =>
-        call("mythos-debate", { targetId, runId, endpointUrl: c.url, paramName: c.param, paramValue: c.value, vulnClassHint: "auto" }, 28000)
+        call("mythos-debate", { targetId, runId, endpointUrl: c.url, paramName: c.param, paramValue: c.value, vulnClassHint: "auto", iteration: meta.iter }, 28000)
       ),
     );
-    let debates = 0, tp = 0, fp = 0;
+    let debates = 0, tp = 0, fp = 0, incon = 0;
     for (const s of settled) {
       if (s.status === "fulfilled" && s.value.ok) {
         debates++;
-        if (s.value.data?.fpVerdict === "true_positive") tp++;
-        if (s.value.data?.fpVerdict === "false_positive") fp++;
+        const v = s.value.data?.fpVerdict;
+        if (v === "true_positive") tp++;
+        else if (v === "false_positive") fp++;
+        else incon++;
       }
     }
-    await log(`Debates: ${debates}/${candidates.length} run in parallel, ${tp} TP, ${fp} FP`, { debates, tp, fp, parallel: candidates.length });
+    await log(`Debates: ${debates}/${candidates.length} run in parallel, ${tp} TP, ${fp} FP, ${incon} inconclusive`, { debates, tp, fp, incon, parallel: candidates.length, iterOffset });
     // Browser-exploit pass on top XSS findings
     const { data: xssFindings } = await db.from("vulnerability_findings")
       .select("id").eq("target_id", targetId).ilike("finding_type", "%xss%").lt("proof_tier", "exploited").limit(10);
@@ -170,14 +175,24 @@ async function executePhase(db: any, run: any, phase: string, payload: any): Pro
       await call("exploit-chain-runner", { chainId: c.id, targetId }, 40000);
     }
 
+    // Gap 12 assertion: warn if no exploit_runs in this iteration window.
+    try {
+      const since = new Date(Date.now() - 5 * 60_000).toISOString();
+      const { count } = await db.from("exploit_runs").select("id", { count: "exact", head: true }).eq("target_id", targetId).gte("created_at", since);
+      if ((count ?? 0) === 0) {
+        await log(`⚠️ No exploit_runs in last 5min — pipeline may be dropping signals before exploit engine (iter ${meta.iter})`, { kind: "exploit_runs_missing", iter: meta.iter });
+      }
+    } catch { /* ignore */ }
+
     // Decide next: more iterations or synthesize kill-chains then patch?
     if (meta.iter! < run.max_iterations) {
-      if (debates === 0 && tp === 0 && meta.iter! >= 2) {
+      if (debates === 0 && tp === 0 && incon === 0 && meta.iter! >= 2) {
         return { done: false, nextPhase: "kill-chain-synthesis", results: { early_stop: true } };
       }
       return { done: false, nextPhase: `iter-${meta.iter! + 1}-chain` };
     }
     return { done: false, nextPhase: "kill-chain-synthesis" };
+
   }
 
   if (phase === "kill-chain-synthesis") {
