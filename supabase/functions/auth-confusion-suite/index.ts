@@ -106,14 +106,33 @@ Deno.serve(async (req) => {
       }
     }
 
-    if (findings.length) await supa.from("vulnerability_findings").insert(findings);
+    let queued = 0;
+    for (const f of findings) {
+      const res = await recordFinding({
+        targetId,
+        source: "auth-confusion-suite",
+        category: "auth-confusion",
+        severity: f.severity,
+        title: f.title,
+        description: f.description,
+        payload: f.payload,
+        proofTier: f.proof_tier || "suspected",
+        evidence: f.evidence,
+        vulnClass: f.vuln_class,
+        request: { method: "GET", url: f.affected_url, headers: {} },
+        response: { status: f.evidence?.status || 200, body: "" },
+        autoEnqueueExploit: true,
+      });
+      if (res.exploitJobId) queued++;
+    }
     await supa.from("scan_logs").insert({
       target_id: targetId, log_type: findings.length ? "result" : "info",
-      message: `🔐 Auth-Confusion: ${findings.length} auth/JWT/OAuth issues`,
-      metadata: { count: findings.length },
+      message: `🔐 Auth-Confusion: ${findings.length} auth/JWT/OAuth issues, ${queued} exploit jobs queued`,
+      metadata: { count: findings.length, queued },
     });
 
-    return new Response(JSON.stringify({ findings: findings.length }), { headers: { ...cors, "Content-Type": "application/json" } });
+    return new Response(JSON.stringify({ findings: findings.length, queued }), { headers: { ...cors, "Content-Type": "application/json" } });
+
   } catch (e) {
     return new Response(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }), {
       status: 200, headers: { ...cors, "Content-Type": "application/json" },
