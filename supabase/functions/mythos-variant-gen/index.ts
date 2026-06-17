@@ -23,15 +23,35 @@ serve(async (req) => {
     });
 
     let intel: any[] = [];
-    // Fix #15 — rotate CVE window per iteration so successive runs see fresh intel
-    const iterSalt = Math.floor(Math.random() * 5) * 5; // 0,5,10,15,20
+    // Gap 8: track CVEs already seen in this run via mythos_runs.thought_log → exclude on the next pull.
+    const { data: runRow } = await db.from("mythos_runs").select("thought_log").eq("id", runId).maybeSingle();
+    const seenIds = new Set<string>();
+    for (const entry of (runRow?.thought_log as any[] | null) || []) {
+      if (entry?.kind === "variant-cve-pulled" && Array.isArray(entry.ids)) for (const id of entry.ids) seenIds.add(id);
+    }
     if (cveIds?.length) {
-      const { data } = await db.from("intel_feeds").select("title,vulnerability_class,extracted_payloads,raw_summary,report_id").in("report_id", cveIds).limit(15);
+      const fresh = (cveIds as string[]).filter((id) => !seenIds.has(id));
+      const ids = fresh.length ? fresh : (cveIds as string[]); // fall back to original if fully exhausted
+      const { data } = await db.from("intel_feeds").select("title,vulnerability_class,extracted_payloads,raw_summary,report_id").in("report_id", ids).limit(15);
       intel = data || [];
     } else {
-      const { data } = await db.from("intel_feeds").select("title,vulnerability_class,extracted_payloads,raw_summary,report_id").eq("status", "processed").order("ingested_at", { ascending: false }).range(iterSalt, iterSalt + 4);
-      intel = data || [];
+      // exclude seen via .not("report_id","in",...) requires SQL syntax; we filter client-side
+      const { data } = await db.from("intel_feeds").select("title,vulnerability_class,extracted_payloads,raw_summary,report_id").eq("status", "processed").order("ingested_at", { ascending: false }).limit(40);
+      intel = (data || []).filter((r: any) => !seenIds.has(r.report_id)).slice(0, 5);
+      // If exhausted, rotate window
+      if (intel.length === 0) {
+        const offset = (seenIds.size % 20);
+        const { data: d2 } = await db.from("intel_feeds").select("title,vulnerability_class,extracted_payloads,raw_summary,report_id").eq("status", "processed").order("ingested_at", { ascending: false }).range(offset, offset + 4);
+        intel = d2 || [];
+      }
     }
+    // Persist the IDs we just selected so the NEXT iteration excludes them.
+    const pulledIds = intel.map((r: any) => r.report_id).filter(Boolean);
+    if (pulledIds.length && runId) {
+      const newLog = [...((runRow?.thought_log as any[] | null) || []), { ts: new Date().toISOString(), kind: "variant-cve-pulled", ids: pulledIds }];
+      await db.from("mythos_runs").update({ thought_log: newLog }).eq("id", runId);
+    }
+
 
     const { data: endpoints } = await db.from("discovered_endpoints").select("url,method,parameters").eq("target_id", targetId).limit(60);
 

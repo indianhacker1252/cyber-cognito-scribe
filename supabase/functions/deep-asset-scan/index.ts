@@ -302,7 +302,7 @@ async function probeDebugPaths(db: any, targetId: string, origin: string) {
     } catch { /* ignore */ }
   }
   for (const h of hits) {
-    await db.from("vulnerability_findings").insert({
+    const { data: inserted } = await db.from("vulnerability_findings").insert({
       target_id: targetId,
       title: `[A09] Exposed sensitive path: ${h.path}`,
       severity: /(\.git|\.env|actuator\/env|actuator\/heapdump|backup|dump\.sql|aws\/credentials)/i.test(h.path) ? "critical" : "medium",
@@ -311,10 +311,28 @@ async function probeDebugPaths(db: any, targetId: string, origin: string) {
       validation_status: "active_probe",
       triage_reasoning: "A09:2021 Security Logging & Monitoring / A05 Misconfiguration — well-known sensitive path reachable.",
       finding_type: "info-disclosure", url: origin + h.path,
-    });
+      source: "deep-asset-scan",
+      hard_evidence: { path: h.path, status: h.status, size: h.size, origin },
+    }).select("id").single();
+    // Gap 7: every debug-path hit immediately fans out into exploit + SSRF jobs.
+    try {
+      if (inserted?.id) {
+        await db.from("scan_jobs").insert({
+          target_id: targetId, job_type: "exploit", priority: 7,
+          payload: { findingId: inserted.id, vuln_class: "info-disclosure", url: origin + h.path },
+          status: "queued", next_run_at: new Date().toISOString(),
+        });
+      }
+      await db.from("scan_jobs").insert({
+        target_id: targetId, job_type: "fuzz", priority: 6,
+        payload: { url: origin + h.path, vuln_class: "ssrf", source: "debug-path-fanout" },
+        status: "queued", next_run_at: new Date().toISOString(),
+      });
+    } catch { /* best-effort */ }
   }
   return hits.length;
 }
+
 
 // A10: blind SSRF via OOB token
 async function probeBlindSsrf(db: any, targetId: string, endpoints: Array<{ url: string }>) {

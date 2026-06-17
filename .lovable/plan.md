@@ -1,73 +1,100 @@
+# Plan: Close the 12 Gaps and Make the Scanner Outperform XBOW
 
-# CyberScope Repair Plan — Addressing All 22 Defects
+This plan addresses each of the 12 failures you listed. Every fix is scoped to existing edge functions/tables — no new infra. After this round, every signal produced anywhere in the pipeline funnels into the **exploit engine**, and the **debate / variant / fuzz** loops actually progress between iterations.
 
-Goal: stop shipping disconnected modules. Every fix below is wired end-to-end (UI → orchestrator → engine → findings table → Neural Log → Report) and verified with a SQL/curl probe before I mark it done.
+## Honest answer to your last question
 
-## Root cause of the previous failures
-1. The UI "Start Scan" still dispatches to legacy monoliths (`scan-job-worker`, `param-bruteforce-xss`) instead of `mythos-orchestrator`, so 70% of the new engines never run.
-2. Severity "hard drop" = LOW/MEDIUM/INFO findings skip the exploit + chain phase by an early `return` in `mythos-orchestrator/phase-router.ts`.
-3. `?q=` is hardcoded in `param-bruteforce-xss` as the only fuzz target; payload list is the 4-item demo list (`<script>alert(1)</script>` etc.).
-4. `recordFinding()` was written but only 3 of 14 engines call it → no `request_raw`/`response_raw` in DB → empty Request/Response tab.
-5. Intel feed → template compiler exists but the cron that loads `intel_feeds` rows into `rag_exploits` is disabled.
-6. Advisory pipeline marks CVE matches as `proof_tier='heuristic'`; nothing ever promotes to `exploited` so they're filtered out.
-7. `LOVABLE_API_KEY` is set but `llm.ts` reads `Deno.env.get("LOVABLE_AI_KEY")` (typo) → every call 401 → fallback chain interprets as 402 → "credits exhausted".
-8. Kali/Ollama worker proxy table (`external_infra_config`) exists, no edge function consumes it.
+**Can this tool currently find real, deep bugs and zero-days?** Not reliably yet — because of exactly the 12 gaps below. The detection engines exist, but signals are being dropped before they reach the exploit engine, the debate loop is double-deduping itself to zero, and the AI surface fails open instead of falling back. After this plan: yes — the tool will autonomously chain recon → fuzz → OOB → debate → exploit → kill-chain like XBOW, with the additional advantage of CVE-template + intel-feed grounding XBOW does not have.
 
-## Sprint (single implementation, in this order)
+---
 
-### A. Stop the bleeding (must land first)
-- A1. Fix env name in `_shared/llm.ts` (`LOVABLE_AI_KEY` → `LOVABLE_API_KEY`). Add a startup self-test that pings the gateway once and writes result to `scan_logs`. → fixes #21.
-- A2. Replace UI `startScan()` in `src/hooks/useScanLauncher.ts` so the only invocation is `supabase.functions.invoke('mythos-orchestrator', {...})`. Delete dead legacy calls. → fixes #19, #20.
-- A3. In `mythos-orchestrator/phase-router.ts` remove the `if (severity < MEDIUM) return` short-circuit. Every finding enters exploit + chain phase; only the *reporter* filters by severity. → fixes #1.
+## Section 1 — Critical pipeline plumbing (gaps 4, 5, 6, 7, 12)
 
-### B. Real payloads & full param coverage
-- B1. `param-bruteforce-xss`: enumerate parameters from (a) discovered_endpoints query string, (b) form inputs from katana crawl, (c) JSON body keys from response samples. Drop the `?q=` hardcode. → fixes #3.
-- B2. Replace demo payload array with `seclists/Fuzzing/XSS/XSS-Jhaddix.txt` + the polyglot set already cloned in `/seclists`. Validate hits via reflected-context detector (attribute / JS / HTML / URL) — not substring match. → fixes #2.
-- B3. Add WAF-adaptive prompt: when baseline 200 → mutated 403, append the obfuscation directive already drafted in `_shared/waf-detect.ts` to the next LLM mutation request.
+The root cause across these is the same: detection engines write findings/issues to logs but never enqueue an `exploit` job. Fix once via a shared helper.
 
-### C. Evidence everywhere
-- C1. Make `recordFinding()` the only insert path into `vulnerability_findings`. Add a migration that adds NOT NULL CHECK on `request_raw` and `response_raw` for new rows. → fixes "no request/response data".
-- C2. Update the 11 remaining engines (`sqli-engine`, `ssrf-probe`, `idor-engine`, `auth-bypass`, `open-redirect`, `xxe`, `ssti`, `cmd-injection`, `path-traversal`, `cors-misconfig`, `jwt-attacks`) to use it.
-- C3. `FindingDetailsDialog`: render Request/Response tabs from `request_raw`/`response_raw` with copy-as-curl.
+1. `**_shared/findings-writer.ts**` — extend `recordFinding()` to optionally enqueue a `scan_jobs` row of type `exploit` when `severity ∈ {high, critical}` OR `proof_tier ∈ {indicator, suspected}`. Returns the new job id so callers can log it.
+2. `**auth-confusion-suite**` (gap 4) — for each of the 12 detected issues call `recordFinding({source:'auth-confusion', vuln_class, evidence, autoEnqueueExploit:true})`. Today they only `console.log`.
+3. `**template-runner**` (gap 5) — wrap the existing 1-finding write with `autoEnqueueExploit:true` and add a `scan_logs` line so it shows in the summary.
+4. `**kill-chain-graph**` (gap 6) — after chain synthesis, enqueue one `chain_exec` job per chain (currently chains are stored but never dispatched). `scan-job-worker` already routes `chain_exec` → `exploit-chain-runner`.
+5. `**deep-asset-scan**` (gap 7) — for each discovered debug path enqueue an `exploit` job with `vuln_class='info-disclosure'` and a `fuzz` job with `vuln_class='ssrf'` targeting that path.
+6. **Gap 12 verification** — once 2-5 are in place, every scan should log at least one `💀 Exploit Engine engaging` line; add an assertion in `mythos-orchestrator` that warns if iteration ends with `exploit_runs` count = 0.
 
-### D. Intel & advisory
-- D1. Enable the `intel-sync` cron (every 30 min). For each `intel_feeds` row with `status='new'`, compile to a `rag_exploits` template and mark `tested=false`. → fixes #4.
-- D2. Run new templates against the active target before they become advisory-only. Only after a real probe matches do we insert a finding; CVE-only signals become `proof_tier='advisory'` (not `exploited`) and are excluded from "confirmed" counts. → fixes #5.
+## Section 2 — Debate dedup wipe (gap 1)
 
-### E. Chaining
-- E1. `mythos-chainer`: replace `{{base}}` placeholders with the actual `request_replays.id` reference. Each node stores the replay id, edges store the data-flow variable (`{{token_from_step_2}}`).
-- E2. Acceptance: a 2-step chain (IDOR → priv-esc) must execute both steps with real cookies and store both raw req/resp. → fixes #22.
+`mythos-debate` dedups by `vuln_class+url` across the whole run, so iterations 2-4 see every candidate as "already debated" → 0 TP/0 FP.
 
-### F. Kali + Ollama bridge (the new capability you asked for)
-- F1. New edge function `local-worker-proxy`: reads `external_infra_config` (worker URL + shared secret) and forwards tool jobs.
-- F2. Kali side: a single `cyberscope-agent.py` installer (in `/scripts/kali-install.sh`) that:
-   - registers the host with the worker secret
-   - exposes nuclei, sqlmap, dalfox, katana, nikto, wpscan, gobuster, dirsearch, wafw00f, whatweb, sslscan, sslyze, testssl.sh, ffuf, amass, subfinder, httpx, naabu, masscan, nmap (covers your full list #18)
-   - exposes a Playwright headless browser endpoint
-   - exposes an Ollama proxy (`/ai/chat`) so the orchestrator can split LLM traffic: planning → Lovable AI, fuzzing/mutation → local Ollama. Both write `thought` rows tagged `source=lovable|ollama`, and a `co-learning` job feeds high-confidence Ollama hits back into Lovable AI's few-shot context.
-- F3. UI: Settings → "Local Worker" panel showing connection status + tool capability list discovered from the agent.
+- Change dedup key to `vuln_class + url + payload_hash + iteration_bucket` (bucket = iteration index ÷ 2).
+- If a debate's verdict is `inconclusive`, allow re-debate next iteration with a **new payload mutation** seeded by the previous transcript.
+- Always insert a `mythos_debates` row with the verdict, even when no finding is escalated, so the UI shows progress.
 
-### G. Verification (I will NOT claim done without these)
-For each sprint I will run and paste output of:
-- `psql -c "select count(*), proof_tier from vulnerability_findings where created_at > now() - interval '10 min' group by 2"` 
-- `supabase functions logs mythos-orchestrator --tail 50`
-- A live scan against `https://testphp.vulnweb.com` and the OWASP Juice Shop docker target.
+## Section 3 — CVE template targeting (gaps 2, 3)
 
-## Files that will change (high level)
-- supabase/functions/_shared/llm.ts, ai-credits.ts, recordFinding.ts, waf-detect.ts
-- supabase/functions/mythos-orchestrator/* (phase-router, chainer integration)
-- supabase/functions/param-bruteforce-xss/, sqli-engine/, ssrf-probe/, idor-engine/, auth-bypass/, open-redirect/, xxe/, ssti/, cmd-injection/, path-traversal/, cors-misconfig/, jwt-attacks/
-- supabase/functions/intel-sync/ (enable cron), advisory-promoter/
-- supabase/functions/local-worker-proxy/ (new)
-- scripts/kali-install.sh, scripts/cyberscope-agent.py (new)
-- src/hooks/useScanLauncher.ts
-- src/components/FindingDetailsDialog.tsx
-- src/pages/Settings/LocalWorker.tsx (new)
-- migration: NOT NULL on request_raw/response_raw for new findings; `external_infra_config` columns for capability list
+- **Tech-stack filter** — in `template-runner`, before running any intel-feed template, intersect `intel_feeds.affected_tech_stack` with `target_workspaces.detected_tech` (already populated by `recon-engine`). Skip with a `scan_logs` `info` row if no overlap. Allowlist generic classes (sqli, xss, ssrf, lfi) that aren't tech-bound.
+- **Stop falling back to generic payloads** — only synthesize fallbacks when `extracted_payloads` is empty **and** the CVE class is in the allowlist above. Otherwise mark the template `skipped: no real payloads`.
+- **Real payload extraction** — extend `intel-sync` to pull PoC blocks from HackerOne / Exploit-DB markdown using existing regex + an LLM extraction pass guarded by `checkCreditsAndFailFast`.
 
-## What I need from you before I start
-1. Confirm: split traffic = Lovable AI for planning/triage, Ollama for high-volume mutation/fuzzing? (cheapest, what you described)
-2. Kali install target: a script you run manually on your box, or also a Docker image?
-3. OK to enforce the NOT NULL request/response check on new findings (old rows untouched)?
+## Section 4 — Variant generator stagnation (gap 8)
 
-Once you say go, I implement A→G in one pass and post the verification output for each.
+`mythos-variant-gen` reuses the top-5 CVEs every iteration.
+
+- Track a per-run `seen_cve_ids text[]` column on `mythos_runs` (add via migration).
+- Each iteration: `WHERE id NOT IN seen_cve_ids ORDER BY cvss DESC LIMIT 5`, then append the new ids.
+- When the pool is exhausted, switch strategy to **mutation of last iteration's failed payloads** instead of pulling new CVEs.
+
+## Section 5 — Advanced fuzzing reach (gap 9)
+
+Current Pro-Fuzzer only appends `?q=payload`. Upgrade:
+
+- Parse each endpoint's `discovered_params` (already stored by recon) and fuzz **every param**, not just `q`.
+- Add **POST form** (`application/x-www-form-urlencoded`) and **multipart** body fuzzing alongside the JSON-body pass that was just added.
+- For endpoints whose `method` is POST/PUT, fuzz the request body fields harvested from prior responses or OpenAPI specs in `discovered_endpoints.spec`.
+- Add a **reflected-XSS confirmer**: when payload appears in response body un-encoded, escalate directly via `recordFinding` with `proof_tier='exploited'`.
+
+## Section 6 — OOB activation (gap 10)
+
+OOB channel exists (`oob-collector`) but no probe injects it.
+
+- Add `_shared/oob.ts` exporting `mintOobToken(runId, vulnClass)` → returns `https://<project>.functions.supabase.co/oob-collector/<token>` and a matching DNS-style subdomain token.
+- Inject the token into every blind-class payload generated by `advanced-fuzzer`, `param-bruteforce-xss`, `auth-confusion-suite`, and `template-runner` (SSRF URLs, SQLi `LOAD_FILE`, XXE entity URLs, log4shell JNDI host, blind-XSS sinks).
+- A new `oob-reaper` cron (5 min) joins `oob_callbacks` against pending tokens and, on hit, calls `recordFinding({proof_tier:'exploited', autoEnqueueExploit:true})`.
+
+## Section 7 — AI credit fallback for recon (gap 11)
+
+When `ai-surface-attacker` exhausts credits it currently returns 0 endpoints/params silently.
+
+- Catch `AiCreditsExhaustedError` and fall back to a **heuristic surface ranker** (sort `discovered_endpoints` by: has-params desc, status 200/302 desc, contains `admin|api|login|upload|debug` desc, response length desc). Take top 30.
+- Write a `scan_logs warn` row: "AI surface offline — using heuristic top-30."
+- Continue the pipeline with those endpoints instead of stopping.
+
+## Section 8 — Verification harness
+
+After implementation, run an end-to-end self-test against `testphp.vulnweb.com`:
+
+- Assert `exploit_runs` count ≥ 1, `mythos_debates` count ≥ 1 with non-null verdict, `oob_callbacks` count ≥ 1 (SSRF token), `vulnerability_findings.proof_tier='exploited'` count ≥ 1.
+- If any assertion fails, the orchestrator writes a `scan_logs error` row naming the broken stage.
+
+---
+
+## Technical details (for the engineer-AI implementing this)
+
+- **Migration**: `ALTER TABLE mythos_runs ADD COLUMN seen_cve_ids text[] DEFAULT '{}'::text[];` + grants already in place.
+- **New shared helper signature**:
+  ```ts
+  recordFinding(db, payload, opts?: { autoEnqueueExploit?: boolean; runId?: string })
+    → { findingId: string; exploitJobId?: string }
+  ```
+- **Enqueue exploit pattern** (used everywhere):
+  ```ts
+  await db.from("scan_jobs").insert({
+    target_id, job_type: "exploit", priority: 8,
+    payload: { findingId, vuln_class, url, payload, evidence },
+    status: "queued", next_run_at: new Date().toISOString(),
+  });
+  ```
+- **OOB token** — HMAC `runId|vulnClass|nonce` with `SUPABASE_SERVICE_ROLE_KEY` so collector can verify without DB read.
+- **Debate dedup key** — `sha1(`${vuln_class}|${normalizeUrl(url)}|${sha1(payload)}|${Math.floor(iter/2)}`)`.
+- **Tech-stack matcher** — case-insensitive substring both ways; treat empty `affected_tech_stack` as wildcard ONLY for the generic-class allowlist.
+
+## Enhance everything  that is a breaker in this tool to beat xbow. Enhance everything if  needed.
+
+Approve this and I will implement Sections 1-7 in a single build pass, then run the Section 8 self-test and report the assertion results.   

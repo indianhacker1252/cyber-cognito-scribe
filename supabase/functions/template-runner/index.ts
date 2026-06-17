@@ -272,12 +272,16 @@ Deno.serve(async (req) => {
           payload: f.payload,
           proofTier: f.hard_evidence?.cve ? "advisory" : "signal",
           evidence: f.hard_evidence,
+          vulnClass: f.hard_evidence?.category || "template",
           request: { method: "GET", url: endpoint, headers: authHeaders },
           response: { status: f.hard_evidence?.statusCode || 200, body: String(f.hard_evidence?.snippet || "") },
           scanLogId: scanRunId,
+          autoEnqueueExploit: true,
+          runId: scanRunId || null,
         });
         if (written.findingId) inserted.push({ id: written.findingId });
       }
+
       for (let i = 0; i < inserted.length; i++) {
         if (!xssTmplIds.has(i)) continue;
         await db.from("scan_jobs").insert({

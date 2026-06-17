@@ -258,9 +258,17 @@ async function testCveTemplates(
   targetId: string,
   endpoints: Array<{ url: string }>,
 ): Promise<{ tested: number; confirmed: number; failed: number; details: Array<Record<string, unknown>> }> {
+  // Pull target tech-stack for filtering (gap 2).
+  const { data: tgt } = await db.from("target_workspaces").select("tech_stack, detected_tech, domain").eq("id", targetId).maybeSingle();
+  const stackBlob = JSON.stringify(((tgt as any)?.tech_stack || {})).toLowerCase() + " " + JSON.stringify(((tgt as any)?.detected_tech || [])).toLowerCase();
+  const techMatches = (affected: string[] | null): boolean => {
+    if (!affected || affected.length === 0) return true; // unknown affected → keep
+    return affected.some((t) => t && stackBlob.includes(String(t).toLowerCase()));
+  };
+
   const { data: feeds } = await db
     .from("intel_feeds")
-    .select("id, title, vulnerability_class, extracted_payloads, severity, source_url, source")
+    .select("id, title, vulnerability_class, extracted_payloads, severity, source_url, source, affected_tech_stack")
     .not("extracted_payloads", "is", null)
     .order("ingested_at", { ascending: false })
     .limit(100);
@@ -274,11 +282,27 @@ async function testCveTemplates(
     return { tested: 0, confirmed: 0, failed: 0, details: [] };
   }
 
+  // Apply tech-stack filter unless the class is generic (allowlist).
+  const GENERIC_CLASSES = new Set(["sqli", "rxss", "xss", "ssrf", "ssti", "lfi", "cmdi", "path-traversal", "auth-bypass", "xxe", "open-redirect"]);
+  const filteredFeeds = feeds.filter((f: any) => {
+    const vc = (f.vulnerability_class || "").toLowerCase();
+    if (GENERIC_CLASSES.has(vc)) return true;
+    return techMatches(f.affected_tech_stack as string[] | null);
+  });
+  const skipped = feeds.length - filteredFeeds.length;
+  if (skipped > 0) {
+    await db.from("scan_logs").insert({
+      target_id: targetId, log_type: "info",
+      message: `🎯 Tech-stack filter: ${skipped}/${feeds.length} CVE templates skipped (no overlap with detected stack)`,
+      metadata: { skipped, kept: filteredFeeds.length },
+    });
+  }
+
   await db.from("scan_logs").insert({
     target_id: targetId,
     log_type: "action",
-    message: `📡 Testing ${feeds.length} CVE templates from intel_feeds against ${Math.min(endpoints.length, 3)} live endpoints`,
-    metadata: { templateCount: feeds.length, endpointCount: Math.min(endpoints.length, 3) },
+    message: `📡 Testing ${filteredFeeds.length} CVE templates from intel_feeds against ${Math.min(endpoints.length, 3)} live endpoints`,
+    metadata: { templateCount: filteredFeeds.length, endpointCount: Math.min(endpoints.length, 3) },
   });
 
   const details: Array<Record<string, unknown>> = [];
@@ -286,20 +310,30 @@ async function testCveTemplates(
     confirmed = 0,
     failed = 0;
 
-  for (const feed of feeds) {
+  for (const feed of filteredFeeds) {
     if (timeLeft() < 5000) {
       await db.from("scan_logs").insert({
         target_id: targetId,
         log_type: "info",
-        message: `⏱️ Template testing halted at ${tested}/${feeds.length} — time budget exhausted.`,
+        message: `⏱️ Template testing halted at ${tested}/${filteredFeeds.length} — time budget exhausted.`,
       });
       break;
     }
     const payloads = (feed.extracted_payloads as string[] | null) || [];
     if (payloads.length === 0) {
+      const vc = (feed.vulnerability_class || "").toLowerCase();
+      // Gap 3: only synthesize fallbacks for generic classes; otherwise skip honestly.
+      if (!GENERIC_CLASSES.has(vc)) {
+        await db.from("scan_logs").insert({
+          target_id: targetId, log_type: "info",
+          message: `⏭️ Skipped "${(feed.title || "").slice(0, 60)}" [${vc}] — no real payloads, class not generic`,
+        });
+        continue;
+      }
       const FALLBACKS: Record<string, string[]> = {
         sqli: ["' OR '1'='1", "1 AND SLEEP(3)--", "' UNION SELECT NULL,NULL--"],
         rxss: ["<svg onload=alert(1)>", '"><script>alert(1)</script>'],
+        xss:  ["<svg onload=alert(1)>", '"><script>alert(1)</script>'],
         ssrf: ["http://169.254.169.254/latest/meta-data/", "http://127.0.0.1:22"],
         ssti: ["{{7*7}}", "${7*7}", "<%= 7*7 %>"],
         lfi: ["../../../../etc/passwd", "....//....//etc/passwd"],
@@ -307,16 +341,12 @@ async function testCveTemplates(
         "path-traversal": ["../../../../etc/passwd", "..%2f..%2f..%2fetc%2fpasswd"],
         xxe: ["<?xml version='1.0'?><!DOCTYPE x [<!ENTITY xxe SYSTEM 'file:///etc/passwd'>]><x>&xxe;</x>"],
         "auth-bypass": ["' OR '1'='1", "admin'--", "' OR 1=1--"],
+        "open-redirect": ["//evil.test", "https://evil.test"],
       };
-      const vc = (feed.vulnerability_class || "").toLowerCase();
       const synth = FALLBACKS[vc] || FALLBACKS["sqli"];
       payloads.push(...synth);
-      await db.from("scan_logs").insert({
-        target_id: targetId,
-        log_type: "info",
-        message: `🧬 [${vc}] "${(feed.title || "").slice(0, 60)}" — no payloads, synthesized ${synth.length} from class`,
-      });
     }
+
 
     let templatePassed = false;
     const perEndpoint: Array<{ url: string; status: number; matched: boolean; reason: string }> = [];
