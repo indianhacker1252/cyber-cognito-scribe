@@ -518,49 +518,61 @@ Deno.serve(async (req) => {
     // Round 3: CVE template execution from intel_feeds
     const cveReport = await testCveTemplates(db, targetId, endpoints);
 
-    // Persist high-signal anomalies as findings
-    const anomalies = allResults.filter((r) => r.signal === "high");
-    for (const a of anomalies.slice(0, 30)) {
-      await db.from("vulnerability_findings").insert({
-        target_id: targetId,
-        title: `[Pro-Fuzz] ${a.vulnClass} anomaly via ${a.strategy}`,
-        severity: a.signal === "high" ? "high" : "medium",
-        payload: a.payload,
-        description: `Pro-level fuzzer detected ${a.notes} on ${a.url}. Status ${a.probeStatus}, ${a.bodyDeltaPct}% body delta, ${a.responseTimeMs}ms.`,
-        confidence_score: a.signal === "high" ? 75 : 55,
-        confidence_level: a.signal === "high" ? "high" : "medium",
-        validation_status: "fuzzer_anomaly",
-        triage_reasoning: `Strategy=${a.strategy}, vuln=${a.vulnClass}, signal=${a.signal}`,
-      });
-    }
-    // After the vulnerability_findings.insert() call for anomalies:
-    for (const a of anomalies.slice(0, 30)) {
-      const { data: inserted } = await db
-        .from("vulnerability_findings")
-        .insert({
-          target_id: targetId,
-          title: `[Pro-Fuzz] ${a.vulnClass} anomaly via ${a.strategy}`,
-          severity: a.signal === "high" ? "high" : "medium",
-          payload: a.payload,
-          description: `Pro-level fuzzer detected ${a.notes} on ${a.url}. Status ${a.probeStatus}, ${a.bodyDeltaPct}% body delta, ${a.responseTimeMs}ms.`,
-          confidence_score: a.signal === "high" ? 75 : 55,
-          confidence_level: a.signal === "high" ? "high" : "medium",
-          validation_status: "fuzzer_anomaly",
-          triage_reasoning: `Strategy=${a.strategy}, vuln=${a.vulnClass}, signal=${a.signal}`,
-        })
-        .select("id")
-        .single();
+    // ── Persist findings via central writer (auto-enqueues exploit-engine job)
+    // Separate REFLECTED-RAW (deterministic proof = exploited tier) from heuristics.
+    const exploited = allResults.filter((r) => /REFLECTED-RAW/.test(r.notes));
+    const anomalies = allResults.filter((r) => r.signal === "high" && !/REFLECTED-RAW/.test(r.notes));
 
-      // ADD THIS — fire exploit engine immediately
-      if (inserted?.id) {
-        fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/exploit-engine`, {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ findingId: inserted.id, targetId }),
-        }).catch(console.error);
+    for (const a of exploited.slice(0, 30)) {
+      const res = await recordFinding({
+        targetId,
+        source: "advanced-fuzzer",
+        category: a.vulnClass,
+        vulnClass: a.vulnClass,
+        severity: "high",
+        title: `[EXPLOITED] Reflected ${a.vulnClass} via ${a.strategy}`,
+        description: `Payload echoed un-encoded in response (proof token verified). ${a.url}`,
+        payload: a.payload,
+        proofTier: "exploited",
+        autoEnqueueExploit: true,
+        evidence: { url: a.url, status: a.probeStatus, bodyDeltaPct: a.bodyDeltaPct, notes: a.notes, proof_token: PROOF_TOKEN },
+        request: { method: "GET", url: a.url },
+        response: { status: a.probeStatus, body: `[proof token ${PROOF_TOKEN} reflected]` },
+      });
+      await recordLesson(db, targetId, a.vulnClass, a.strategy, a.payload, true, `exploited via ${a.strategy}, finding=${res.findingId}`);
+    }
+
+    for (const a of anomalies.slice(0, 30)) {
+      const res = await recordFinding({
+        targetId,
+        source: "advanced-fuzzer",
+        category: a.vulnClass,
+        vulnClass: a.vulnClass,
+        severity: "high",
+        title: `[Pro-Fuzz] ${a.vulnClass} anomaly via ${a.strategy}`,
+        description: `${a.notes} on ${a.url}. Status ${a.probeStatus}, ${a.bodyDeltaPct}% body delta, ${a.responseTimeMs}ms.`,
+        payload: a.payload,
+        proofTier: "suspected",
+        autoEnqueueExploit: true,
+        evidence: { url: a.url, status: a.probeStatus, bodyDeltaPct: a.bodyDeltaPct, responseTimeMs: a.responseTimeMs, notes: a.notes, strategy: a.strategy },
+        request: { method: "GET", url: a.url },
+      });
+      await recordLesson(db, targetId, a.vulnClass, a.strategy, a.payload, !!res.findingId && !res.duplicate, a.notes);
+    }
+
+    // ── OOB-seeded blind-class probes (SSRF / XXE) — confirms via callback even when response is silent
+    if (timeLeft() > 8000) {
+      for (const ep of endpoints.slice(0, 5)) {
+        const ssrfTok = mintOobToken({ targetId, vulnClass: "ssrf" });
+        try {
+          const sep = ep.url.includes("?") ? "&" : "?";
+          const probe = `${ep.url}${sep}url=${encodeURIComponent(ssrfTok.httpUrl)}`;
+          await safeFetch(probe, { headers: { "User-Agent": "CyberScope-OOB/1.0" } }, 4000);
+          await db.from("oob_callbacks").insert({
+            token: ssrfTok.token, target_id: targetId, callback_type: "http",
+            payload_context: "advanced-fuzzer-ssrf", vuln_class: "ssrf",
+          }).then(() => {}, () => {});
+        } catch { /* ignore */ }
       }
     }
     await db.from("scan_logs").insert({
