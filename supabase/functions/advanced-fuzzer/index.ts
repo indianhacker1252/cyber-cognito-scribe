@@ -215,27 +215,6 @@ async function fuzzEndpoint(
           ? `${reflectedRaw ? "REFLECTED-RAW " : ""}${timeAnomaly ? "TIME " : ""}${errLeak ? "ERROR-leak " : ""}${statusAnomaly ? "STATUS " : ""}${bodyAnomaly ? "BODY-delta" : ""}`.trim()
           : "no anomaly",
       });
-      const errLeak = /SQL syntax|ORA-\d|MySQL|PostgreSQL|stack trace|Traceback/i.test(body);
-
-      const anomaly = timeAnomaly || statusAnomaly || bodyAnomaly || errLeak;
-      const signal: FuzzResult["signal"] =
-        timeAnomaly || errLeak ? "high" : statusAnomaly ? "medium" : bodyAnomaly ? "low" : "none";
-
-      results.push({
-        url: probeUrl,
-        vulnClass,
-        payload,
-        strategy,
-        baselineStatus,
-        probeStatus: r.status,
-        bodyDeltaPct: Number((delta * 100).toFixed(2)),
-        responseTimeMs: ms,
-        anomaly,
-        signal,
-        notes: anomaly
-          ? `${timeAnomaly ? "TIME-based" : ""}${errLeak ? " ERROR-leak" : ""}${statusAnomaly ? " STATUS-shift" : ""}${bodyAnomaly ? " BODY-delta" : ""}`.trim()
-          : "no anomaly",
-      });
     } catch (e) {
       results.push({
         url: probeUrl,
