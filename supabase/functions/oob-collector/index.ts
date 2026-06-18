@@ -133,8 +133,9 @@ Deno.serve(async (req) => {
       }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
-    // ── Poll for hits ──
+    // ── Poll for hits ── (auth required)
     if (path === "/poll" && req.method === "POST") {
+      const unauth = await requireAuth(req); if (unauth) return unauth;
       const { tokens } = await req.json();
       if (!Array.isArray(tokens) || tokens.length === 0) {
         return new Response(JSON.stringify({ hits: [], mode: "local" }),
