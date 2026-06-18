@@ -1,9 +1,26 @@
 import { corsHeaders } from "https://esm.sh/@supabase/supabase-js@2.95.0/cors";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.95.0";
+import { recordFinding } from "../_shared/findings-writer.ts";
+import { mintOobToken } from "../_shared/oob.ts";
 
 const SCAN_START = Date.now();
 const MAX_MS = 480000;
 const timeLeft = () => MAX_MS - (Date.now() - SCAN_START);
+
+// 🧠 Adaptive learning — record what worked so next runs prioritise it.
+async function recordLesson(db: any, targetId: string, vc: string, strategy: string, payload: string, ok: boolean, notes: string) {
+  try {
+    const hash = await crypto.subtle.digest("SHA-1", new TextEncoder().encode(payload))
+      .then(b => Array.from(new Uint8Array(b)).map(x => x.toString(16).padStart(2, "0")).join(""));
+    await db.from("adaptive_lessons").insert({
+      target_id: targetId, vuln_class: vc, strategy, payload_hash: hash.slice(0, 24),
+      succeeded: ok, notes: notes.slice(0, 200),
+    });
+  } catch { /* ignore */ }
+}
+
+// 🪤 Deterministic proof token — appears in payload AND can be grepped from response
+const PROOF_TOKEN = "CYBERSCOPE_PROVEN";
 
 async function safeFetch(url: string, opts: RequestInit = {}, ms = 6000): Promise<Response> {
   const ctrl = new AbortController();
