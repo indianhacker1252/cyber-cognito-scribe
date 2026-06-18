@@ -60,8 +60,46 @@ Deno.serve(async (req) => {
   const { action, connectionString, userId, findingIds } = body || {};
   let cs: string | undefined = connectionString;
 
-  // If userId provided & no connection string, look it up
-  if (!cs && userId) {
+  // SSRF guard: validate the host of any supplied connection string
+  function hostOf(s: string): string | null {
+    try { return new URL(s.replace(/^postgres(ql)?:\/\//, "https://")).hostname.toLowerCase(); } catch { return null; }
+  }
+  function isBlockedHost(h: string): boolean {
+    if (!h) return true;
+    if (h === "localhost" || h.endsWith(".localhost")) return true;
+    // IPv4 literal: block loopback / private / link-local / metadata
+    const m = h.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+    if (m) {
+      const [a,b] = [parseInt(m[1]),parseInt(m[2])];
+      if (a===127||a===10||a===0) return true;
+      if (a===169 && b===254) return true;            // link-local + 169.254.169.254 metadata
+      if (a===172 && b>=16 && b<=31) return true;
+      if (a===192 && b===168) return true;
+      if (a>=224) return true;
+    }
+    if (h === "::1" || h.startsWith("fc") || h.startsWith("fd") || h.startsWith("fe80")) return true;
+    if (h.endsWith(".internal") || h.endsWith(".local")) return true;
+    return false;
+  }
+
+  // Non-service-role callers: connection string must match their persisted config host
+  if (!isServiceRole) {
+    const supaSrv = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
+    const { data: cfg } = await supaSrv.from("external_db_config")
+      .select("pg_connection_string,enabled").eq("user_id", userId).maybeSingle();
+    if (cs) {
+      const h = hostOf(cs);
+      if (!h || isBlockedHost(h)) return fail("connection host not allowed");
+      // If a stored config exists, the supplied host must match it (lock to known host)
+      if (cfg?.pg_connection_string) {
+        const stored = hostOf(cfg.pg_connection_string as string);
+        if (stored && stored !== h) return fail("connection host does not match saved config");
+      }
+    } else {
+      if (!cfg?.enabled || !cfg?.pg_connection_string) return fail("mirror not enabled");
+      cs = cfg.pg_connection_string as string;
+    }
+  } else if (!cs && userId) {
     const supa = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
     const { data } = await supa.from("external_db_config").select("pg_connection_string,enabled").eq("user_id", userId).maybeSingle();
     if (!data?.enabled || !data?.pg_connection_string) return fail("mirror not enabled");

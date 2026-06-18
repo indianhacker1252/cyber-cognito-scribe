@@ -706,6 +706,36 @@ async function callAIWithFallback(
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
+  // ── Auth gate: require admin (or service-role) ──
+  try {
+    const authHeader = req.headers.get("Authorization") || "";
+    const tok = authHeader.replace(/^Bearer\s+/i, "");
+    const isServiceRole = tok && tok === Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+    if (!isServiceRole) {
+      if (!tok) {
+        return new Response(JSON.stringify({ error: "unauthorized" }),
+          { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+      const supaAuth = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_ANON_KEY")!);
+      const { data: ud } = await supaAuth.auth.getUser(tok);
+      const uid = ud?.user?.id;
+      if (!uid) {
+        return new Response(JSON.stringify({ error: "unauthorized" }),
+          { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+      const supaSrv = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
+      const { data: roleRow } = await supaSrv.from("user_roles").select("role")
+        .eq("user_id", uid).eq("role", "admin").maybeSingle();
+      if (!roleRow) {
+        return new Response(JSON.stringify({ error: "forbidden: admin required" }),
+          { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+    }
+  } catch (_e) {
+    return new Response(JSON.stringify({ error: "unauthorized" }),
+      { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+  }
+
   try {
     const { messages, targetId, sessionId, saveChat } = await req.json();
     const providers = await getProviders();

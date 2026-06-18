@@ -89,14 +89,28 @@ async function pollInteractshHits(cfg: OobConfig, tokens: string[]): Promise<any
   return out;
 }
 
+async function requireAuth(req: Request): Promise<Response | null> {
+  const auth = req.headers.get("Authorization") || "";
+  const tok = auth.replace(/^Bearer\s+/i, "");
+  if (tok && tok === Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")) return null;
+  if (!tok) return new Response(JSON.stringify({ error: "unauthorized" }),
+    { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+  const supa = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_ANON_KEY")!);
+  const { data } = await supa.auth.getUser(tok);
+  if (!data?.user?.id) return new Response(JSON.stringify({ error: "unauthorized" }),
+    { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+  return null;
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   const url = new URL(req.url);
   const path = url.pathname.replace(/^\/oob-collector/, "");
 
   try {
-    // ── Issue token ──
+    // ── Issue token ── (auth required)
     if (path === "/issue" && req.method === "POST") {
+      const unauth = await requireAuth(req); if (unauth) return unauth;
       const { targetId, findingId, vulnClass, payloadContext } = await req.json();
       const cfg = await loadConfig();
       const token = crypto.randomUUID().replace(/-/g, "").slice(0, 16);
@@ -119,8 +133,9 @@ Deno.serve(async (req) => {
       }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
-    // ── Poll for hits ──
+    // ── Poll for hits ── (auth required)
     if (path === "/poll" && req.method === "POST") {
+      const unauth = await requireAuth(req); if (unauth) return unauth;
       const { tokens } = await req.json();
       if (!Array.isArray(tokens) || tokens.length === 0) {
         return new Response(JSON.stringify({ hits: [], mode: "local" }),
