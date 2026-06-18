@@ -93,6 +93,47 @@ export type Database = {
           },
         ]
       }
+      adaptive_lessons: {
+        Row: {
+          created_at: string
+          id: string
+          notes: string | null
+          payload_hash: string
+          strategy: string
+          succeeded: boolean
+          target_id: string | null
+          vuln_class: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          notes?: string | null
+          payload_hash: string
+          strategy: string
+          succeeded: boolean
+          target_id?: string | null
+          vuln_class: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          notes?: string | null
+          payload_hash?: string
+          strategy?: string
+          succeeded?: boolean
+          target_id?: string | null
+          vuln_class?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "adaptive_lessons_target_id_fkey"
+            columns: ["target_id"]
+            isOneToOne: false
+            referencedRelation: "target_workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       advanced_detector_runs: {
         Row: {
           chain_steps: Json
@@ -1754,14 +1795,17 @@ export type Database = {
       }
       mythos_runs: {
         Row: {
+          ai_mode: string
           chains_count: number | null
           completed_at: string | null
           created_at: string
           current_phase: string | null
+          degraded_reason: string | null
           findings_count: number | null
           id: string
           iteration: number
           max_iterations: number
+          seen_cve_ids: string[]
           started_at: string | null
           status: string
           target_id: string
@@ -1771,14 +1815,17 @@ export type Database = {
           variants_count: number | null
         }
         Insert: {
+          ai_mode?: string
           chains_count?: number | null
           completed_at?: string | null
           created_at?: string
           current_phase?: string | null
+          degraded_reason?: string | null
           findings_count?: number | null
           id?: string
           iteration?: number
           max_iterations?: number
+          seen_cve_ids?: string[]
           started_at?: string | null
           status?: string
           target_id: string
@@ -1788,14 +1835,17 @@ export type Database = {
           variants_count?: number | null
         }
         Update: {
+          ai_mode?: string
           chains_count?: number | null
           completed_at?: string | null
           created_at?: string
           current_phase?: string | null
+          degraded_reason?: string | null
           findings_count?: number | null
           id?: string
           iteration?: number
           max_iterations?: number
+          seen_cve_ids?: string[]
           started_at?: string | null
           status?: string
           target_id?: string
@@ -1858,6 +1908,7 @@ export type Database = {
         Row: {
           callback_type: string
           created_at: string
+          escalated_at: string | null
           finding_id: string | null
           id: string
           payload_context: string | null
@@ -1875,6 +1926,7 @@ export type Database = {
         Insert: {
           callback_type?: string
           created_at?: string
+          escalated_at?: string | null
           finding_id?: string | null
           id?: string
           payload_context?: string | null
@@ -1892,6 +1944,7 @@ export type Database = {
         Update: {
           callback_type?: string
           created_at?: string
+          escalated_at?: string | null
           finding_id?: string | null
           id?: string
           payload_context?: string | null
