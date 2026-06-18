@@ -184,7 +184,9 @@ async function fuzzEndpoint(
   for (const payload of payloads) {
     if (timeLeft() < 4000) break;
     const sep = url.includes("?") ? "&" : "?";
-    const probeUrl = `${url}${sep}q=${encodeURIComponent(payload)}`;
+    // 🪤 stamp every payload with the proof token so a successful echo is verifiable
+    const stampedPayload = /CYBERSCOPE_PROVEN/.test(payload) ? payload : payload.replace(/alert\(1\)/g, `alert('${PROOF_TOKEN}')`);
+    const probeUrl = `${url}${sep}q=${encodeURIComponent(stampedPayload)}`;
     try {
       const t0 = Date.now();
       const r = await safeFetch(probeUrl, { method: "GET", headers: { "User-Agent": "CyberScope-ProFuzz/1.0" } }, 5000);
@@ -198,6 +200,21 @@ async function fuzzEndpoint(
 
       const statusAnomaly = r.status >= 500 || (r.status !== baselineStatus && delta > 0.2);
       const bodyAnomaly = delta > 0.3;
+      // 🔥 EXPLOITED tier — reflected payload appears un-encoded in body (deterministic proof)
+      const isXssClass = /xss/i.test(vulnClass);
+      const reflectedRaw = isXssClass && stampedPayload.length > 6 && body.includes(stampedPayload);
+      const errLeak = /SQL syntax|ORA-\d+|MySQL|PostgreSQL|stack trace|Traceback|System\.Data\.SqlClient/i.test(body);
+      const anomaly = timeAnomaly || statusAnomaly || bodyAnomaly || errLeak || reflectedRaw;
+      const signal: FuzzResult["signal"] = reflectedRaw || errLeak ? "high" : anomaly ? "medium" : "none";
+      results.push({
+        url: probeUrl, vulnClass, payload: stampedPayload, strategy,
+        baselineStatus, probeStatus: r.status,
+        bodyDeltaPct: Number((delta * 100).toFixed(2)),
+        responseTimeMs: ms, anomaly, signal,
+        notes: anomaly
+          ? `${reflectedRaw ? "REFLECTED-RAW " : ""}${timeAnomaly ? "TIME " : ""}${errLeak ? "ERROR-leak " : ""}${statusAnomaly ? "STATUS " : ""}${bodyAnomaly ? "BODY-delta" : ""}`.trim()
+          : "no anomaly",
+      });
       const errLeak = /SQL syntax|ORA-\d|MySQL|PostgreSQL|stack trace|Traceback/i.test(body);
 
       const anomaly = timeAnomaly || statusAnomaly || bodyAnomaly || errLeak;
