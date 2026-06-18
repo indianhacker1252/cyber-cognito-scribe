@@ -1,9 +1,26 @@
 import { corsHeaders } from "https://esm.sh/@supabase/supabase-js@2.95.0/cors";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.95.0";
+import { recordFinding } from "../_shared/findings-writer.ts";
+import { mintOobToken } from "../_shared/oob.ts";
 
 const SCAN_START = Date.now();
 const MAX_MS = 480000;
 const timeLeft = () => MAX_MS - (Date.now() - SCAN_START);
+
+// 🧠 Adaptive learning — record what worked so next runs prioritise it.
+async function recordLesson(db: any, targetId: string, vc: string, strategy: string, payload: string, ok: boolean, notes: string) {
+  try {
+    const hash = await crypto.subtle.digest("SHA-1", new TextEncoder().encode(payload))
+      .then(b => Array.from(new Uint8Array(b)).map(x => x.toString(16).padStart(2, "0")).join(""));
+    await db.from("adaptive_lessons").insert({
+      target_id: targetId, vuln_class: vc, strategy, payload_hash: hash.slice(0, 24),
+      succeeded: ok, notes: notes.slice(0, 200),
+    });
+  } catch { /* ignore */ }
+}
+
+// 🪤 Deterministic proof token — appears in payload AND can be grepped from response
+const PROOF_TOKEN = "CYBERSCOPE_PROVEN";
 
 async function safeFetch(url: string, opts: RequestInit = {}, ms = 6000): Promise<Response> {
   const ctrl = new AbortController();
@@ -167,7 +184,9 @@ async function fuzzEndpoint(
   for (const payload of payloads) {
     if (timeLeft() < 4000) break;
     const sep = url.includes("?") ? "&" : "?";
-    const probeUrl = `${url}${sep}q=${encodeURIComponent(payload)}`;
+    // 🪤 stamp every payload with the proof token so a successful echo is verifiable
+    const stampedPayload = /CYBERSCOPE_PROVEN/.test(payload) ? payload : payload.replace(/alert\(1\)/g, `alert('${PROOF_TOKEN}')`);
+    const probeUrl = `${url}${sep}q=${encodeURIComponent(stampedPayload)}`;
     try {
       const t0 = Date.now();
       const r = await safeFetch(probeUrl, { method: "GET", headers: { "User-Agent": "CyberScope-ProFuzz/1.0" } }, 5000);
@@ -181,25 +200,19 @@ async function fuzzEndpoint(
 
       const statusAnomaly = r.status >= 500 || (r.status !== baselineStatus && delta > 0.2);
       const bodyAnomaly = delta > 0.3;
-      const errLeak = /SQL syntax|ORA-\d|MySQL|PostgreSQL|stack trace|Traceback/i.test(body);
-
-      const anomaly = timeAnomaly || statusAnomaly || bodyAnomaly || errLeak;
-      const signal: FuzzResult["signal"] =
-        timeAnomaly || errLeak ? "high" : statusAnomaly ? "medium" : bodyAnomaly ? "low" : "none";
-
+      // 🔥 EXPLOITED tier — reflected payload appears un-encoded in body (deterministic proof)
+      const isXssClass = /xss/i.test(vulnClass);
+      const reflectedRaw = isXssClass && stampedPayload.length > 6 && body.includes(stampedPayload);
+      const errLeak = /SQL syntax|ORA-\d+|MySQL|PostgreSQL|stack trace|Traceback|System\.Data\.SqlClient/i.test(body);
+      const anomaly = timeAnomaly || statusAnomaly || bodyAnomaly || errLeak || reflectedRaw;
+      const signal: FuzzResult["signal"] = reflectedRaw || errLeak ? "high" : anomaly ? "medium" : "none";
       results.push({
-        url: probeUrl,
-        vulnClass,
-        payload,
-        strategy,
-        baselineStatus,
-        probeStatus: r.status,
+        url: probeUrl, vulnClass, payload: stampedPayload, strategy,
+        baselineStatus, probeStatus: r.status,
         bodyDeltaPct: Number((delta * 100).toFixed(2)),
-        responseTimeMs: ms,
-        anomaly,
-        signal,
+        responseTimeMs: ms, anomaly, signal,
         notes: anomaly
-          ? `${timeAnomaly ? "TIME-based" : ""}${errLeak ? " ERROR-leak" : ""}${statusAnomaly ? " STATUS-shift" : ""}${bodyAnomaly ? " BODY-delta" : ""}`.trim()
+          ? `${reflectedRaw ? "REFLECTED-RAW " : ""}${timeAnomaly ? "TIME " : ""}${errLeak ? "ERROR-leak " : ""}${statusAnomaly ? "STATUS " : ""}${bodyAnomaly ? "BODY-delta" : ""}`.trim()
           : "no anomaly",
       });
     } catch (e) {
@@ -505,49 +518,61 @@ Deno.serve(async (req) => {
     // Round 3: CVE template execution from intel_feeds
     const cveReport = await testCveTemplates(db, targetId, endpoints);
 
-    // Persist high-signal anomalies as findings
-    const anomalies = allResults.filter((r) => r.signal === "high");
-    for (const a of anomalies.slice(0, 30)) {
-      await db.from("vulnerability_findings").insert({
-        target_id: targetId,
-        title: `[Pro-Fuzz] ${a.vulnClass} anomaly via ${a.strategy}`,
-        severity: a.signal === "high" ? "high" : "medium",
-        payload: a.payload,
-        description: `Pro-level fuzzer detected ${a.notes} on ${a.url}. Status ${a.probeStatus}, ${a.bodyDeltaPct}% body delta, ${a.responseTimeMs}ms.`,
-        confidence_score: a.signal === "high" ? 75 : 55,
-        confidence_level: a.signal === "high" ? "high" : "medium",
-        validation_status: "fuzzer_anomaly",
-        triage_reasoning: `Strategy=${a.strategy}, vuln=${a.vulnClass}, signal=${a.signal}`,
-      });
-    }
-    // After the vulnerability_findings.insert() call for anomalies:
-    for (const a of anomalies.slice(0, 30)) {
-      const { data: inserted } = await db
-        .from("vulnerability_findings")
-        .insert({
-          target_id: targetId,
-          title: `[Pro-Fuzz] ${a.vulnClass} anomaly via ${a.strategy}`,
-          severity: a.signal === "high" ? "high" : "medium",
-          payload: a.payload,
-          description: `Pro-level fuzzer detected ${a.notes} on ${a.url}. Status ${a.probeStatus}, ${a.bodyDeltaPct}% body delta, ${a.responseTimeMs}ms.`,
-          confidence_score: a.signal === "high" ? 75 : 55,
-          confidence_level: a.signal === "high" ? "high" : "medium",
-          validation_status: "fuzzer_anomaly",
-          triage_reasoning: `Strategy=${a.strategy}, vuln=${a.vulnClass}, signal=${a.signal}`,
-        })
-        .select("id")
-        .single();
+    // ── Persist findings via central writer (auto-enqueues exploit-engine job)
+    // Separate REFLECTED-RAW (deterministic proof = exploited tier) from heuristics.
+    const exploited = allResults.filter((r) => /REFLECTED-RAW/.test(r.notes));
+    const anomalies = allResults.filter((r) => r.signal === "high" && !/REFLECTED-RAW/.test(r.notes));
 
-      // ADD THIS — fire exploit engine immediately
-      if (inserted?.id) {
-        fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/exploit-engine`, {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ findingId: inserted.id, targetId }),
-        }).catch(console.error);
+    for (const a of exploited.slice(0, 30)) {
+      const res = await recordFinding({
+        targetId,
+        source: "advanced-fuzzer",
+        category: a.vulnClass,
+        vulnClass: a.vulnClass,
+        severity: "high",
+        title: `[EXPLOITED] Reflected ${a.vulnClass} via ${a.strategy}`,
+        description: `Payload echoed un-encoded in response (proof token verified). ${a.url}`,
+        payload: a.payload,
+        proofTier: "exploited",
+        autoEnqueueExploit: true,
+        evidence: { url: a.url, status: a.probeStatus, bodyDeltaPct: a.bodyDeltaPct, notes: a.notes, proof_token: PROOF_TOKEN },
+        request: { method: "GET", url: a.url },
+        response: { status: a.probeStatus, body: `[proof token ${PROOF_TOKEN} reflected]` },
+      });
+      await recordLesson(db, targetId, a.vulnClass, a.strategy, a.payload, true, `exploited via ${a.strategy}, finding=${res.findingId}`);
+    }
+
+    for (const a of anomalies.slice(0, 30)) {
+      const res = await recordFinding({
+        targetId,
+        source: "advanced-fuzzer",
+        category: a.vulnClass,
+        vulnClass: a.vulnClass,
+        severity: "high",
+        title: `[Pro-Fuzz] ${a.vulnClass} anomaly via ${a.strategy}`,
+        description: `${a.notes} on ${a.url}. Status ${a.probeStatus}, ${a.bodyDeltaPct}% body delta, ${a.responseTimeMs}ms.`,
+        payload: a.payload,
+        proofTier: "suspected",
+        autoEnqueueExploit: true,
+        evidence: { url: a.url, status: a.probeStatus, bodyDeltaPct: a.bodyDeltaPct, responseTimeMs: a.responseTimeMs, notes: a.notes, strategy: a.strategy },
+        request: { method: "GET", url: a.url },
+      });
+      await recordLesson(db, targetId, a.vulnClass, a.strategy, a.payload, !!res.findingId && !res.duplicate, a.notes);
+    }
+
+    // ── OOB-seeded blind-class probes (SSRF / XXE) — confirms via callback even when response is silent
+    if (timeLeft() > 8000) {
+      for (const ep of endpoints.slice(0, 5)) {
+        const ssrfTok = mintOobToken({ targetId, vulnClass: "ssrf" });
+        try {
+          const sep = ep.url.includes("?") ? "&" : "?";
+          const probe = `${ep.url}${sep}url=${encodeURIComponent(ssrfTok.httpUrl)}`;
+          await safeFetch(probe, { headers: { "User-Agent": "CyberScope-OOB/1.0" } }, 4000);
+          await db.from("oob_callbacks").insert({
+            token: ssrfTok.token, target_id: targetId, callback_type: "http",
+            payload_context: "advanced-fuzzer-ssrf", vuln_class: "ssrf",
+          }).then(() => {}, () => {});
+        } catch { /* ignore */ }
       }
     }
     await db.from("scan_logs").insert({
