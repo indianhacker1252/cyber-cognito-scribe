@@ -2,7 +2,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Activity, Wifi, WifiOff, RefreshCw, Trash2 } from "lucide-react";
+import { Activity, Wifi, WifiOff, RefreshCw, Trash2, TestTube2 } from "lucide-react";
 import { toast } from "sonner";
 import { useState } from "react";
 
@@ -109,6 +109,21 @@ export default function SystemHealth() {
           <p className="text-xs font-mono text-muted-foreground">Agent management & audit endpoint monitoring</p>
         </div>
         <div className="flex gap-2">
+          <Button
+            variant="outline" size="sm"
+            className="font-mono text-xs gap-1 text-cyber-cyan border-cyber-cyan/30 hover:bg-cyber-cyan/10"
+            onClick={async () => {
+              toast.info("Running E2E SelfTest against testphp.vulnweb.com…");
+              const { data, error } = await supabase.functions.invoke("e2e-selftest", { body: {} });
+              if (error) { toast.error(`SelfTest failed: ${error.message}`); return; }
+              const pass = (data as any)?.allPass;
+              toast[pass ? "success" : "error"](pass
+                ? "✅ All 5 assertions passed — pipeline is alive"
+                : `❌ Some assertions failed — see Neural Log`);
+            }}
+          >
+            <TestTube2 className="h-3 w-3" /> Run E2E SelfTest
+          </Button>
           <Button variant="outline" size="sm" className="font-mono text-xs gap-1" onClick={() => refetch()}>
             <RefreshCw className="h-3 w-3" /> Refresh
           </Button>
