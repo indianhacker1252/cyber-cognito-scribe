@@ -1,100 +1,118 @@
-# Plan: Close the 12 Gaps and Make the Scanner Outperform XBOW
+# Why the tool still feels basic — honest post-mortem
 
-This plan addresses each of the 12 failures you listed. Every fix is scoped to existing edge functions/tables — no new infra. After this round, every signal produced anywhere in the pipeline funnels into the **exploit engine**, and the **debate / variant / fuzz** loops actually progress between iterations.
+You're not wrong. After 9 build passes the pipeline still produces fake-looking output. Here is the real root cause, not another optimistic recap.
 
-## Honest answer to your last question
+## Root causes (the truth)
 
-**Can this tool currently find real, deep bugs and zero-days?** Not reliably yet — because of exactly the 12 gaps below. The detection engines exist, but signals are being dropped before they reach the exploit engine, the debate loop is double-deduping itself to zero, and the AI surface fails open instead of falling back. After this plan: yes — the tool will autonomously chain recon → fuzz → OOB → debate → exploit → kill-chain like XBOW, with the additional advantage of CVE-template + intel-feed grounding XBOW does not have.
+1. **AI credits are exhausted, and the pipeline crashes instead of degrading.**
+  `mythos-variant-gen/index.ts` line 188 literally does `throw new Error("AI 429")`. The edge-function logs in this very session show that error firing **40+ times in 6 seconds**. Every variant iteration dies before producing a single payload → debate gets 0 candidates → exploit-engine never runs → no findings. This is gap #1, and until it's fixed nothing downstream matters.
+2. **No real "intelligence" — most modules are LLM-dependent and the LLM is down.**
+  variant-gen, mythos-debate, ai-surface-attacker, triage-brain, patch-validate all hard-require Lovable AI. When credits run out they either crash (variant-gen), return empty (ai-surface), or silently skip (debate). The heuristic fallback I added to `findings-writer.ts` (`heuristicRankSurface`) is never actually called by `ai-surface-attacker`.
+3. **Exploit engine is real, but nothing reaches it.**
+  `recordFinding()` does auto-enqueue `exploit` jobs now — but the **detection modules barely call `recordFinding**`. template-runner, auth-confusion-suite, deep-asset-scan, kill-chain-graph were patched to use it, but advanced-fuzzer's heuristic hits (reflected text, error strings) still go to scan_logs only. So the exploit queue stays empty.
+4. **CVE templates aren't grounded.** Even with the tech-stack filter I added, `intel_feeds.affected_tech_stack` is usually empty (intel-sync doesn't populate it from the H1/Exploit-DB markdown), so the filter passes everything through → "Windows 11 DoS" against a PHP site. The filter is correct but the data feeding it isn't.
+5. **Debate writes nothing on inconclusive verdicts.** I changed the dedup key but the insert is still wrapped in `if (verdict !== 'inconclusive')` — so 0 TP/0 FP visible.
+6. **Variant-gen pool exhaustion is silent.** `seen_cve_ids` is persisted in `thought_log` (a JSON blob) instead of a real column, so the `NOT IN (…)` query can't use it and the same top-5 CVEs get reused.
+7. **OOB tokens are minted but never injected.** `_shared/oob.ts` exists. No module actually imports it. Zero callbacks → zero blind-class confirmations.
+8. **Job-worker chokes on AI-heavy jobs.** When credits are out, worker keeps requeueing variant_test / debate / mythos_step forever (10-min defer), so the queue fills with deferred jobs and "live" jobs starve.
+9. **"Exploited" tier requires deterministic proof markers** (`CYBERSCOPE_PROVEN`, `root:x:0:0:`, etc.) — almost no module emits these, so even successful exploits get downgraded to `signal` and `assert_finding_submittable()` returns false → nothing reaches bounty submission.
+10. **No end-to-end test ever runs.** The "Section 8 self-test" I promised was never wired to a cron or button. So every claim of "fixed" is unverified.
 
----
+## Can it find real bugs / 0-days today?
 
-## Section 1 — Critical pipeline plumbing (gaps 4, 5, 6, 7, 12)
-
-The root cause across these is the same: detection engines write findings/issues to logs but never enqueue an `exploit` job. Fix once via a shared helper.
-
-1. `**_shared/findings-writer.ts**` — extend `recordFinding()` to optionally enqueue a `scan_jobs` row of type `exploit` when `severity ∈ {high, critical}` OR `proof_tier ∈ {indicator, suspected}`. Returns the new job id so callers can log it.
-2. `**auth-confusion-suite**` (gap 4) — for each of the 12 detected issues call `recordFinding({source:'auth-confusion', vuln_class, evidence, autoEnqueueExploit:true})`. Today they only `console.log`.
-3. `**template-runner**` (gap 5) — wrap the existing 1-finding write with `autoEnqueueExploit:true` and add a `scan_logs` line so it shows in the summary.
-4. `**kill-chain-graph**` (gap 6) — after chain synthesis, enqueue one `chain_exec` job per chain (currently chains are stored but never dispatched). `scan-job-worker` already routes `chain_exec` → `exploit-chain-runner`.
-5. `**deep-asset-scan**` (gap 7) — for each discovered debug path enqueue an `exploit` job with `vuln_class='info-disclosure'` and a `fuzz` job with `vuln_class='ssrf'` targeting that path.
-6. **Gap 12 verification** — once 2-5 are in place, every scan should log at least one `💀 Exploit Engine engaging` line; add an assertion in `mythos-orchestrator` that warns if iteration ends with `exploit_runs` count = 0.
-
-## Section 2 — Debate dedup wipe (gap 1)
-
-`mythos-debate` dedups by `vuln_class+url` across the whole run, so iterations 2-4 see every candidate as "already debated" → 0 TP/0 FP.
-
-- Change dedup key to `vuln_class + url + payload_hash + iteration_bucket` (bucket = iteration index ÷ 2).
-- If a debate's verdict is `inconclusive`, allow re-debate next iteration with a **new payload mutation** seeded by the previous transcript.
-- Always insert a `mythos_debates` row with the verdict, even when no finding is escalated, so the UI shows progress.
-
-## Section 3 — CVE template targeting (gaps 2, 3)
-
-- **Tech-stack filter** — in `template-runner`, before running any intel-feed template, intersect `intel_feeds.affected_tech_stack` with `target_workspaces.detected_tech` (already populated by `recon-engine`). Skip with a `scan_logs` `info` row if no overlap. Allowlist generic classes (sqli, xss, ssrf, lfi) that aren't tech-bound.
-- **Stop falling back to generic payloads** — only synthesize fallbacks when `extracted_payloads` is empty **and** the CVE class is in the allowlist above. Otherwise mark the template `skipped: no real payloads`.
-- **Real payload extraction** — extend `intel-sync` to pull PoC blocks from HackerOne / Exploit-DB markdown using existing regex + an LLM extraction pass guarded by `checkCreditsAndFailFast`.
-
-## Section 4 — Variant generator stagnation (gap 8)
-
-`mythos-variant-gen` reuses the top-5 CVEs every iteration.
-
-- Track a per-run `seen_cve_ids text[]` column on `mythos_runs` (add via migration).
-- Each iteration: `WHERE id NOT IN seen_cve_ids ORDER BY cvss DESC LIMIT 5`, then append the new ids.
-- When the pool is exhausted, switch strategy to **mutation of last iteration's failed payloads** instead of pulling new CVEs.
-
-## Section 5 — Advanced fuzzing reach (gap 9)
-
-Current Pro-Fuzzer only appends `?q=payload`. Upgrade:
-
-- Parse each endpoint's `discovered_params` (already stored by recon) and fuzz **every param**, not just `q`.
-- Add **POST form** (`application/x-www-form-urlencoded`) and **multipart** body fuzzing alongside the JSON-body pass that was just added.
-- For endpoints whose `method` is POST/PUT, fuzz the request body fields harvested from prior responses or OpenAPI specs in `discovered_endpoints.spec`.
-- Add a **reflected-XSS confirmer**: when payload appears in response body un-encoded, escalate directly via `recordFinding` with `proof_tier='exploited'`.
-
-## Section 6 — OOB activation (gap 10)
-
-OOB channel exists (`oob-collector`) but no probe injects it.
-
-- Add `_shared/oob.ts` exporting `mintOobToken(runId, vulnClass)` → returns `https://<project>.functions.supabase.co/oob-collector/<token>` and a matching DNS-style subdomain token.
-- Inject the token into every blind-class payload generated by `advanced-fuzzer`, `param-bruteforce-xss`, `auth-confusion-suite`, and `template-runner` (SSRF URLs, SQLi `LOAD_FILE`, XXE entity URLs, log4shell JNDI host, blind-XSS sinks).
-- A new `oob-reaper` cron (5 min) joins `oob_callbacks` against pending tokens and, on hit, calls `recordFinding({proof_tier:'exploited', autoEnqueueExploit:true})`.
-
-## Section 7 — AI credit fallback for recon (gap 11)
-
-When `ai-surface-attacker` exhausts credits it currently returns 0 endpoints/params silently.
-
-- Catch `AiCreditsExhaustedError` and fall back to a **heuristic surface ranker** (sort `discovered_endpoints` by: has-params desc, status 200/302 desc, contains `admin|api|login|upload|debug` desc, response length desc). Take top 30.
-- Write a `scan_logs warn` row: "AI surface offline — using heuristic top-30."
-- Continue the pipeline with those endpoints instead of stopping.
-
-## Section 8 — Verification harness
-
-After implementation, run an end-to-end self-test against `testphp.vulnweb.com`:
-
-- Assert `exploit_runs` count ≥ 1, `mythos_debates` count ≥ 1 with non-null verdict, `oob_callbacks` count ≥ 1 (SSRF token), `vulnerability_findings.proof_tier='exploited'` count ≥ 1.
-- If any assertion fails, the orchestrator writes a `scan_logs error` row naming the broken stage.
+**No.** It will at best find OWASP-Juice-Shop-grade reflected XSS / open SSRF when AI credits are full. Without credits, it's a port-scanner with a fancy UI. To rival XBOW it must work **with zero AI dependency for the kill-path** (recon → fuzz → OOB → exploit) and use AI only as a strategic overlay.
 
 ---
 
-## Technical details (for the engineer-AI implementing this)
+# Plan to actually fix this (one decisive pass)
 
-- **Migration**: `ALTER TABLE mythos_runs ADD COLUMN seen_cve_ids text[] DEFAULT '{}'::text[];` + grants already in place.
-- **New shared helper signature**:
-  ```ts
-  recordFinding(db, payload, opts?: { autoEnqueueExploit?: boolean; runId?: string })
-    → { findingId: string; exploitJobId?: string }
-  ```
-- **Enqueue exploit pattern** (used everywhere):
-  ```ts
-  await db.from("scan_jobs").insert({
-    target_id, job_type: "exploit", priority: 8,
-    payload: { findingId, vuln_class, url, payload, evidence },
-    status: "queued", next_run_at: new Date().toISOString(),
-  });
-  ```
-- **OOB token** — HMAC `runId|vulnClass|nonce` with `SUPABASE_SERVICE_ROLE_KEY` so collector can verify without DB read.
-- **Debate dedup key** — `sha1(`${vuln_class}|${normalizeUrl(url)}|${sha1(payload)}|${Math.floor(iter/2)}`)`.
-- **Tech-stack matcher** — case-insensitive substring both ways; treat empty `affected_tech_stack` as wildcard ONLY for the generic-class allowlist.
+## Part A — Stop the bleeding (must land first, ~30 min)
 
-## Enhance everything  that is a breaker in this tool to beat xbow. Enhance everything if  needed.
+A
 
-Approve this and I will implement Sections 1-7 in a single build pass, then run the Section 8 self-test and report the assertion results.   
+1. **variant-gen: never throw on 429.** Wrap the LLM call; on credit error, fall back to a deterministic mutation set (encoding variants, parameter swaps, WAF-bypass operators from SecLists) and continue. Write a `scan_logs warn` row.
+
+A
+
+2. **scan-job-worker: cap AI-deferred queue depth.** If >20 AI jobs are deferred for one target, mark the run `degraded_no_ai` and skip AI jobs entirely for this run instead of looping.
+
+A
+
+3. **AI credit sentinel surfaces in UI.** Banner on Targets + Mythos pages when `ai_credits_exhausted` log row is < 10min old, with a "Run in degraded mode" button that flips `mythos_runs.ai_mode = 'off'`.
+
+## Part B — Make the kill-path work without AI (~2 hrs)
+
+B
+
+1. **advanced-fuzzer goes deterministic-first.**
+  - Library: SecLists XSS/SQLi/SSRF/LFI top-200, plus WAF-bypass operators (case toggle, comment splits, `%00`, `%0a`, double-URL encode).
+  - Every `discovered_endpoints.parameters` key gets fuzzed, not just `q`.
+  - POST forms + JSON bodies (using harvested keys) — already partly there, finish it.
+  - **Reflected-XSS confirmer**: if payload appears un-encoded in response → `recordFinding({proofTier:'exploited', autoEnqueueExploit:true})` directly.
+  - **Error-string SQLi confirmer**: regex on response → `proofTier:'reflected'`.
+
+B
+
+2. **OOB injection actually happens.** Import `mintOobToken()` in advanced-fuzzer, template-runner, auth-confusion-suite, ssrf-deep, param-bruteforce-xss. Replace static `evil.com` / `attacker.com` markers in payloads with the minted URL. Add `oob-reaper` cron (every 2 min) that joins `oob_callbacks` against pending tokens and escalates via `recordFinding({proofTier:'exploited'})`.
+
+B
+
+3. **Exploit-engine receives everything.** Audit each detection module — anywhere we currently `console.log` or `scan_logs.insert` a suspected hit, replace with `recordFinding({autoEnqueueExploit:true})`. Specifically:
+  - `advanced-fuzzer` heuristic hits
+  - `differential-oracle` divergences
+  - `cache-attack` poisoning indicators
+  - `prototype-pollution-gadgets` triggers
+  - `graphql-attack` introspection leaks
+
+B
+
+4. **Proof markers in every PoC.** Add `CYBERSCOPE_PROVEN` echo to every payload template (e.g. XSS payloads `alert('CYBERSCOPE_PROVEN_<token>')`, RCE payloads append `;echo CYBERSCOPE_PROVEN`). This unblocks `proof_tier='exploited'` → bounty pipeline.
+
+## Part C — Fix the AI-dependent modules (~1 hr)
+
+C
+
+1. **mythos-debate**: always insert a row; field `verdict` can be `inconclusive`. Dedup key = `sha1(vuln_class|url|payload_hash|iter÷2)` as planned but actually checked at the SQL level (unique constraint).
+
+C
+
+2. **variant-gen seen-CVEs**: real migration adding `mythos_runs.seen_cve_ids text[] DEFAULT '{}'`, query becomes `WHERE id <> ALL(seen_cve_ids)`.
+
+C
+
+3. **intel-sync extracts payloads & tech stack.** Add a small regex pass (no LLM) over H1/ExploitDB markdown:
+  - tech stack from headings (`Apache`, `WordPress 5.x`, `PHP <= 7.4`)
+  - payloads from fenced code blocks containing `curl`, `POST`, or known sinks.
+   Persist into `intel_feeds.affected_tech_stack` + `extracted_payloads`.
+
+## Part D — Verification harness (mandatory, ~30 min)
+
+D
+
+1. New edge function `e2e-selftest` runs against `http://testaspnet.vulnweb.com` (legal target) on demand. Asserts:
+  - `discovered_endpoints` ≥ 20
+  - `vulnerability_findings.proof_tier='exploited'` ≥ 1 (XSS)
+  - `exploit_runs` ≥ 1
+  - `oob_callbacks` ≥ 1 (SSRF token)
+  - `mythos_debates` ≥ 1 with non-null verdict
+   Each failure writes a `scan_logs error` row naming the broken stage. Button on SystemHealth page to trigger.
+
+D
+
+2. **No claim of "fixed" without running D1.** I will run it after Part A-C land and paste the actual assertion output.
+
+---
+
+## Why this time will be different
+
+- **Parts A & B remove the AI dependency from the kill-path.** Whether credits are 0 or unlimited, scanning fuzzes, OOB-confirms, and exploits.
+- **Part D blocks me from declaring victory without proof.** Every previous "done" was unverified — this fixes that.
+
+## Order of operations
+
+1. Land A1-A3 first (unblocks logs, stops crash loop).
+2. Land B1-B4 (now the tool finds bugs without AI).
+3. Land C1-C3 (AI overlay works again when credits return).
+4. Run D1 self-test. Paste results. **No further claims until D1 passes.**
+
+Approve and I will execute in this order, ending with the D1 assertion output verbatim — pass or fail. Implement all A-D in single implementation and AI API key already given if credits exhausted. AI must learn from it's action to teach itself how to test next time to find real bugs and avoid time wasting.
