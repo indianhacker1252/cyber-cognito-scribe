@@ -28,8 +28,8 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
 
   const supa = db();
-  const body = await req.json().catch(() => ({}));
-  const testUrl = body.url || "http://testphp.vulnweb.com";
+  const rawUrl = body.url || "testphp.vulnweb.com";
+  const testUrl = rawUrl.replace(/^https?:\/\//, "").replace(/\/+$/, "");
 
   // 1. Create / fetch a sentinel target
   const { data: existing } = await supa.from("target_workspaces").select("id").eq("domain", testUrl).maybeSingle();
