@@ -37,6 +37,22 @@ function parsePhase(p: string): { kind: string; iter?: number; sub?: string } {
 }
 
 async function enqueueNext(db: any, runId: string, targetId: string, nextPhase: string, payload: any = {}) {
+  // Guard 1: run must still be 'running' — otherwise we're spawning orphans
+  const { data: run } = await db.from("mythos_runs").select("status").eq("id", runId).maybeSingle();
+  if (!run || run.status !== "running") {
+    console.log(`enqueueNext skipped: run ${runId} status=${run?.status ?? "missing"}`);
+    return;
+  }
+  // Guard 2: dedupe — don't queue if an identical step is already queued
+  const { count } = await db.from("scan_jobs")
+    .select("id", { count: "exact", head: true })
+    .eq("status", "queued").eq("job_type", "mythos_step")
+    .filter("payload->>runId", "eq", runId)
+    .filter("payload->>nextPhase", "eq", nextPhase);
+  if ((count ?? 0) > 0) {
+    console.log(`enqueueNext skipped: dup queued for ${runId}/${nextPhase}`);
+    return;
+  }
   await db.from("scan_jobs").insert({
     target_id: targetId,
     job_type: "mythos_step",
@@ -44,11 +60,7 @@ async function enqueueNext(db: any, runId: string, targetId: string, nextPhase: 
     status: "queued",
     priority: 7,
   });
-  fetch(`${SUPABASE_URL}/functions/v1/scan-job-worker`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${SERVICE_KEY}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ source: "mythos-orchestrator", runId, nextPhase }),
-  }).catch(() => {});
+  // No self-fire — pg_cron + scan-job-worker will pick it up. Self-fire caused cascade fanout.
 }
 
 async function executePhase(db: any, run: any, phase: string, payload: any): Promise<{ done: boolean; nextPhase?: string; results?: any }> {

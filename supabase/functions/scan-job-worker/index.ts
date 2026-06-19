@@ -90,6 +90,18 @@ Deno.serve(async (req) => {
     const supa = db();
     await sweepStuck(supa).catch(() => {});
 
+    // 🛑 Circuit breaker: if mythos_step queue depth is pathological, mass-fail it.
+    const { count: mythosQueued } = await supa.from("scan_jobs")
+      .select("id", { count: "exact", head: true })
+      .eq("status", "queued").eq("job_type", "mythos_step");
+    if ((mythosQueued ?? 0) > 1000) {
+      await supa.from("scan_jobs").update({
+        status: "failed", error_message: "circuit_breaker: mythos_step queue >1000",
+        completed_at: new Date().toISOString(),
+      }).eq("status", "queued").eq("job_type", "mythos_step");
+      console.log(`circuit_breaker tripped: failed ${mythosQueued} mythos_step jobs`);
+    }
+
     const limit = 5;
     const { data: jobs } = await supa.from("scan_jobs")
       .select("*").eq("status", "queued").lte("next_run_at", new Date().toISOString())

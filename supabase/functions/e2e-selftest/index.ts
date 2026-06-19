@@ -28,24 +28,18 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
 
   const supa = db();
-  const body = await req.json().catch(() => ({}));
-  const testUrl = body.url || "http://testphp.vulnweb.com";
+  const rawUrl = body.url || "testphp.vulnweb.com";
+  const testUrl = rawUrl.replace(/^https?:\/\//, "").replace(/\/+$/, "");
 
   // 1. Create / fetch a sentinel target
   const { data: existing } = await supa.from("target_workspaces").select("id").eq("domain", testUrl).maybeSingle();
   let targetId = existing?.id;
   if (!targetId) {
-    // user_id is required — fall back to first admin
-    const { data: admin } = await supa.from("user_roles").select("user_id").eq("role", "admin").limit(1).maybeSingle();
-    if (!admin?.user_id) {
-      return new Response(JSON.stringify({ ok: false, error: "no admin user found to own selftest target" }),
-        { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 200 });
-    }
     const { data: inserted, error } = await supa.from("target_workspaces").insert({
-      user_id: admin.user_id,
       name: "E2E SelfTest Target",
       domain: testUrl,
       attestation_accepted: true,
+      attestation_accepted_at: new Date().toISOString(),
       authorization_mode: "attestation",
     }).select("id").single();
     if (error) {
