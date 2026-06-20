@@ -142,6 +142,18 @@ export default function SystemHealth() {
           <Button variant="outline" size="sm" className="font-mono text-xs gap-1" onClick={() => refetch()}>
             <RefreshCw className="h-3 w-3" /> Refresh
           </Button>
+          <Button
+            variant="outline" size="sm"
+            className="font-mono text-[10px] gap-1 text-destructive border-destructive/50 hover:bg-destructive/10"
+            onClick={() => {
+              if (confirm("🔥 PURGE EVERYTHING from database (logs, jobs, debates, variants, evidence, findings, chat)? This frees memory but cannot be undone.")) {
+                purgeAll.mutate();
+              }
+            }}
+            disabled={purgeAll.isPending}
+          >
+            <Trash2 className="h-3 w-3" /> {purgeAll.isPending ? "Purging…" : "Purge All History"}
+          </Button>
           {agents && agents.length > 0 && (
             <Button
               variant="outline" size="sm"
