@@ -2848,6 +2848,10 @@ export type Database = {
         }
         Returns: boolean
       }
+      purge_history: {
+        Args: { _scope?: string; _target_id?: string }
+        Returns: Json
+      }
       target_is_exploit_authorized: {
         Args: { _target_id: string }
         Returns: boolean

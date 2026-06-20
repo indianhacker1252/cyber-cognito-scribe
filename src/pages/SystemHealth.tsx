@@ -64,6 +64,21 @@ export default function SystemHealth() {
     },
   });
 
+  const purgeAll = useMutation({
+    mutationFn: async () => {
+      const { data, error } = await supabase.rpc("purge_history" as any, { _target_id: null, _scope: "all" });
+      if (error) throw error;
+      return data as any;
+    },
+    onSuccess: (data: any) => {
+      queryClient.invalidateQueries();
+      const totals = data?.deleted ? Object.entries(data.deleted).map(([k, v]) => `${k}:${v}`).join(", ") : "";
+      toast.success(`🧹 Purged everything from database. ${totals}`);
+    },
+    onError: (e: any) => toast.error(`Purge failed: ${e.message}`),
+  });
+
+
   const getHeartbeat = (updatedAt: string) => {
     const diff = Date.now() - new Date(updatedAt).getTime();
     if (diff < 60000) return { label: "Active", color: "bg-cyber-green", textColor: "text-cyber-green" };
@@ -126,6 +141,18 @@ export default function SystemHealth() {
           </Button>
           <Button variant="outline" size="sm" className="font-mono text-xs gap-1" onClick={() => refetch()}>
             <RefreshCw className="h-3 w-3" /> Refresh
+          </Button>
+          <Button
+            variant="outline" size="sm"
+            className="font-mono text-[10px] gap-1 text-destructive border-destructive/50 hover:bg-destructive/10"
+            onClick={() => {
+              if (confirm("🔥 PURGE EVERYTHING from database (logs, jobs, debates, variants, evidence, findings, chat)? This frees memory but cannot be undone.")) {
+                purgeAll.mutate();
+              }
+            }}
+            disabled={purgeAll.isPending}
+          >
+            <Trash2 className="h-3 w-3" /> {purgeAll.isPending ? "Purging…" : "Purge All History"}
           </Button>
           {agents && agents.length > 0 && (
             <Button

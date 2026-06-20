@@ -90,16 +90,32 @@ Deno.serve(async (req) => {
     const supa = db();
     await sweepStuck(supa).catch(() => {});
 
-    // 🛑 Circuit breaker: if mythos_step queue depth is pathological, mass-fail it.
+    // 🛑 Defensive gate: drop mythos_step jobs whose run is not 'running'.
+    // Stops legacy orchestrator code from cascading against dead/paused/failed runs.
+    {
+      const { data: queuedSteps } = await supa.from("scan_jobs")
+        .select("id, payload").eq("status", "queued").eq("job_type", "mythos_step").limit(2000);
+      const runIds = [...new Set((queuedSteps || []).map((j: any) => j.payload?.runId).filter(Boolean))];
+      if (runIds.length) {
+        const { data: liveRuns } = await supa.from("mythos_runs")
+          .select("id").in("id", runIds).eq("status", "running");
+        const liveSet = new Set((liveRuns || []).map((r: any) => r.id));
+        const deadIds = (queuedSteps || []).filter((j: any) => !liveSet.has(j.payload?.runId)).map((j: any) => j.id);
+        if (deadIds.length) {
+          await supa.from("scan_jobs").delete().in("id", deadIds);
+          console.log(`gate: dropped ${deadIds.length} mythos_step jobs for non-running runs`);
+        }
+      }
+    }
+
+    // 🛑 Circuit breaker: if mythos_step queue depth is still pathological, nuke it.
     const { count: mythosQueued } = await supa.from("scan_jobs")
       .select("id", { count: "exact", head: true })
       .eq("status", "queued").eq("job_type", "mythos_step");
     if ((mythosQueued ?? 0) > 1000) {
-      await supa.from("scan_jobs").update({
-        status: "failed", error_message: "circuit_breaker: mythos_step queue >1000",
-        completed_at: new Date().toISOString(),
-      }).eq("status", "queued").eq("job_type", "mythos_step");
-      console.log(`circuit_breaker tripped: failed ${mythosQueued} mythos_step jobs`);
+      await supa.from("scan_jobs").delete()
+        .eq("status", "queued").eq("job_type", "mythos_step");
+      console.log(`circuit_breaker tripped: deleted ${mythosQueued} mythos_step jobs`);
     }
 
     const limit = 5;
