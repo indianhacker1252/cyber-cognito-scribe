@@ -64,6 +64,21 @@ export default function SystemHealth() {
     },
   });
 
+  const purgeAll = useMutation({
+    mutationFn: async () => {
+      const { data, error } = await supabase.rpc("purge_history" as any, { _target_id: null, _scope: "all" });
+      if (error) throw error;
+      return data as any;
+    },
+    onSuccess: (data: any) => {
+      queryClient.invalidateQueries();
+      const totals = data?.deleted ? Object.entries(data.deleted).map(([k, v]) => `${k}:${v}`).join(", ") : "";
+      toast.success(`🧹 Purged everything from database. ${totals}`);
+    },
+    onError: (e: any) => toast.error(`Purge failed: ${e.message}`),
+  });
+
+
   const getHeartbeat = (updatedAt: string) => {
     const diff = Date.now() - new Date(updatedAt).getTime();
     if (diff < 60000) return { label: "Active", color: "bg-cyber-green", textColor: "text-cyber-green" };
