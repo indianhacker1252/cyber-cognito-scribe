@@ -85,6 +85,9 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   const respond = (b: any, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
+  const MAX_DEPTH = 6;
+  const MAX_BREADTH = 3;
+
   try {
     const supa = db();
     const auth = req.headers.get("Authorization") || "";
@@ -93,8 +96,12 @@ Deno.serve(async (req) => {
     const { data: ud } = await supa.auth.getUser(token);
     if (!isServiceRole && !ud?.user?.id) return respond({ ok: false, error: "unauthorized" }, 401);
 
-    const { seedFindingId, autoQueue = true } = await req.json();
+    const { seedFindingId, autoQueue = true, depth = 1 } = await req.json();
     if (!seedFindingId) return respond({ ok: false, error: "seedFindingId required" });
+    if (depth > MAX_DEPTH) {
+      return respond({ ok: true, message: `max chain depth ${MAX_DEPTH} reached` });
+    }
+
 
     const { data: f } = await supa.from("vulnerability_findings").select("*").eq("id", seedFindingId).maybeSingle();
     if (!f) return respond({ ok: false, error: "finding not found" });
