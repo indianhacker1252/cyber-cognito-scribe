@@ -86,17 +86,18 @@ Deno.serve(async (req) => {
             const proven = detectProof(probe.payloadClass, r.status, body, r.headers);
             if (proven) {
               hitsByClass[probe.payloadClass] = (hitsByClass[probe.payloadClass] || 0) + 1;
-              await recordFinding(db as any, {
+              await recordFinding({
                 targetId,
+                source: "matrix-fuzzer",
+                category: probe.payloadClass,
+                vulnClass: probe.payloadClass,
+                severity: severityFor(probe.payloadClass) as any,
                 title: `[matrix] ${probe.payloadClass.toUpperCase()} via ${probe.method} ${probe.location} param "${probe.param}"`,
                 description: `Matrix-fuzzer proved ${probe.payloadClass} on ${asset.host}. Payload echoed/triggered proof marker.`,
-                severity: severityFor(probe.payloadClass),
-                affectedUrl: url,
                 payload: probe.payload,
                 proofTier: "exploited",
                 autoEnqueueExploit: true,
-                source: "matrix-fuzzer",
-                hardEvidence: {
+                evidence: {
                   templateId: probe.payloadClass,
                   vuln_class: probe.payloadClass,
                   method: probe.method,
@@ -105,8 +106,11 @@ Deno.serve(async (req) => {
                   status: r.status,
                   bodySnippet: body.slice(0, 800),
                   asset: asset.host,
+                  affected_url: url,
                 },
-              } as any);
+                request: { method: probe.method, url, headers: (init.headers as any) || {}, body: typeof init.body === "string" ? init.body : undefined },
+                response: { status: r.status, body: body.slice(0, 4000) },
+              });
               findingsCreated++;
             }
           } catch { /* ignore probe error */ }

@@ -65,18 +65,21 @@ Deno.serve(async (req) => {
           const txt = (await r.text().catch(() => "")).slice(0, 4000);
           if (txt.includes(PROOF) || /SQL syntax|onerror=|root:x:0:0/i.test(txt)) {
             findings++;
-            await recordFinding(db as any, {
+            await recordFinding({
               targetId,
+              source: "form-attacker",
+              category: "form_injection",
+              vulnClass: "form_injection",
               title: `Form-attack hit @ ${f.action_url}`,
               description: `form-attacker submitted '${payload}' into all ${fields.length} fields and observed an injection marker in the response.`,
               severity: "high",
-              affectedUrl: f.action_url,
               payload,
               proofTier: "exploited",
               autoEnqueueExploit: true,
-              source: "form-attacker",
-              hardEvidence: { method: f.method, fields: fields.map((x: any) => x.name), bodySnippet: txt.slice(0, 800), templateId: "form_injection" },
-            } as any);
+              evidence: { method: f.method, fields: fields.map((x: any) => x.name), bodySnippet: txt.slice(0, 800), templateId: "form_injection", affected_url: f.action_url },
+              request: { method: (f.method || "POST").toUpperCase(), url: f.action_url, body: body.toString() },
+              response: { status: r.status, body: txt },
+            });
           }
         } catch { /* continue */ }
       }
@@ -101,18 +104,20 @@ Deno.serve(async (req) => {
             const txt = (await r.text().catch(() => "")).slice(0, 4000);
             if (txt.includes(poly.marker) || txt.includes(PROOF)) {
               findings++;
-              await recordFinding(db as any, {
+              await recordFinding({
                 targetId,
+                source: "form-attacker",
+                category: poly.vulnClass,
+                vulnClass: poly.vulnClass,
                 title: `Upload-fuzz proven (${poly.vulnClass}) @ ${f.action_url}`,
                 description: `Polyglot ${poly.filename} echoed marker '${poly.marker}' in upload response — server processed/stored attacker-controlled content.`,
                 severity: poly.vulnClass.includes("rce") ? "critical" : "high",
-                affectedUrl: f.action_url,
                 payload: poly.filename,
                 proofTier: "exploited",
                 autoEnqueueExploit: true,
-                source: "form-attacker",
-                hardEvidence: { vuln_class: poly.vulnClass, templateId: poly.vulnClass, filename: poly.filename, bodySnippet: txt.slice(0, 800) },
-              } as any);
+                evidence: { vuln_class: poly.vulnClass, templateId: poly.vulnClass, filename: poly.filename, bodySnippet: txt.slice(0, 800), affected_url: f.action_url },
+                response: { status: r.status, body: txt },
+              });
             }
           } catch { /* continue */ }
         }
