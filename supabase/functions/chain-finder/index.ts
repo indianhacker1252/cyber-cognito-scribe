@@ -85,6 +85,9 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   const respond = (b: any, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
+  const MAX_DEPTH = 6;
+  const MAX_BREADTH = 3;
+
   try {
     const supa = db();
     const auth = req.headers.get("Authorization") || "";
@@ -93,8 +96,12 @@ Deno.serve(async (req) => {
     const { data: ud } = await supa.auth.getUser(token);
     if (!isServiceRole && !ud?.user?.id) return respond({ ok: false, error: "unauthorized" }, 401);
 
-    const { seedFindingId, autoQueue = true } = await req.json();
+    const { seedFindingId, autoQueue = true, depth = 1 } = await req.json();
     if (!seedFindingId) return respond({ ok: false, error: "seedFindingId required" });
+    if (depth > MAX_DEPTH) {
+      return respond({ ok: true, message: `max chain depth ${MAX_DEPTH} reached` });
+    }
+
 
     const { data: f } = await supa.from("vulnerability_findings").select("*").eq("id", seedFindingId).maybeSingle();
     if (!f) return respond({ ok: false, error: "finding not found" });
@@ -179,6 +186,18 @@ Deno.serve(async (req) => {
         } as any).select().single();
 
         if (nextFinding?.id) {
+          // Record the kill-chain edge so depth can be measured
+          try {
+            await supa.from("kill_chain_graph_edges").insert({
+              target_id: f.target_id,
+              parent_finding_id: seedFindingId,
+              child_finding_id: nextFinding.id,
+              primitive_consumed: step.primitive_used,
+              primitive_produced: step.next_vuln_class,
+              depth,
+            } as any);
+          } catch { /* ignore */ }
+
           // Fire-and-forget exploit-engine run on the new step
           fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/exploit-engine`, {
             method: "POST",
@@ -193,14 +212,29 @@ Deno.serve(async (req) => {
           await supa.from("chain_finder_runs").update({
             queued_exploit_run_id: nextFinding.id, status: "queued",
           } as any).eq("id", chainRow!.id);
-          await log(supa, f.target_id, "action", `🚀 Chain step auto-queued → exploit-engine attacking ${step.next_target_url}`);
+          await log(supa, f.target_id, "action", `🚀 Chain step (depth=${depth}) auto-queued → exploit-engine attacking ${step.next_target_url}`);
+
+          // Recurse — chain-finder again after the engine has a chance to exploit it.
+          if (depth < MAX_DEPTH) {
+            setTimeout(() => {
+              fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/chain-finder`, {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  "Authorization": `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}`,
+                },
+                body: JSON.stringify({ seedFindingId: nextFinding.id, depth: depth + 1 }),
+                signal: AbortSignal.timeout(8000),
+              }).catch(() => { /* fire-and-forget */ });
+            }, 20000);
+          }
         }
       } catch (e) {
         await log(supa, f.target_id, "warning", `Chain auto-queue failed: ${e instanceof Error ? e.message : "err"}`);
       }
     }
 
-    return respond({ ok: true, runId: chainRow?.id, step, queuedRunId });
+    return respond({ ok: true, runId: chainRow?.id, step, queuedRunId, depth });
   } catch (e) {
     return respond({ ok: false, error: e instanceof Error ? e.message : "err" });
   }

@@ -106,15 +106,16 @@ async function executePhase(db: any, run: any, phase: string, payload: any): Pro
   }
 
   if (phase === "advanced-modules") {
-    await log(`🧪 Advanced attack modules: biz-logic, auth-confusion, proto-pollution, AI-surface, differential, param-explorer, desync-v2`);
+    await log(`🧪 Advanced attack modules + per-asset matrix fuzz + form-attacker`);
     const mods = [
       "business-logic-fuzzer", "auth-confusion-suite", "prototype-pollution-gadgets",
       "ai-surface-attacker", "differential-oracle", "symbolic-param-explorer", "desync-smuggling-v2",
+      "matrix-fuzzer", "form-attacker",
     ];
     const settled = await Promise.allSettled(mods.map(m => call(m, { targetId }, 42000)));
     const summary: Record<string, any> = {};
     settled.forEach((s, i) => { summary[mods[i]] = s.status === "fulfilled" ? (s.value.data ?? s.value) : { error: true }; });
-    await log(`Advanced modules done`, summary);
+    await log(`Advanced modules done (incl. matrix-fuzzer & form-attacker)`, summary);
     return { done: false, nextPhase: "iter-1-chain" };
   }
 

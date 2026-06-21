@@ -997,6 +997,53 @@ export type Database = {
           },
         ]
       }
+      discovered_forms: {
+        Row: {
+          action_url: string
+          created_at: string
+          enctype: string
+          fields: Json
+          has_file_upload: boolean
+          id: string
+          last_attacked_at: string | null
+          method: string
+          page_url: string
+          target_id: string
+        }
+        Insert: {
+          action_url: string
+          created_at?: string
+          enctype?: string
+          fields?: Json
+          has_file_upload?: boolean
+          id?: string
+          last_attacked_at?: string | null
+          method?: string
+          page_url: string
+          target_id: string
+        }
+        Update: {
+          action_url?: string
+          created_at?: string
+          enctype?: string
+          fields?: Json
+          has_file_upload?: boolean
+          id?: string
+          last_attacked_at?: string | null
+          method?: string
+          page_url?: string
+          target_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "discovered_forms_target_id_fkey"
+            columns: ["target_id"]
+            isOneToOne: false
+            referencedRelation: "target_workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       endpoint_baselines: {
         Row: {
           body_len: number
@@ -1536,6 +1583,61 @@ export type Database = {
           templates_generated?: number | null
         }
         Relationships: []
+      }
+      kill_chain_graph_edges: {
+        Row: {
+          child_finding_id: string | null
+          created_at: string
+          depth: number
+          id: string
+          parent_finding_id: string | null
+          primitive_consumed: string | null
+          primitive_produced: string | null
+          target_id: string
+        }
+        Insert: {
+          child_finding_id?: string | null
+          created_at?: string
+          depth?: number
+          id?: string
+          parent_finding_id?: string | null
+          primitive_consumed?: string | null
+          primitive_produced?: string | null
+          target_id: string
+        }
+        Update: {
+          child_finding_id?: string | null
+          created_at?: string
+          depth?: number
+          id?: string
+          parent_finding_id?: string | null
+          primitive_consumed?: string | null
+          primitive_produced?: string | null
+          target_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "kill_chain_graph_edges_child_finding_id_fkey"
+            columns: ["child_finding_id"]
+            isOneToOne: false
+            referencedRelation: "vulnerability_findings"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "kill_chain_graph_edges_parent_finding_id_fkey"
+            columns: ["parent_finding_id"]
+            isOneToOne: false
+            referencedRelation: "vulnerability_findings"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "kill_chain_graph_edges_target_id_fkey"
+            columns: ["target_id"]
+            isOneToOne: false
+            referencedRelation: "target_workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       kill_chains: {
         Row: {
@@ -2354,6 +2456,47 @@ export type Database = {
           user_id?: string | null
         }
         Relationships: []
+      }
+      scan_assets: {
+        Row: {
+          base_url: string
+          created_at: string
+          host: string
+          id: string
+          is_dead: boolean
+          last_scanned_at: string | null
+          source: string
+          target_id: string
+        }
+        Insert: {
+          base_url: string
+          created_at?: string
+          host: string
+          id?: string
+          is_dead?: boolean
+          last_scanned_at?: string | null
+          source?: string
+          target_id: string
+        }
+        Update: {
+          base_url?: string
+          created_at?: string
+          host?: string
+          id?: string
+          is_dead?: boolean
+          last_scanned_at?: string | null
+          source?: string
+          target_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "scan_assets_target_id_fkey"
+            columns: ["target_id"]
+            isOneToOne: false
+            referencedRelation: "target_workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       scan_credits: {
         Row: {

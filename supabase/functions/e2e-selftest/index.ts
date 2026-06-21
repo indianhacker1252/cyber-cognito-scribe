@@ -1,6 +1,6 @@
 // E2E Self-Test — runs the kill-path against a legal public test target and
-// asserts the pipeline actually produced findings, exploits, and OOB callbacks.
-// Triggered manually from SystemHealth → "Run E2E Self-Test".
+// asserts the pipeline produced findings, exploits, fan-out, methods coverage,
+// form/upload tests, and kill-chain depth.
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
@@ -26,12 +26,14 @@ async function call(fn: string, body: any, ms = 45000) {
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
+  const ok = (b: any) => new Response(JSON.stringify(b), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
   const supa = db();
+  const body = await req.json().catch(() => ({} as any));
   const rawUrl = body.url || "testphp.vulnweb.com";
   const testUrl = rawUrl.replace(/^https?:\/\//, "").replace(/\/+$/, "");
 
-  // 1. Create / fetch a sentinel target
+  // 1. Create / fetch sentinel target
   const { data: existing } = await supa.from("target_workspaces").select("id").eq("domain", testUrl).maybeSingle();
   let targetId = existing?.id;
   if (!targetId) {
@@ -42,43 +44,64 @@ Deno.serve(async (req) => {
       attestation_accepted_at: new Date().toISOString(),
       authorization_mode: "attestation",
     }).select("id").single();
-    if (error) {
-      return new Response(JSON.stringify({ ok: false, error: error.message }),
-        { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 200 });
-    }
+    if (error) return ok({ ok: false, error: error.message });
     targetId = inserted.id;
   }
 
   await supa.from("scan_logs").insert({
     target_id: targetId, log_type: "action",
-    message: `🧪 E2E SelfTest started against ${testUrl}`,
+    message: `🧪 E2E SelfTest v2 started against ${testUrl}`,
   });
 
-  // 2. Run recon → fuzz inline (best-effort, no awaiting the whole chain)
-  const reconR = await call("recon-engine", { targetId }, 30000);
+  // 2. Drive the full kill-path (recon → fan-out fuzz → forms → AI fuzz)
+  const reconR = await call("recon-engine", { targetId }, 35000);
+  const matrixR = await call("matrix-fuzzer", { targetId, perAssetCap: 40 }, 45000);
+  const formR = await call("form-attacker", { targetId }, 40000);
   const fuzzR = await call("advanced-fuzzer", { targetId }, 45000);
 
-  // 3. Wait briefly for queue workers to drain
-  await new Promise(r => setTimeout(r, 4000));
+  // Drain queue
+  await new Promise(r => setTimeout(r, 3000));
   await call("scan-job-worker", {}, 30000);
   await new Promise(r => setTimeout(r, 2000));
 
-  // 4. Assertions
-  const since = new Date(Date.now() - 5 * 60_000).toISOString();
-  const [{ count: epCount }, { count: findCount }, { count: exploitedCount }, { count: oobCount }, { count: exploitRuns }] = await Promise.all([
+  // 3. Assertions
+  const since = new Date(Date.now() - 10 * 60_000).toISOString();
+  const [
+    { count: epCount },
+    { count: findCount },
+    { count: exploitedCount },
+    { count: oobCount },
+    { count: exploitRuns },
+    { count: assetCount },
+    { count: formsCount },
+    { count: chainEdges },
+    { data: matrixLogs },
+  ] = await Promise.all([
     supa.from("discovered_endpoints").select("id", { count: "exact", head: true }).eq("target_id", targetId),
     supa.from("vulnerability_findings").select("id", { count: "exact", head: true }).eq("target_id", targetId).gte("created_at", since),
     supa.from("vulnerability_findings").select("id", { count: "exact", head: true }).eq("target_id", targetId).eq("proof_tier", "exploited"),
     supa.from("oob_callbacks").select("id", { count: "exact", head: true }).eq("target_id", targetId),
     supa.from("exploit_runs").select("id", { count: "exact", head: true }).eq("target_id", targetId),
+    supa.from("scan_assets").select("id", { count: "exact", head: true }).eq("target_id", targetId),
+    supa.from("discovered_forms").select("id", { count: "exact", head: true }).eq("target_id", targetId),
+    supa.from("kill_chain_graph_edges").select("id", { count: "exact", head: true }).eq("target_id", targetId),
+    supa.from("scan_logs").select("metadata").eq("target_id", targetId).ilike("message", "%Matrix-fuzzer done%").order("created_at", { ascending: false }).limit(1),
   ]);
 
-  const assertions = {
+  const methodsTested = (matrixLogs?.[0] as any)?.metadata?.methods?.length ?? (matrixR.data?.methodsTested?.length ?? 0);
+  const probesSent = matrixR.data?.probesSent ?? (matrixLogs?.[0] as any)?.metadata?.probesSent ?? 0;
+
+  const assertions: Record<string, { pass: boolean; actual: number | string }> = {
     endpoints_ge_5: { pass: (epCount ?? 0) >= 5, actual: epCount ?? 0 },
+    assets_scanned_ge_2: { pass: (assetCount ?? 0) >= 2, actual: assetCount ?? 0 },
+    methods_tested_ge_3: { pass: methodsTested >= 3, actual: methodsTested },
+    probes_sent_ge_20: { pass: probesSent >= 20, actual: probesSent },
+    forms_harvested_ge_1: { pass: (formsCount ?? 0) >= 1, actual: formsCount ?? 0 },
     findings_ge_1: { pass: (findCount ?? 0) >= 1, actual: findCount ?? 0 },
     exploited_ge_1: { pass: (exploitedCount ?? 0) >= 1, actual: exploitedCount ?? 0 },
-    oob_callbacks_ge_1: { pass: (oobCount ?? 0) >= 1, actual: oobCount ?? 0 },
     exploit_runs_ge_1: { pass: (exploitRuns ?? 0) >= 1, actual: exploitRuns ?? 0 },
+    oob_callbacks_ge_1: { pass: (oobCount ?? 0) >= 1, actual: oobCount ?? 0 },
+    chain_edges_ge_1: { pass: (chainEdges ?? 0) >= 1, actual: chainEdges ?? 0 },
   };
   const allPass = Object.values(assertions).every(a => a.pass);
 
@@ -93,11 +116,12 @@ Deno.serve(async (req) => {
   }
   await supa.from("scan_logs").insert({
     target_id: targetId, log_type: allPass ? "result" : "error",
-    message: allPass ? `✅ E2E SelfTest passed all 5 assertions` : `❌ E2E SelfTest failed — see prior errors`,
-    metadata: { assertions, reconR: reconR.data, fuzzR: fuzzR.data },
+    message: allPass
+      ? `✅ E2E SelfTest v2 passed all ${Object.keys(assertions).length} assertions`
+      : `❌ E2E SelfTest v2 failed — see prior errors`,
+    metadata: { assertions, matrix: matrixR.data, form: formR.data, recon: reconR.data, fuzz: fuzzR.data },
   });
 
-  return new Response(JSON.stringify({ ok: true, allPass, assertions, targetId, testUrl }), {
-    headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 200,
-  });
+  return ok({ ok: true, allPass, assertions, targetId, testUrl,
+    summary: { matrix: matrixR.data, form: formR.data } });
 });
