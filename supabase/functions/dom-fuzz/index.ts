@@ -100,6 +100,38 @@ Deno.serve(async (req) => {
       findings = await runViaEdgeHeadless(supa, body.targetId, body.url, payloads);
     }
 
+    // Harvest <form> elements from the page into discovered_forms so form-attacker can POST-fuzz them.
+    try {
+      const r = await fetch(body.url, { headers: { "User-Agent": "CyberScope/2.0" }, signal: AbortSignal.timeout(8000) });
+      const html = await r.text();
+      const formRx = /<form\b([^>]*)>([\s\S]*?)<\/form>/gi;
+      let m: RegExpExecArray | null;
+      while ((m = formRx.exec(html)) !== null) {
+        const attrs = m[1] || "";
+        const inner = m[2] || "";
+        const action = (attrs.match(/action\s*=\s*["']?([^"'\s>]+)/i)?.[1]) || body.url;
+        const method = (attrs.match(/method\s*=\s*["']?([^"'\s>]+)/i)?.[1] || "POST").toUpperCase();
+        const enctype = attrs.match(/enctype\s*=\s*["']?([^"'\s>]+)/i)?.[1] || "application/x-www-form-urlencoded";
+        const fields: any[] = [];
+        const inputRx = /<(input|textarea|select)\b([^>]*)>/gi;
+        let im: RegExpExecArray | null;
+        while ((im = inputRx.exec(inner)) !== null) {
+          const a = im[2] || "";
+          const name = a.match(/name\s*=\s*["']?([^"'\s>]+)/i)?.[1];
+          const type = a.match(/type\s*=\s*["']?([^"'\s>]+)/i)?.[1] || "text";
+          if (name) fields.push({ name, type });
+        }
+        const has_file_upload = fields.some(f => f.type === "file") || /multipart/i.test(enctype);
+        let actionUrl = action;
+        try { actionUrl = new URL(action, body.url).toString(); } catch {}
+        await supa.from("discovered_forms").upsert({
+          target_id: body.targetId, page_url: body.url, action_url: actionUrl,
+          method, enctype, fields, has_file_upload,
+        }, { onConflict: "target_id,action_url,method", ignoreDuplicates: true });
+      }
+    } catch { /* ignore */ }
+
+
     // Persist proven findings
     for (const f of findings.filter((x) => x.proven)) {
       await supa.from("vulnerability_findings").insert({
