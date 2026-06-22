@@ -3,8 +3,10 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.95.0";
 import { recordFinding } from "../_shared/findings-writer.ts";
 import { mintOobToken } from "../_shared/oob.ts";
 
-const SCAN_START = Date.now();
-const MAX_MS = 480000;
+// Per-request budget (edge functions are capped at 150s idle timeout).
+// We keep a hard ceiling well under that so we always return a 200 with partial results.
+let SCAN_START = Date.now();
+const MAX_MS = 110000;
 const timeLeft = () => MAX_MS - (Date.now() - SCAN_START);
 
 // 🧠 Adaptive learning — record what worked so next runs prioritise it.
@@ -453,6 +455,7 @@ async function testCveTemplates(
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
 
+  SCAN_START = Date.now(); // reset per-request budget
   try {
     const { targetId } = await req.json().catch(() => ({}));
     if (!targetId) {
