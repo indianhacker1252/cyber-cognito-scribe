@@ -455,6 +455,7 @@ async function testCveTemplates(
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
 
+  SCAN_START = Date.now(); // reset per-request budget
   try {
     const { targetId } = await req.json().catch(() => ({}));
     if (!targetId) {
