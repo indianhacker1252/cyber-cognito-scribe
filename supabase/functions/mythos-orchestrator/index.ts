@@ -223,7 +223,10 @@ async function executePhase(db: any, run: any, phase: string, payload: any): Pro
     return { done: true };
   }
 
-  await log(`Unknown phase '${phase}' — completing run`);
+  await log(`❌ Unknown phase '${phase}' — refusing to silently complete; marking run failed`, { unknown_phase: phase });
+  await db.from("mythos_runs").update({
+    status: "failed", completed_at: new Date().toISOString(),
+  }).eq("id", runId);
   return { done: true };
 }
 
