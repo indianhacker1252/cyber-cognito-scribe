@@ -168,11 +168,32 @@ serve(async (req) => {
       }
     }
 
+    // Emit MISSING_HTTPS finding when a downgrade succeeded
+    if (result?.scheme_downgraded && endpoint.startsWith("https://")) {
+      await db.from("vulnerability_findings").insert({
+        target_id: targetId,
+        title: "Missing / broken HTTPS — service reachable only over cleartext HTTP",
+        severity: "medium",
+        cvss_score: 5.3,
+        finding_type: "missing_https",
+        vuln_class: "transport_security",
+        affected_url: endpoint,
+        description: `Target ${endpoint} failed HTTPS but responded over HTTP. All traffic is exposed to MITM observers.`,
+        remediation: "Serve all assets over HTTPS, enable HSTS with includeSubDomains+preload, and redirect HTTP→HTTPS.",
+        confidence_score: 95,
+        confidence_level: "high",
+        validation_status: "confirmed",
+        reachability_status: "reachable",
+        evidence: { final_url: result.final_url, scheme_downgraded: true },
+      } as any).catch(() => {});
+    }
+
+    const errStr = result?.error ? ` err=${String(result.error).slice(0, 80)}` : "";
     await db.from("scan_logs").insert({
       target_id: targetId,
-      log_type: isCandidate ? "result" : "info",
-      message: `${isCandidate ? "🚨 0-DAY CANDIDATE" : "✓ tested"}: ${status} (${result.status}, ${result.bodyLen}b, ${result.latencyMs}ms)`,
-      metadata: { phase: "variant-test-end", variant_id: variantId, status, is_candidate: isCandidate },
+      log_type: result?.transport_failed ? "warn" : (isCandidate ? "result" : "info"),
+      message: `${isCandidate ? "🚨 0-DAY CANDIDATE" : (result?.transport_failed ? "⚠️ unreachable" : "✓ tested")}: ${status} (${result.status}, ${result.bodyLen}b, ${result.latencyMs}ms)${errStr}`,
+      metadata: { phase: "variant-test-end", variant_id: variantId, status, is_candidate: isCandidate, error: result?.error, scheme_downgraded: result?.scheme_downgraded },
     });
 
     return new Response(JSON.stringify({ variantId, status, isCandidate, result }),
