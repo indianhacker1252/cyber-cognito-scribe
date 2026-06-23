@@ -10,35 +10,70 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
+import { probeFetchWithSchemeFallback } from "../_shared/safe-fetch.ts";
+
 async function probe(url: string, payload: string, paramName = "q"): Promise<any> {
-  try {
-    const baseResp = await fetch(url, { signal: AbortSignal.timeout(6000), redirect: "manual" });
-    const baseBody = await baseResp.text();
-    const u = new URL(url);
-    u.searchParams.set(paramName, payload);
-    const t0 = Date.now();
-    const r = await fetch(u.toString(), { signal: AbortSignal.timeout(8000), redirect: "manual" });
-    const body = await r.text();
-    const sqlError = /SQL syntax|mysql_|pg_query|SQLSTATE|ORA-|unclosed quotation/i.test(body) && !/SQL syntax|mysql_|pg_query|SQLSTATE|ORA-|unclosed quotation/i.test(baseBody);
-    const sstiEval = /\b2674\b|\b49\b/.test(body) && !/\b2674\b|\b49\b/.test(baseBody) && !body.includes(payload);
-    const cmdOutput = /cyberscope_marker|uid=\d+\(/.test(body) && !/cyberscope_marker|uid=\d+\(/.test(baseBody);
-    const fileLeak = /root:.*:0:0|\/bin\/bash/.test(body) && !/root:.*:0:0|\/bin\/bash/.test(baseBody);
-    const deterministicProof = sqlError || sstiEval || cmdOutput || fileLeak;
+  // ── Baseline ──
+  const baselineProbe = await probeFetchWithSchemeFallback(url, { redirect: "manual" }, 6000);
+  if (!baselineProbe.response) {
     return {
-      status: r.status,
-      baselineStatus: baseResp.status,
-      bodyLen: body.length,
-      baselineLen: baseBody.length,
-      latencyMs: Date.now() - t0,
-      reflected: body.includes(payload),
-      errorSig: sqlError,
-      deterministicProof,
-      proofType: sqlError ? "sql_error" : sstiEval ? "template_eval" : cmdOutput ? "command_output" : fileLeak ? "file_leak" : "none",
-      bodySnippet: body.slice(0, 300),
+      status: 0, baselineStatus: 0, bodyLen: 0, baselineLen: 0, latencyMs: 0,
+      reflected: false, errorSig: false, deterministicProof: false, proofType: "none",
+      error: baselineProbe.errors.join(" | ") || "baseline_unreachable",
+      transport_failed: true,
     };
-  } catch (e) {
-    return { status: 0, bodyLen: 0, latencyMs: 0, reflected: false, errorSig: false, error: e instanceof Error ? e.message : "err" };
   }
+  const effectiveBase = baselineProbe.finalUrl;
+  const schemeDowngraded = baselineProbe.schemeDowngraded;
+  let baseBody = "";
+  try { baseBody = await baselineProbe.response.text(); } catch { /* ignore */ }
+
+  // ── Mutated ──
+  let mutatedUrl: string;
+  try {
+    const u = new URL(effectiveBase);
+    u.searchParams.set(paramName, payload);
+    mutatedUrl = u.toString();
+  } catch {
+    return {
+      status: 0, baselineStatus: baselineProbe.response.status, bodyLen: 0,
+      baselineLen: baseBody.length, latencyMs: 0, reflected: false, errorSig: false,
+      deterministicProof: false, proofType: "none", error: "invalid_url_for_mutation",
+    };
+  }
+  const t0 = Date.now();
+  const mut = await probeFetchWithSchemeFallback(mutatedUrl, { redirect: "manual" }, 8000);
+  if (!mut.response) {
+    return {
+      status: 0, baselineStatus: baselineProbe.response.status, bodyLen: 0,
+      baselineLen: baseBody.length, latencyMs: Date.now() - t0, reflected: false,
+      errorSig: false, deterministicProof: false, proofType: "none",
+      error: mut.errors.join(" | ") || "mutated_unreachable",
+      transport_failed: true, scheme_downgraded: schemeDowngraded,
+    };
+  }
+  const r = mut.response;
+  let body = "";
+  try { body = await r.text(); } catch { /* ignore */ }
+  const sqlError = /SQL syntax|mysql_|pg_query|SQLSTATE|ORA-|unclosed quotation/i.test(body) && !/SQL syntax|mysql_|pg_query|SQLSTATE|ORA-|unclosed quotation/i.test(baseBody);
+  const sstiEval = /\b2674\b|\b49\b/.test(body) && !/\b2674\b|\b49\b/.test(baseBody) && !body.includes(payload);
+  const cmdOutput = /cyberscope_marker|uid=\d+\(/.test(body) && !/cyberscope_marker|uid=\d+\(/.test(baseBody);
+  const fileLeak = /root:.*:0:0|\/bin\/bash/.test(body) && !/root:.*:0:0|\/bin\/bash/.test(baseBody);
+  const deterministicProof = sqlError || sstiEval || cmdOutput || fileLeak;
+  return {
+    status: r.status,
+    baselineStatus: baselineProbe.response.status,
+    bodyLen: body.length,
+    baselineLen: baseBody.length,
+    latencyMs: Date.now() - t0,
+    reflected: body.includes(payload),
+    errorSig: sqlError,
+    deterministicProof,
+    proofType: sqlError ? "sql_error" : sstiEval ? "template_eval" : cmdOutput ? "command_output" : fileLeak ? "file_leak" : "none",
+    bodySnippet: body.slice(0, 300),
+    scheme_downgraded: schemeDowngraded,
+    final_url: mut.finalUrl,
+  };
 }
 
 serve(async (req) => {
@@ -133,11 +168,32 @@ serve(async (req) => {
       }
     }
 
+    // Emit MISSING_HTTPS finding when a downgrade succeeded
+    if (result?.scheme_downgraded && endpoint.startsWith("https://")) {
+      await db.from("vulnerability_findings").insert({
+        target_id: targetId,
+        title: "Missing / broken HTTPS — service reachable only over cleartext HTTP",
+        severity: "medium",
+        cvss_score: 5.3,
+        finding_type: "missing_https",
+        vuln_class: "transport_security",
+        affected_url: endpoint,
+        description: `Target ${endpoint} failed HTTPS but responded over HTTP. All traffic is exposed to MITM observers.`,
+        remediation: "Serve all assets over HTTPS, enable HSTS with includeSubDomains+preload, and redirect HTTP→HTTPS.",
+        confidence_score: 95,
+        confidence_level: "high",
+        validation_status: "confirmed",
+        reachability_status: "reachable",
+        evidence: { final_url: result.final_url, scheme_downgraded: true },
+      } as any).catch(() => {});
+    }
+
+    const errStr = result?.error ? ` err=${String(result.error).slice(0, 80)}` : "";
     await db.from("scan_logs").insert({
       target_id: targetId,
-      log_type: isCandidate ? "result" : "info",
-      message: `${isCandidate ? "🚨 0-DAY CANDIDATE" : "✓ tested"}: ${status} (${result.status}, ${result.bodyLen}b, ${result.latencyMs}ms)`,
-      metadata: { phase: "variant-test-end", variant_id: variantId, status, is_candidate: isCandidate },
+      log_type: result?.transport_failed ? "warn" : (isCandidate ? "result" : "info"),
+      message: `${isCandidate ? "🚨 0-DAY CANDIDATE" : (result?.transport_failed ? "⚠️ unreachable" : "✓ tested")}: ${status} (${result.status}, ${result.bodyLen}b, ${result.latencyMs}ms)${errStr}`,
+      metadata: { phase: "variant-test-end", variant_id: variantId, status, is_candidate: isCandidate, error: result?.error, scheme_downgraded: result?.scheme_downgraded },
     });
 
     return new Response(JSON.stringify({ variantId, status, isCandidate, result }),

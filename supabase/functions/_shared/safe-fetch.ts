@@ -99,3 +99,55 @@ export function headersToObject(h: Headers): Record<string, string> {
   h.forEach((v, k) => { out[k] = v; });
   return out;
 }
+
+/** Like safeFetch but never throws — returns either response or error info. */
+export async function probeFetch(
+  url: string,
+  opts: RequestInit = {},
+  timeoutMs = 8000,
+): Promise<
+  | { ok: true; response: Response; latencyMs: number; host: string }
+  | { ok: false; error: string; errorName: string; host: string; latencyMs: number }
+> {
+  const host = hostOf(url);
+  const t0 = Date.now();
+  try {
+    const r = await safeFetch(url, opts, timeoutMs);
+    return { ok: true, response: r, latencyMs: Date.now() - t0, host };
+  } catch (e) {
+    const err = e as Error;
+    return {
+      ok: false, host, latencyMs: Date.now() - t0,
+      error: err?.message || String(e),
+      errorName: err?.name || "FetchError",
+    };
+  }
+}
+
+/** Try URL; on TLS/connect/DNS error retry on the other scheme. */
+export async function probeFetchWithSchemeFallback(
+  url: string,
+  opts: RequestInit = {},
+  timeoutMs = 8000,
+): Promise<{ response: Response | null; finalUrl: string; schemeDowngraded: boolean; errors: string[] }> {
+  const errors: string[] = [];
+  const first = await probeFetch(url, opts, timeoutMs);
+  if (first.ok) return { response: first.response, finalUrl: url, schemeDowngraded: false, errors };
+  errors.push(`${first.errorName}: ${first.error}`);
+  const transportLike = /TypeError|tls|certificate|connection|connect|dns|resolve|reset|handshake/i.test(
+    `${first.errorName} ${first.error}`,
+  );
+  if (!transportLike) return { response: null, finalUrl: url, schemeDowngraded: false, errors };
+  let altUrl: string;
+  try {
+    const u = new URL(url);
+    u.protocol = u.protocol === "https:" ? "http:" : "https:";
+    altUrl = u.toString();
+  } catch {
+    return { response: null, finalUrl: url, schemeDowngraded: false, errors };
+  }
+  const second = await probeFetch(altUrl, opts, timeoutMs);
+  if (second.ok) return { response: second.response, finalUrl: altUrl, schemeDowngraded: true, errors };
+  errors.push(`${second.errorName}: ${second.error}`);
+  return { response: null, finalUrl: altUrl, schemeDowngraded: false, errors };
+}

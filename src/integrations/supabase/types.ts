@@ -2465,6 +2465,7 @@ export type Database = {
           id: string
           is_dead: boolean
           last_scanned_at: string | null
+          scheme: string
           source: string
           target_id: string
         }
@@ -2475,6 +2476,7 @@ export type Database = {
           id?: string
           is_dead?: boolean
           last_scanned_at?: string | null
+          scheme?: string
           source?: string
           target_id: string
         }
@@ -2485,6 +2487,7 @@ export type Database = {
           id?: string
           is_dead?: boolean
           last_scanned_at?: string | null
+          scheme?: string
           source?: string
           target_id?: string
         }

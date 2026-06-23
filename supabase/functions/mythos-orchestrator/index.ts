@@ -106,16 +106,16 @@ async function executePhase(db: any, run: any, phase: string, payload: any): Pro
   }
 
   if (phase === "advanced-modules") {
-    await log(`🧪 Advanced attack modules + per-asset matrix fuzz + form-attacker`);
+    await log(`🧪 Advanced attack modules + per-asset matrix fuzz + form-attacker + juicy recon`);
     const mods = [
       "business-logic-fuzzer", "auth-confusion-suite", "prototype-pollution-gadgets",
       "ai-surface-attacker", "differential-oracle", "symbolic-param-explorer", "desync-smuggling-v2",
-      "matrix-fuzzer", "form-attacker",
+      "matrix-fuzzer", "form-attacker", "recon-juicy",
     ];
     const settled = await Promise.allSettled(mods.map(m => call(m, { targetId }, 42000)));
     const summary: Record<string, any> = {};
     settled.forEach((s, i) => { summary[mods[i]] = s.status === "fulfilled" ? (s.value.data ?? s.value) : { error: true }; });
-    await log(`Advanced modules done (incl. matrix-fuzzer & form-attacker)`, summary);
+    await log(`Advanced modules done (incl. matrix-fuzzer, form-attacker, recon-juicy)`, summary);
     return { done: false, nextPhase: "iter-1-chain" };
   }
 
@@ -223,7 +223,10 @@ async function executePhase(db: any, run: any, phase: string, payload: any): Pro
     return { done: true };
   }
 
-  await log(`Unknown phase '${phase}' — completing run`);
+  await log(`❌ Unknown phase '${phase}' — refusing to silently complete; marking run failed`, { unknown_phase: phase });
+  await db.from("mythos_runs").update({
+    status: "failed", completed_at: new Date().toISOString(),
+  }).eq("id", runId);
   return { done: true };
 }
 
