@@ -1,106 +1,147 @@
-# Why we still lose to XBOW — and the plan to close it
+## Why the last run "completed" with nothing tested
 
-## The honest gaps (what is actually broken today)
+I read the latest `scan_logs` and `mythos_runs`. Two distinct bugs are stacked on top of each other.
 
-1. **Scan scope collapses to the apex host.**
-   `recon-engine` discovers subdomains and writes them to `discovered_endpoints`, but `mythos-orchestrator` / `advanced-fuzzer` / `template-runner` iterate only over `target_workspaces.url` (the apex). The 5 subdomains we found are never attacked. Result: 80% of the real attack surface is ignored.
+### Bug 1 — every probe failed silently
 
-2. **Parameter coverage is shallow.**
-   Fuzzer picks the first 1–2 query keys (often just `q`) and skips:
-   - all other `discovered_endpoints.parameters` keys,
-   - JSON body keys harvested by `js-deep-expand`,
-   - path segments (`/users/{id}` → IDOR),
-   - headers (`X-Forwarded-For`, `Referer`, `Origin`),
-   - cookies.
-   So 90% of injectable sinks are never touched.
+Every fuzz line in Neural Log looks like:
 
-3. **HTML forms & file uploads are not exercised.**
-   `dom-fuzz` finds `<form>` and `<input type=file>` elements, but no module submits them with attack payloads, multi-part bodies, polyglot files (SVG-XSS, PHP-in-JPEG, zip-slip, XXE-DOCX). Upload-fuzzer exists but is **not enqueued** by the orchestrator.
+```
+✓ tested: error (0, 0b, 0ms)
+```
 
-4. **HTTP method matrix is GET-only.**
-   `MethodExpansion.ts` probes alternative methods for *baseline diffing* but never re-runs the **payload battery** under PUT/PATCH/DELETE/OPTIONS/TRACE. So a write-side SQLi/SSRF on a PUT endpoint is invisible to us.
+`status=0`, `bodyLen=0`, `latencyMs=0` means `fetch()` threw before a byte hit the wire. The emitter is `supabase/functions/mythos-variant-test/index.ts` (`probe()`), which catches every error and returns `{ status: 0, bodyLen: 0, latencyMs: 0 }` **without logging the underlying message**. The target was `https://testaspnet.vulnweb.com/default.aspx` — that host only serves cleartext `http://`, so the TLS handshake throws and every variant test is a no-op. The orchestrator can't see this because the error string is dropped.
 
-5. **Chain-finder fires once and dies.**
-   `chain-finder` proposes one next step and queues one synthetic finding. There is no **loop** — after step 2 succeeds nothing requeues chain-finder, so kill-chains stop at depth 2 instead of going apex→subdomain→IDOR→privesc→RCE.
+### Bug 2 — pipeline stops at `advanced-modules`
 
-6. **No per-asset job sharding.**
-   Worker treats "scan target X" as one job. XBOW shards per (subdomain × endpoint × method × param) and runs them in parallel with a budget. We serialize everything behind one queue entry.
+`mythos_runs` row for the last run: `status=complete`, `current_phase=advanced-modules`, `completed_at` is **before** the last "Advanced modules done" log. The orchestrator only writes `current_phase='done'` when it completes; something marked it complete early. Two contributing causes in `mythos-orchestrator/index.ts`:
 
-7. **Forms harvested ≠ forms tested.**
-   `discovered_endpoints` stores form action + fields, but `advanced-fuzzer` only fuzzes URL query, never POSTs the form body with payloads in every field.
+- Line 226 — any phase string that doesn't match a branch falls through to `return { done: true }`. A single typo / unknown `nextPhase` quietly ends the whole run.
+- `parsePhase` requires exactly `^iter-(\d+)-(\w+)$`. Any malformed enqueue payload (e.g. extra suffix from a retry) hits the unknown-phase fallthrough and "completes" the run.
+
+So the run never reached `iter-1-chain → variant → debate → kill-chain → patch`. That's why "complete testing was not completed".
 
 ---
 
-## The plan (one decisive implementation pass)
+## Fixes
 
-### Phase 1 — Fan out the scope (kills gap #1, #6)
+### F1. Surface real fetch errors (and try the right scheme)
 
-1. New shared helper `_shared/scope-expander.ts`:
-   - Input: `target_id`.
-   - Output: `Asset[] = { host, base_url, source: 'apex'|'subdomain'|'related' }` pulled from `discovered_endpoints` + `recon-engine` results.
-   - Dedup, filter dead (`dead_targets`), respect scope rules.
-2. **Orchestrator change**: `mythos-orchestrator` enqueues one `scan_step` per asset, not per target. New `scan_jobs.payload = { asset, phase }`.
-3. Worker concurrency cap per target: 8 parallel assets, 4 parallel endpoints per asset.
+- In `mythos-variant-test/probe()` and `_shared/safeFetch.ts` (used by `advanced-fuzzer`, `matrix-fuzzer`, `vuln-scanner`):
+  - On `catch`, record `error.name` + `error.message` (e.g. `"TypeError: error trying to connect"`).
+  - Push it into `scan_logs.metadata.error` and into `mythos_variants.test_result.error` instead of dropping it.
+  - Add a one-shot scheme fallback: if `https://` fails with a TLS/connect error, retry once on `http://` and tag the response with `scheme_downgraded=true`. Emit a finding `MISSING_HTTPS` when that downgrade succeeds.
+- In `scope-expander.ts`: when ingesting a target URL, probe both `https://` and `http://` once and persist the reachable scheme on `scan_assets.scheme`. Every downstream module reads from there.
 
-### Phase 2 — Per-parameter, per-method battery (kills gap #2, #4, #7)
+### F2. Make the orchestrator fail loud instead of silently completing
 
-1. New helper `_shared/injection-matrix.ts` that, for each endpoint, yields the **full injection plan**:
-   ```text
-   for method in [GET, POST, PUT, PATCH, DELETE, OPTIONS]:
-     for location in [query, body_json, body_form, body_multipart, path, header, cookie]:
-       for param in extracted_params(endpoint, location):
-         for payload_class in [XSS, SQLi, SSRF, LFI, RCE, SSTI, NoSQLi, XXE, OpenRedirect]:
-           for payload in SecLists_top_N(payload_class) ∪ WAF_bypass_variants:
-             yield Probe(method, location, param, payload)
-   ```
-2. `advanced-fuzzer` rewritten to consume this matrix instead of its current hand-rolled loop.
-3. Hard caps to prevent explosion: 30 payloads/class, smart sampling (skip class if first 5 baseline-equal), reuse `safeFetch` with 6 s timeout.
-4. Every confirmed hit → `recordFinding({autoEnqueueExploit:true})` with the exact `(method, location, param, payload)`.
+In `mythos-orchestrator/index.ts`:
 
-### Phase 3 — Forms & file uploads actually run (kills gap #3)
+- Replace the unknown-phase branch (line 226-227) with:
+  ```ts
+  await log(`❌ Unknown phase '${phase}' — refusing to complete; marking failed`);
+  return { done: false, nextPhase: null, error: `unknown_phase:${phase}` };
+  ```
+  and update the caller (line 284) so `out.error` writes `status='failed'` + the reason to `thought_log` instead of `complete`.
+- Harden `parsePhase` to also accept `iter-N-chain-retryK` and log unknown phase strings to `scan_logs` with `log_type='error'`.
+- Add a guard in `scan-job-worker` for `job_type='mythos_step'`: if `payload.nextPhase` is empty or the run is not `running`, drop the job and log it.
+- Add a DB index on `scan_jobs(job_type, status, priority, created_at)` so the worker dispatches `mythos_step` ahead of bulk variant_tests (it's currently starved by the variant fan-out).
 
-1. `dom-fuzz` writes harvested forms into a new `discovered_forms` table (action, method, fields, enctype).
-2. New worker case `form_attack`: for each form, POST with payloads in every field; for multipart forms, run `upload-fuzzer` with polyglot library:
-   - `xss.svg`, `shell.php.jpg`, `zipslip.zip`, `xxe.docx`, `huge.pdf` (DoS canary), `cve-2021-22204.jpg` (ExifTool).
-3. Upload responses inspected for filename echo, path leak, executed-content markers, OOB callback from server-side render.
+### F3. Wire the missing phases end-to-end
 
-### Phase 4 — Recursive chain-finder (kills gap #5)
+After `advanced-modules` the chain `iter-1-chain → iter-1-variant → iter-1-debate → kill-chain-synthesis → patch → done` must actually execute. The fix above unblocks it; I'll also add an integration assertion in `e2e-selftest`:
 
-1. `chain-finder` becomes idempotent and re-entrant: after a queued chain step itself reaches `proof_tier='exploited'`, a DB trigger re-invokes `chain-finder` on the new finding. Depth cap = 6, breadth cap = 3 per node.
-2. New table `kill_chain_graph_edges` records every (parent_finding, child_finding, primitive) edge so the UI can draw the real attack tree.
-3. Primitives library (`_shared/primitives.ts`): cookie, JWT, leaked-id, SQLi-read, SSRF-pivot, file-read — chain-finder must declare which primitive it is consuming and which it produces.
-
-### Phase 5 — Verification (mandatory)
-
-Extend `e2e-selftest` with new assertions against `testaspnet.vulnweb.com` + `testphp.vulnweb.com`:
-
-- `assets_scanned ≥ 3` (apex + ≥2 subdomains)
-- `methods_tested distinct ≥ 4`
-- `params_fuzzed ≥ 25`
-- `form_submissions ≥ 5`
-- `upload_attempts ≥ 3`
-- `kill_chain_depth ≥ 3`
-
-No "done" without these passing — output pasted verbatim.
+- After triggering a run, poll `mythos_runs` for ≤180s and assert it traverses **all** of: `recon, template-runner, advanced-modules, iter-1-chain, iter-1-debate, kill-chain-synthesis, patch, done`. Missing any of them = test failure with the exact missing phase reported.
+- Purge all history  need select  error which is  not working
 
 ---
 
-## Technical details
+## "Juicy findings" detector plan — what this tool must check
 
-- **New tables (migration)**: `discovered_forms`, `kill_chain_graph_edges`, `scan_assets` (materialized scope). All with RLS admin-read + service_role full, GRANTs included.
-- **New shared modules**: `_shared/scope-expander.ts`, `_shared/injection-matrix.ts`, `_shared/primitives.ts`, `_shared/polyglot-files.ts`.
-- **Rewrites**: `advanced-fuzzer/index.ts` (matrix-driven), `mythos-orchestrator/index.ts` (per-asset fan-out), `chain-finder/index.ts` (recursive), `scan-job-worker/index.ts` (new job types `form_attack`, `upload_attack`, `method_matrix`).
-- **DB trigger**: `after_finding_exploited` → `pg_notify` → invokes `chain-finder` edge function via `net.http_post` (or a 30 s cron sweeper to avoid extension dependency).
-- **Budget guards**: per-run hard cap (e.g. 5000 probes/asset) so a wide subdomain set cannot drown the worker again.
-- **Backwards compat**: existing `scan_jobs` rows keep working; new types are additive.
+The current pipeline is heavy on injection (XSS/SQLi/SSRF) but light on the **passive/recon-grade** findings that make a report look like XBOW/ProjectDiscovery output. I'll add one new edge function per group and wire them into `advanced-modules`.
 
-## Order of execution (single pass)
+### G1. Domain & DNS hygiene — `recon-dns-audit`
 
-1. Migration: new tables + GRANTs + RLS + trigger.
-2. Shared helpers (scope-expander, injection-matrix, polyglot-files, primitives).
-3. Rewrite advanced-fuzzer + orchestrator + worker.
-4. Wire dom-fuzz → discovered_forms; enqueue form_attack/upload_attack.
-5. Recursive chain-finder + edges table writes.
-6. Extend e2e-selftest, run it, paste results.
+- Subdomain takeover candidates: CNAME → unclaimed S3/Heroku/GitHub Pages/Azure/Fastly (fingerprint table).
+- Dangling `NS`, dangling `MX`, wildcard A records pointing to parking pages.
+- SPF: missing, `+all`, >10 DNS lookups, duplicate records.
+- DKIM: weak key (<1024-bit), missing selector.
+- DMARC: missing, `p=none`, `rua` pointing at unowned domain.
+- CAA: missing or permissive (`issue ";"`).
+- DNSSEC: not signed, broken chain.
+- Expired/expiring domain (`whois expires_at < 30d`).
+- Zone transfer (`AXFR`) allowed.
 
-Approve and I execute Phases 1–5 in one implementation, ending with the new e2e-selftest output verbatim.
+### G2. TLS & certificate posture — `recon-tls-audit`
+
+- Cert expiring <30d, expired, self-signed, hostname mismatch, weak signature (SHA-1, MD5).
+- TLS 1.0/1.1 still accepted, RC4/3DES/EXPORT ciphers, no forward secrecy.
+- HSTS missing / no `includeSubDomains` / no `preload`.
+- Mixed-content references in HTML/JS.
+- OCSP stapling missing.
+- Cert SAN leaks internal hostnames (`*.corp`, `internal.`, staging hosts).
+
+### G3. IP, port, ASN & infra exposure — `recon-infra-audit`
+
+- Resolve every asset, group by `/24` and ASN; flag cloud (AWS/GCP/Azure) origin behind WAF when WAF is bypassable (already handled — link findings).
+- For each unique IP, probe a fixed safe-port set [21, 22, 23, 25, 53, 80, 110, 143, 443, 445, 1433, 3306, 3389, 5432, 5601, 5900, 6379, 8080, 8443, 8888, 9000, 9200, 11211, 27017] with a 2 s connect timeout — never authenticate.
+- Banner-grab only on 80/443/8080/8443/9200/5601/9000/8888 and run service fingerprints:
+  - Open Elasticsearch / Kibana / Grafana / Prometheus / Jenkins / Kubernetes API / Docker daemon (`/v1.40/info`) / etcd / Consul / RabbitMQ mgmt / Redis (`INFO` over HTTP via WebSocket fallback).
+  - Open `.git/HEAD`, `.svn/entries`, `.DS_Store`, `.env`, `backup.zip`, `phpinfo.php`, `server-status`.
+- Reverse-DNS leakage (PTR exposes `prod-db-01.internal`).
+
+### G4. Protocol / header misconfigurations — `recon-protocol-audit`
+
+- Missing or weak security headers: CSP (missing/`unsafe-inline`/`*`), X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy, COOP/COEP/CORP.
+- CORS: `Access-Control-Allow-Origin: *` with credentials, reflected-origin trust, null-origin trust.
+- Cookies: missing `Secure`/`HttpOnly`/`SameSite`, overly broad `Domain=`, long `Max-Age` for session cookies.
+- HTTP smuggling indicators (already in `desync-smuggling-v2` — link to this group).
+- HTTP methods enabled: `TRACE`, `TRACK`, `PUT`, `DELETE`, `CONNECT`, `OPTIONS *`.
+- HTTP/2 / HTTP/3 misconfig (server advertises `h2c` upgrade upstream, etc).
+- Open redirect on common params (`?next=`, `?redirect=`, `?url=`).
+- Cache poisoning primitives: unkeyed `X-Forwarded-Host`, `X-Original-URL`, fat GET.
+
+### G5. Publicly exposed sensitive info — `recon-public-leaks`
+
+- Wayback / commoncrawl / GitHub code search for the apex domain → harvest historic URLs, secret-shaped strings, leaked `.env`, S3 URLs.
+- `robots.txt`, `sitemap.xml`, `.well-known/security.txt`, `humans.txt`, `crossdomain.xml`, `clientaccesspolicy.xml`.
+- Source-map files (`.js.map`) → reconstruct original paths and leaked API endpoints.
+- Inline JS regex sweep: `AKIA[0-9A-Z]{16}`, `AIza[0-9A-Za-z_\\-]{35}`, `xox[baprs]-`, `ghp_`, `glpat-`, JWT, RSA/PEM blocks, Stripe `sk_live_`, Slack webhooks, Twilio `SK[0-9a-f]{32}`, Mailgun, SendGrid, internal Slack URLs.
+- `package.json` / `composer.json` / `requirements.txt` if served → known-vuln versions (cross-check `exploitdb_index`).
+- Public S3/GCS/Azure-blob bucket discovery via subdomain naming (`{name}.s3.amazonaws.com`, `storage.googleapis.com/{name}-prod`) — check `ListBucket` allowed (read-only).
+- GitHub & GitLab dorks: `"domain.com" AKIA`, `"domain.com" password`, `"domain.com" filename:.env`.
+- Pastebin / Have-I-Been-Pwned breach indicator for the apex domain.
+
+### G6. Auth & session juicy bits — extend `auth-confusion-suite`
+
+- JWT: `alg:none`, weak HS256 secret (rockyou top-1k crack ≤5 s), `kid` path traversal, JWK injection.
+- OAuth: open `redirect_uri`, missing `state`, PKCE downgrade.
+- SAML: XML signature wrapping (passive detection only).
+- WebAuthn / TOTP downgrade paths.
+- Default credentials on discovered admin panels (Tomcat, Jenkins, Joomla, WordPress `/wp-login.php`) — single attempt with the documented vendor default only, never brute force.
+
+### G7. Cloud-metadata & SSRF chain enrichment — extend `matrix-fuzzer`
+
+- For every SSRF candidate, try the full metadata family: AWS IMDSv1, GCP, Azure, Alibaba, DigitalOcean, OpenStack — each with the right `Metadata-Flavor`/`X-Aws-Ec2-Metadata-Token` quirks.
+- Detect Kubernetes service-account token at `/var/run/secrets/...` via file-read SSRF.
+
+### G8. Reportability + scoring
+
+- Every detector writes to `vulnerability_findings` with:
+  - `finding_type` from a fixed enum so the dashboard can group "Domain / DNS / TLS / Infra / Protocol / Public-Leak / Auth / Cloud".
+  - `severity` + `cvss_score` from a lookup table (e.g. dangling CNAME = High 8.6, missing HSTS = Low 3.1).
+  - A one-paragraph `remediation` and a `poc` curl/dig command.
+- Add an `e2e-selftest` assertion: at least one finding from each of G1, G2, G3, G4, G5 against the canary target `testphp.vulnweb.com`.
+
+---
+
+## Order of work
+
+1. F1 — surface fetch errors + scheme fallback + persist `scan_assets.scheme`.
+2. F2 — orchestrator fails loud on unknown phase, worker drops orphan jobs, scan_jobs priority index.
+3. F3 — `e2e-selftest` phase-traversal assertion (will fail until F1+F2 ship).
+4. G1 → G5 detectors (new edge functions, wired into `advanced-modules`).
+5. G6 + G7 enrichments to existing functions.
+6. G8 grouping + scoring + final E2E assertion.
+
+I'll implement F1+F2+F3 and G1-G8 in single implementation by checking every code and wiring.
