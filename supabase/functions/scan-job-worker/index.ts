@@ -38,6 +38,9 @@ const JOB_ROUTES: Record<string, string> = {
   ollama_mutate: "local-worker-proxy",
   llm_attack: "llm-attack-suite",
   nvd_sync: "nvd-intel-sync",
+  openapi_import: "openapi-importer",
+  juicy: "recon-juicy",
+  advanced_detect: "advanced-detectors",
 };
 
 async function runJob(job: any): Promise<{ ok: boolean; result?: any; error?: string }> {
@@ -191,6 +194,34 @@ Deno.serve(async (req) => {
         await supa.from("scan_jobs").update({
           status: "done", completed_at: new Date().toISOString(), result: out.result || {},
         }).eq("id", job.id);
+
+        // ── Post-phase fan-out: ensure the chain keeps moving even if a
+        // module forgets to enqueue the next stage. Idempotent: scan_jobs
+        // unique index + per-type "running" check prevents duplicates.
+        if (job.job_type === "recon") {
+          try {
+            const { data: tgt } = await supa.from("target_workspaces")
+              .select("api_schema_url").eq("id", job.target_id).maybeSingle();
+            const nowIso = new Date().toISOString();
+            const followups: any[] = [
+              { target_id: job.target_id, job_type: "juicy",           status: "queued", priority: 7, payload: {}, next_run_at: nowIso },
+              { target_id: job.target_id, job_type: "advanced_detect", status: "queued", priority: 7, payload: {}, next_run_at: nowIso },
+              { target_id: job.target_id, job_type: "fuzz",            status: "queued", priority: 6, payload: {}, next_run_at: nowIso },
+              { target_id: job.target_id, job_type: "llm_attack",      status: "queued", priority: 6, payload: {}, next_run_at: nowIso },
+              { target_id: job.target_id, job_type: "chain",           status: "queued", priority: 5, payload: {}, next_run_at: nowIso },
+              { target_id: job.target_id, job_type: "nvd_sync",        status: "queued", priority: 4, payload: { action: "relevance-check", targetId: job.target_id }, next_run_at: nowIso },
+            ];
+            if (tgt?.api_schema_url) {
+              followups.push({ target_id: job.target_id, job_type: "openapi_import", status: "queued", priority: 8, payload: { autoAttack: true }, next_run_at: nowIso });
+            }
+            await supa.from("scan_jobs").insert(followups);
+            await supa.from("scan_logs").insert({
+              target_id: job.target_id, log_type: "info",
+              message: `🔗 recon done → fanned out ${followups.length} follow-up phases`,
+              metadata: { kind: "phase_fanout", types: followups.map((f: any) => f.job_type) },
+            });
+          } catch (e) { /* dedup index may reject duplicates — fine */ }
+        }
       } else {
         const isFinal = job.attempts + 1 >= job.max_attempts;
         await supa.from("scan_jobs").update({

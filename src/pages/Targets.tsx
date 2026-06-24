@@ -119,10 +119,17 @@ export default function Targets() {
       }).select().single();
       if (error) throw error;
       if (!data) throw new Error("Insert blocked — admin role required to add targets");
+      // If an OpenAPI/Swagger URL was provided, kick off the importer
+      // (full auto-attack mode) right away.
+      if (apiSchema && data.id) {
+        supabase.functions.invoke("openapi-importer", {
+          body: { targetId: data.id, schemaUrl: apiSchema, autoAttack: true },
+        }).catch(() => { /* surfaces in Neural Log */ });
+      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["targets"] });
-      toast.success("Target added");
+      toast.success(apiSchema ? "Target added — OpenAPI auto-attack queued" : "Target added");
       setOpen(false);
       setName("");
       setDomain("");
