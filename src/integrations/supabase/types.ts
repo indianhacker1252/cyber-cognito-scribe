@@ -2006,6 +2006,48 @@ export type Database = {
         }
         Relationships: []
       }
+      nvd_intel: {
+        Row: {
+          affected_products: Json | null
+          created_at: string | null
+          cve_id: string
+          cvss_score: number | null
+          description: string | null
+          id: string
+          published: string | null
+          references: Json | null
+          severity: string | null
+          synced_at: string | null
+          title: string | null
+        }
+        Insert: {
+          affected_products?: Json | null
+          created_at?: string | null
+          cve_id: string
+          cvss_score?: number | null
+          description?: string | null
+          id?: string
+          published?: string | null
+          references?: Json | null
+          severity?: string | null
+          synced_at?: string | null
+          title?: string | null
+        }
+        Update: {
+          affected_products?: Json | null
+          created_at?: string | null
+          cve_id?: string
+          cvss_score?: number | null
+          description?: string | null
+          id?: string
+          published?: string | null
+          references?: Json | null
+          severity?: string | null
+          synced_at?: string | null
+          title?: string | null
+        }
+        Relationships: []
+      }
       oob_callbacks: {
         Row: {
           callback_type: string
@@ -2784,6 +2826,7 @@ export type Database = {
           id: string
           ip_range: string | null
           name: string
+          resolved_protocol: string | null
           status: Database["public"]["Enums"]["target_status"]
           updated_at: string
           waf_profile: Json
@@ -2804,6 +2847,7 @@ export type Database = {
           id?: string
           ip_range?: string | null
           name: string
+          resolved_protocol?: string | null
           status?: Database["public"]["Enums"]["target_status"]
           updated_at?: string
           waf_profile?: Json
@@ -2824,6 +2868,7 @@ export type Database = {
           id?: string
           ip_range?: string | null
           name?: string
+          resolved_protocol?: string | null
           status?: Database["public"]["Enums"]["target_status"]
           updated_at?: string
           waf_profile?: Json
