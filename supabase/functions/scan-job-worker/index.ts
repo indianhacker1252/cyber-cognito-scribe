@@ -36,12 +36,30 @@ const JOB_ROUTES: Record<string, string> = {
   mutate: "request-mutator",
   local_tool: "local-worker-proxy",
   ollama_mutate: "local-worker-proxy",
-
+  llm_attack: "llm-attack-suite",
+  nvd_sync: "nvd-intel-sync",
 };
 
 async function runJob(job: any): Promise<{ ok: boolean; result?: any; error?: string }> {
   const route = JOB_ROUTES[job.job_type];
   if (!route) return { ok: false, error: `unknown job_type: ${job.job_type}` };
+  // FIX: dedup fuzz jobs per target — prevents 10+ concurrent fuzzers on same target
+  if (job.job_type === "fuzz" || job.job_type === "template") {
+    const supa = db();
+    const { count } = await supa.from("scan_jobs")
+      .select("id", { count: "exact", head: true })
+      .eq("target_id", job.target_id)
+      .eq("job_type", job.job_type)
+      .eq("status", "running");
+    if ((count ?? 0) > 0) {
+      // Defer 30s instead of running duplicate
+      await supa.from("scan_jobs").update({
+        status: "queued",
+        next_run_at: new Date(Date.now() + 30_000).toISOString(),
+      }).eq("id", job.id);
+      return { ok: true, result: { deferred: true, reason: "duplicate_running" } };
+    }
+  }
   try {
     const modePayload = job.job_type === "ollama_mutate" ? { mode: "ai" } : job.job_type === "local_tool" ? { mode: "tool" } : {};
     const r = await fetch(`${FN_BASE}/${route}`, {

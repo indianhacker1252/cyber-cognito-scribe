@@ -682,7 +682,10 @@ serve(async (req) => {
       .select().single();
     const taskId = task!.id;
 
-    await db.from("target_workspaces").update({ status: "scanning" }).eq("id", targetId);
+    await db.from("target_workspaces").update({ 
+      status: "scanning",
+      resolved_protocol: SCHEME  // FIX: persist resolved protocol for all downstream modules
+    }).eq("id", targetId);
     await log(db, targetId, taskId, "info", `🔍 Elite recon pipeline started for ${domain}`);
 
     // ── Step 0: Protocol fallback engine (Rule 1) ──
@@ -825,10 +828,18 @@ serve(async (req) => {
 
     // Fix #13 — normalize URLs to dedupe http/https + www. variants of the same endpoint.
     // Strategy: prefer HTTPS, strip leading "www.", lowercase host, drop trailing slash, drop fragments.
-    const normalizeUrl = (raw: string): string => {
+    // FIX: normalizeUrl now respects the resolved protocol (SCHEME) instead of
+    // force-upgrading every endpoint to https. This was the root cause of all
+    // error(0, 0b, 0ms) results on HTTP-only targets — every variant test was
+    // hitting https:// on a server that only speaks http://.
+    const normalizeUrl = (raw: string, preferScheme?: string): string => {
       try {
         const u = new URL(raw);
-        u.protocol = "https:";
+        // Only override protocol if a preference is given AND the URL is not
+        // already using a non-http scheme (e.g. ws://, ftp://)
+        if (preferScheme && (u.protocol === "http:" || u.protocol === "https:")) {
+          u.protocol = preferScheme + ":";
+        }
         u.hash = "";
         u.hostname = u.hostname.toLowerCase().replace(/^www\./, "");
         if (u.pathname.length > 1 && u.pathname.endsWith("/")) u.pathname = u.pathname.replace(/\/+$/, "");
@@ -836,7 +847,7 @@ serve(async (req) => {
       } catch { return raw; }
     };
     const setUrl = (rawKey: string, info: { method: string; params: Record<string, unknown>; source: string }) => {
-      const key = normalizeUrl(rawKey);
+      const key = normalizeUrl(rawKey, SCHEME);
       if (!allUrls.has(key)) allUrls.set(key, info);
     };
 
@@ -908,10 +919,10 @@ serve(async (req) => {
       if (!allUrls.has(form.action)) allUrls.set(form.action, { method: form.method, params, source: "spider-form" });
     }
 
-    // Fix #13 — collapse http/https and www. duplicates by normalizing keys before insert
+    // Collapse http/https and www. duplicates — use SCHEME so HTTP targets stay HTTP
     const normalizedMap = new Map<string, { method: string; params: Record<string, unknown>; source: string }>();
     for (const [url, info] of allUrls.entries()) {
-      const key = normalizeUrl(url);
+      const key = normalizeUrl(url, SCHEME);
       if (!normalizedMap.has(key)) normalizedMap.set(key, info);
     }
 
