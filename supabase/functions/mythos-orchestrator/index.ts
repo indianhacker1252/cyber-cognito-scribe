@@ -43,14 +43,17 @@ async function enqueueNext(db: any, runId: string, targetId: string, nextPhase: 
     console.log(`enqueueNext skipped: run ${runId} status=${run?.status ?? "missing"}`);
     return;
   }
-  // Guard 2: dedupe — don't queue if an identical step is already queued
-  const { count } = await db.from("scan_jobs")
+  // Guard 2: dedupe — don't queue if an identical step is already queued OR running
+  // FIX: previously only checked "queued" — jobs already "running" bypassed the guard
+  // causing the kill-chain infinite loop (multiple concurrent synthesis jobs)
+  const { count: queuedCount } = await db.from("scan_jobs")
     .select("id", { count: "exact", head: true })
-    .eq("status", "queued").eq("job_type", "mythos_step")
+    .in("status", ["queued", "running"])
+    .eq("job_type", "mythos_step")
     .filter("payload->>runId", "eq", runId)
     .filter("payload->>nextPhase", "eq", nextPhase);
-  if ((count ?? 0) > 0) {
-    console.log(`enqueueNext skipped: dup queued for ${runId}/${nextPhase}`);
+  if ((queuedCount ?? 0) > 0) {
+    console.log(`enqueueNext skipped: dup queued/running for ${runId}/${nextPhase}`);
     return;
   }
   await db.from("scan_jobs").insert({
@@ -111,6 +114,8 @@ async function executePhase(db: any, run: any, phase: string, payload: any): Pro
       "business-logic-fuzzer", "auth-confusion-suite", "prototype-pollution-gadgets",
       "ai-surface-attacker", "differential-oracle", "symbolic-param-explorer", "desync-smuggling-v2",
       "matrix-fuzzer", "form-attacker", "recon-juicy",
+      // NEW: LLM attack surface + NVD-matched CVE testing
+      "llm-attack-suite", "live-cve-runner",
     ];
     const settled = await Promise.allSettled(mods.map(m => call(m, { targetId }, 42000)));
     const summary: Record<string, any> = {};

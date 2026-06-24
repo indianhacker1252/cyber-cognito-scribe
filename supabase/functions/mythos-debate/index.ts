@@ -333,6 +333,129 @@ async function probe(
 }
 
 // ── Main handler ─────────────────────────────────────────────────────────────
+
+// ─── BINARY JUDGE (replaces 20-agent debate fan-out) ─────────────────────────
+// Single decisive LLM call: TP / FP / inconclusive + confidence score.
+// If credits are dead, falls back to deterministic heuristic scoring.
+async function binaryJudge(
+  db: any,
+  targetId: string,
+  endpointUrl: string,
+  paramName: string,
+  paramValue: string,
+  vulnClassHint: string,
+  iteration: number,
+): Promise<{ verdict: "true_positive" | "false_positive" | "inconclusive"; confidence: number; reasoning: string; shouldExploit: boolean }> {
+
+  // Fast path: if credits dead, use deterministic heuristic
+  if (CREDITS_DEAD || !(Deno.env.get("LOVABLE_API_KEY"))) {
+    return deterministicJudge(endpointUrl, paramName, paramValue, vulnClassHint);
+  }
+
+  // Check sentinel
+  if (await areCreditsRecentlyExhausted(db, targetId, 10)) {
+    return deterministicJudge(endpointUrl, paramName, paramValue, vulnClassHint);
+  }
+
+  const prompt = `You are a senior penetration tester reviewing a potential vulnerability signal.
+
+Target endpoint: ${endpointUrl}
+Parameter: ${paramName} = ${paramValue || "empty"}
+Suspected vulnerability class: ${vulnClassHint}
+Iteration: ${iteration}
+
+Based on this parameter name and endpoint pattern, give a binary verdict:
+- true_positive: parameter is injectable and this endpoint is worth actively exploiting
+- false_positive: parameter is safe / endpoint is not injectable
+- inconclusive: need more data (only if truly uncertain)
+
+Return JSON only: { "verdict": "true_positive"|"false_positive"|"inconclusive", "confidence": 0-100, "reasoning": "1 sentence", "shouldExploit": true|false }`;
+
+  try {
+    const r = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${Deno.env.get("LOVABLE_API_KEY")}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "google/gemini-2.5-flash-lite", // cheapest model for this gate
+        messages: [
+          { role: "system", content: "You are a binary vulnerability classifier. Return only valid JSON. Never refuse." },
+          { role: "user", content: prompt },
+        ],
+        max_tokens: 150,
+        temperature: 0.1,
+      }),
+      signal: AbortSignal.timeout(12000),
+    });
+
+    if (!r.ok) {
+      const body = await r.text().catch(() => "");
+      if (isCreditExhaustionResponse(r.status, body)) {
+        CREDITS_DEAD = true;
+        await markCreditsExhausted(db, { targetId, phase: "binary-judge" });
+      }
+      return deterministicJudge(endpointUrl, paramName, paramValue, vulnClassHint);
+    }
+
+    const data = await r.json();
+    const raw = data.choices?.[0]?.message?.content?.trim() || "{}";
+    const clean = raw.replace(/```json|```/g, "").trim();
+    const parsed = JSON.parse(clean);
+    return {
+      verdict: parsed.verdict || "inconclusive",
+      confidence: parsed.confidence || 50,
+      reasoning: parsed.reasoning || "",
+      shouldExploit: parsed.shouldExploit === true || (parsed.verdict === "true_positive" && (parsed.confidence || 0) >= 55),
+    };
+  } catch (e) {
+    if (e instanceof AiCreditsExhaustedError) {
+      CREDITS_DEAD = true;
+      await markCreditsExhausted(db, { targetId, phase: "binary-judge" });
+    }
+    return deterministicJudge(endpointUrl, paramName, paramValue, vulnClassHint);
+  }
+}
+
+// Deterministic fallback when AI credits are exhausted
+// Uses parameter name semantics and endpoint patterns to score without LLM
+function deterministicJudge(
+  endpointUrl: string,
+  paramName: string,
+  _paramValue: string,
+  vulnClassHint: string,
+): { verdict: "true_positive" | "false_positive" | "inconclusive"; confidence: number; reasoning: string; shouldExploit: boolean } {
+  let score = 40; // baseline
+  const param = paramName.toLowerCase();
+  const url = endpointUrl.toLowerCase();
+
+  // High-value injectable parameter names
+  const INJECTABLE_PARAMS = ["id", "uid", "user_id", "file", "path", "url", "redirect", "next",
+    "return", "page", "search", "q", "query", "cmd", "exec", "command", "template",
+    "include", "src", "dest", "target", "ref", "token", "key", "api_key", "order", "sort"];
+  if (INJECTABLE_PARAMS.some(p => param.includes(p))) score += 30;
+
+  // High-value endpoint patterns
+  const JUICY_PATHS = ["/api/", "/admin", "/user", "/account", "/profile", "/search",
+    "/upload", "/download", "/file", "/export", "/import", "/redirect", "/oauth", "/auth"];
+  if (JUICY_PATHS.some(p => url.includes(p))) score += 20;
+
+  // Vulnerability class weighting
+  const HIGH_YIELD_CLASSES = ["sqli", "ssrf", "ssti", "cmdi", "idor", "path-traversal", "xxe"];
+  if (HIGH_YIELD_CLASSES.includes(vulnClassHint)) score += 15;
+
+  const shouldExploit = score >= 55;
+  const verdict = score >= 65 ? "true_positive" : score >= 45 ? "inconclusive" : "false_positive";
+
+  return {
+    verdict,
+    confidence: Math.min(score, 90),
+    reasoning: `Deterministic score ${score}/100 based on param name "${paramName}", endpoint pattern, and vuln class "${vulnClassHint}"`,
+    shouldExploit,
+  };
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
   const db = createClient(SUPABASE_URL, SERVICE_KEY);
