@@ -203,7 +203,7 @@ async function runTemplate(
               : new URL(v, baseUrl).toString()
             : baseUrl + (baseUrl.includes("?") ? "&" : "?") + `q=${v}`;
         const t0 = Date.now();
-        const r = await safeFetch(targetUrl, { method: "GET", headers: authHeaders }, 8000);
+        const r = await safeFetch(targetUrl, { method: "GET", headers: authHeaders }, 4000);
         const elapsed = Date.now() - t0;
         const body = await readBodySafe(r, 32768);
 
