@@ -214,8 +214,10 @@ Deno.serve(async (req) => {
               { target_id: job.target_id, job_type: "llm_attack",      status: "queued", priority: 6, payload: {}, next_run_at: nowIso },
               { target_id: job.target_id, job_type: "chain",           status: "queued", priority: 5, payload: {}, next_run_at: nowIso },
               { target_id: job.target_id, job_type: "nvd_sync",        status: "queued", priority: 4, payload: { action: "relevance-check", targetId: job.target_id }, next_run_at: nowIso },
-              { target_id: job.target_id, job_type: "graphql",           status: "queued", priority: 6, payload: {}, next_run_at: nowIso },
-              { target_id: job.target_id, job_type: "jwt_attack",        status: "queued", priority: 6, payload: {}, next_run_at: nowIso },
+              { target_id: job.target_id, job_type: "graphql",         status: "queued", priority: 6, payload: {}, next_run_at: nowIso },
+              { target_id: job.target_id, job_type: "jwt_attack",      status: "queued", priority: 6, payload: {}, next_run_at: nowIso },
+              { target_id: job.target_id, job_type: "waf_evasion",     status: "queued", priority: 9, payload: {}, next_run_at: nowIso },
+              { target_id: job.target_id, job_type: "chain_exploit",   status: "queued", priority: 5, payload: {}, next_run_at: new Date(Date.now() + 120_000).toISOString() },
             ];
             if (tgt?.api_schema_url) {
               followups.push({ target_id: job.target_id, job_type: "openapi_import", status: "queued", priority: 8, payload: { autoAttack: true }, next_run_at: nowIso });
