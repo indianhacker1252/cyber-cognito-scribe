@@ -476,8 +476,14 @@ Deno.serve(async (req) => {
     if (!target) return respond({ ok: false, error: "target not found" });
 
     const origin = (() => {
-      try { return new URL(target.url || `https://${target.domain}`).origin; }
-      catch { return `https://${target.domain}`; }
+      try {
+        const scheme = (target as any).resolved_protocol || "https";
+        return new URL(target.url || `${scheme}://${target.domain}`).origin;
+      }
+      catch {
+        const scheme = (target as any).resolved_protocol || "https";
+        return `${scheme}://${target.domain}`;
+      }
     })();
 
     // 0. ALWAYS-ON passive header / cookie / CORS sweep (info/low/medium)

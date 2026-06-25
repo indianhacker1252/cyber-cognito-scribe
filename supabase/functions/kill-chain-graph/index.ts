@@ -211,9 +211,12 @@ Deno.serve(async (req) => {
       status: "proposed",
     }));
     let chainExecQueued = 0;
-    if (chainRows.length) {
-      const inserted = await supa.from("kill_chains").insert(chainRows).select("id, severity, total_cost");
-      // Gap 6: enqueue chain_exec for every persisted chain so exploit-chain-runner actually executes them.
+    // GUARD: only persist chains with at least 2 steps (prevents ad-hoc 0-step false positives)
+    const validChainRows = chainRows.filter((c: any) =>
+      Array.isArray(c.step_plan) && c.step_plan.length >= 2
+    );
+    if (validChainRows.length) {
+      const inserted = await supa.from("kill_chains").insert(validChainRows).select("id, severity, total_cost");
       for (const ch of inserted.data || []) {
         try {
           await supa.from("scan_jobs").insert({

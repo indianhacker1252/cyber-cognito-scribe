@@ -3014,6 +3014,47 @@ export type Database = {
           },
         ]
       }
+      waf_profiles: {
+        Row: {
+          blocked_techniques: Json | null
+          created_at: string
+          fingerprint: Json | null
+          id: string
+          last_updated: string
+          target_id: string
+          waf_type: string | null
+          working_techniques: Json | null
+        }
+        Insert: {
+          blocked_techniques?: Json | null
+          created_at?: string
+          fingerprint?: Json | null
+          id?: string
+          last_updated?: string
+          target_id: string
+          waf_type?: string | null
+          working_techniques?: Json | null
+        }
+        Update: {
+          blocked_techniques?: Json | null
+          created_at?: string
+          fingerprint?: Json | null
+          id?: string
+          last_updated?: string
+          target_id?: string
+          waf_type?: string | null
+          working_techniques?: Json | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "waf_profiles_target_id_fkey"
+            columns: ["target_id"]
+            isOneToOne: true
+            referencedRelation: "target_workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Views: {
       [_ in never]: never
