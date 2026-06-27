@@ -134,41 +134,52 @@ Deno.serve(async (req) => {
     }
     const url = `${tgt.resolved_protocol || "https"}://${tgt.domain}/`;
 
-    await supa.from("scan_logs").insert({
-      target_id: targetId, log_type: "info",
-      message: `🛡️ WAF evasion engine starting against ${url}`,
-      metadata: { kind: "waf_evasion_start" },
-    });
+    const work = async () => {
+      try {
+        await supa.from("scan_logs").insert({
+          target_id: targetId, log_type: "info",
+          message: `🛡️ WAF evasion engine starting against ${url}`,
+          metadata: { kind: "waf_evasion_start" },
+        });
+        const result = await runEvasion(url);
+        await supa.from("waf_profiles").upsert({
+          target_id: targetId,
+          waf_type: result.wafType,
+          fingerprint: { baselineStatus: result.baselineStatus, baselineLen: result.baselineLen, testedCount: result.tested.length },
+          blocked_techniques: result.blocked,
+          working_techniques: result.working,
+          last_updated: new Date().toISOString(),
+        }, { onConflict: "target_id" });
+        await supa.from("target_workspaces").update({
+          waf_profile: {
+            waf_type: result.wafType,
+            working_techniques: result.working.map((w: any) => w.technique),
+            blocked_techniques: result.blocked.map((b: any) => b.technique),
+            updated_at: new Date().toISOString(),
+          },
+        }).eq("id", targetId);
+        await supa.from("scan_logs").insert({
+          target_id: targetId, log_type: "info",
+          message: `🛡️ WAF: ${result.wafType} | bypasses=${result.working.length} blocked=${result.blocked.length}`,
+          metadata: { kind: "waf_evasion_done", waf_type: result.wafType, bypasses: result.working.length, blocked: result.blocked.length },
+        });
+      } catch (e) {
+        await supa.from("scan_logs").insert({
+          target_id: targetId, log_type: "error",
+          message: `🛡️ WAF evasion failed: ${e instanceof Error ? e.message : String(e)}`,
+          metadata: { kind: "waf_evasion_error" },
+        });
+      }
+    };
 
-    const result = await runEvasion(url);
+    // Ack immediately — heavy probing continues in background. Avoids
+    // 45s worker timeout marking the job failed mid-flight.
+    // @ts-ignore EdgeRuntime is provided by Supabase edge runtime.
+    if (typeof EdgeRuntime !== "undefined" && EdgeRuntime.waitUntil) EdgeRuntime.waitUntil(work());
+    else work().catch(() => {});
 
-    await supa.from("waf_profiles").upsert({
-      target_id: targetId,
-      waf_type: result.wafType,
-      fingerprint: { baselineStatus: result.baselineStatus, baselineLen: result.baselineLen, testedCount: result.tested.length },
-      blocked_techniques: result.blocked,
-      working_techniques: result.working,
-      last_updated: new Date().toISOString(),
-    }, { onConflict: "target_id" });
-
-    // Mirror onto target_workspaces.waf_profile so existing fuzzers can pick it up.
-    await supa.from("target_workspaces").update({
-      waf_profile: {
-        waf_type: result.wafType,
-        working_techniques: result.working.map((w: any) => w.technique),
-        blocked_techniques: result.blocked.map((b: any) => b.technique),
-        updated_at: new Date().toISOString(),
-      },
-    }).eq("id", targetId);
-
-    await supa.from("scan_logs").insert({
-      target_id: targetId, log_type: "info",
-      message: `🛡️ WAF: ${result.wafType} | bypasses=${result.working.length} blocked=${result.blocked.length}`,
-      metadata: { kind: "waf_evasion_done", waf_type: result.wafType, bypasses: result.working.length, blocked: result.blocked.length },
-    });
-
-    return new Response(JSON.stringify({ ok: true, wafType: result.wafType, working: result.working.length, blocked: result.blocked.length }),
-      { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    return new Response(JSON.stringify({ ok: true, accepted: true, mode: "background" }),
+      { status: 202, headers: { ...corsHeaders, "Content-Type": "application/json" } });
   } catch (e) {
     return new Response(JSON.stringify({ ok: false, error: e instanceof Error ? e.message : String(e) }),
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
