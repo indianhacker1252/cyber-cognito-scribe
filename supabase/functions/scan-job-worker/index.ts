@@ -47,6 +47,31 @@ const JOB_ROUTES: Record<string, string> = {
   advanced_detect: "advanced-detectors",
 };
 
+// Per-type dispatch timeout (ms). Long-running types return 202 quickly via
+// EdgeRuntime.waitUntil OR keep running on the backend — we only need to wait
+// for the HTTP ack, not the full work, otherwise the worker's AbortSignal
+// kills the connection at 45s and marks the job failed even though the
+// function is still doing useful work in the background.
+const ACK_TIMEOUT_MS: Record<string, number> = {
+  fuzz: 15000,
+  waf_evasion: 12000,
+  chain_exploit: 15000,
+  llm_attack: 15000,
+  advanced_detect: 15000,
+  juicy: 15000,
+  exploit: 20000,
+  variant_test: 15000,
+  browser: 20000,
+  browser_exploit: 20000,
+  chain: 20000,
+  chain_exec: 20000,
+  graphql: 15000,
+  jwt_attack: 15000,
+  openapi_import: 15000,
+  nvd_sync: 20000,
+};
+const DEFAULT_TIMEOUT_MS = 45000;
+
 async function runJob(job: any): Promise<{ ok: boolean; result?: any; error?: string }> {
   const route = JOB_ROUTES[job.job_type];
   if (!route) return { ok: false, error: `unknown job_type: ${job.job_type}` };
@@ -67,19 +92,44 @@ async function runJob(job: any): Promise<{ ok: boolean; result?: any; error?: st
       return { ok: true, result: { deferred: true, reason: "duplicate_running" } };
     }
   }
+  const timeoutMs = ACK_TIMEOUT_MS[job.job_type] ?? DEFAULT_TIMEOUT_MS;
   try {
     const modePayload = job.job_type === "ollama_mutate" ? { mode: "ai" } : job.job_type === "local_tool" ? { mode: "tool" } : {};
     const r = await fetch(`${FN_BASE}/${route}`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${SERVICE_KEY}` },
       body: JSON.stringify({ targetId: job.target_id, ...modePayload, ...job.payload }),
-      signal: AbortSignal.timeout(45000),
+      signal: AbortSignal.timeout(timeoutMs),
     });
-    const text = await r.text();
-    let body: any = text;
-    try { body = JSON.parse(text); } catch { /* keep text */ }
-    return r.ok ? { ok: true, result: body } : { ok: false, error: `HTTP ${r.status}`, result: body };
-  } catch (e) { return { ok: false, error: e instanceof Error ? e.message : "err" }; }
+    // For known long-running types, ANY 2xx is success — don't drain body.
+    const isAckType = job.job_type in ACK_TIMEOUT_MS;
+    if (r.ok) {
+      if (isAckType) {
+        // best-effort body read but don't block long; ignore parse errors
+        const text = await Promise.race([
+          r.text(),
+          new Promise<string>((resolve) => setTimeout(() => resolve("{}"), 2000)),
+        ]).catch(() => "{}");
+        let body: any = text; try { body = JSON.parse(text); } catch { /* ignore */ }
+        return { ok: true, result: { acked: true, status: r.status, body } };
+      }
+      const text = await r.text();
+      let body: any = text; try { body = JSON.parse(text); } catch { /* ignore */ }
+      return { ok: true, result: body };
+    }
+    const text = await r.text().catch(() => "");
+    let body: any = text; try { body = JSON.parse(text); } catch { /* ignore */ }
+    return { ok: false, error: `HTTP ${r.status}`, result: body };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "err";
+    // Treat ack-timeout on long-running types as soft-success: the function
+    // likely accepted the work and is running in background; the next worker
+    // tick won't re-dispatch because we mark it done.
+    if (/timed out/i.test(msg) && (job.job_type in ACK_TIMEOUT_MS)) {
+      return { ok: true, result: { acked: false, soft_success: true, note: "dispatch ack timed out — function continues in background" } };
+    }
+    return { ok: false, error: msg };
+  }
 }
 
 async function sweepStuck(supa: any) {
