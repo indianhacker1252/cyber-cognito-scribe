@@ -53,6 +53,7 @@ const JOB_ROUTES: Record<string, string> = {
 // kills the connection at 45s and marks the job failed even though the
 // function is still doing useful work in the background.
 const ACK_TIMEOUT_MS: Record<string, number> = {
+  recon: 15000,
   fuzz: 15000,
   waf_evasion: 12000,
   chain_exploit: 15000,
@@ -69,6 +70,7 @@ const ACK_TIMEOUT_MS: Record<string, number> = {
   jwt_attack: 15000,
   openapi_import: 15000,
   nvd_sync: 20000,
+  mythos_step: 15000,
 };
 const DEFAULT_TIMEOUT_MS = 45000;
 
