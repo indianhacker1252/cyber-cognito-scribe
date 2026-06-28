@@ -45,7 +45,16 @@ const JOB_ROUTES: Record<string, string> = {
   openapi_import: "openapi-importer",
   juicy: "recon-juicy",
   advanced_detect: "advanced-detectors",
+  // Gap wiring (1-10)
+  differential: "differential-oracle",  // Gap #5
+  js_deep: "js-deep-expand",            // Gap #7
+  ssrf_deep: "ssrf-deep",               // Gap #8
+  cve_exploit: "cve-to-exploit",        // Gap #9
+  report_rewrite: "report-rewrite",     // Gap #10
+  matrix_fuzz: "matrix-fuzzer",         // Gap #1 (auth-aware fuzz)
+  form_attack: "form-attacker",
 };
+
 
 // Per-type dispatch timeout (ms). Long-running types return 202 quickly via
 // EdgeRuntime.waitUntil OR keep running on the backend — we only need to wait
