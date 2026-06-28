@@ -5,6 +5,8 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { expandScope } from "../_shared/scope-expander.ts";
 import { buildProbes, applyProbe, detectProof, extractParamsFromUrl, type EndpointSpec, type PayloadClass } from "../_shared/injection-matrix.ts";
 import { recordFinding } from "../_shared/findings-writer.ts";
+import { loadJar, applyJar } from "../_shared/session-jar.ts";
+
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
