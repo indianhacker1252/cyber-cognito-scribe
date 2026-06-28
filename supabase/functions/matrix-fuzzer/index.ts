@@ -83,8 +83,11 @@ Deno.serve(async (req) => {
         for (const probe of buildProbes(spec, { perClassCap: 2, methods, classes })) {
           if (tl() < 2500 || sentForAsset >= perAssetCap) break;
           const { url, init } = applyProbe(ep.url, probe);
+          // inject session jar headers (cookies/JWT/CSRF)
+          init.headers = applyJar(jar, (init.headers as Record<string, string>) || {});
           try {
             const r = await safeFetch(url, init, 5500);
+
             const body = await r.text().catch(() => "");
             probesSent++; sentForAsset++;
             methodsTested.add(probe.method);
