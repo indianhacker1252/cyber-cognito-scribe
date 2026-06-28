@@ -117,6 +117,25 @@ export async function recordFinding(input: RecordFindingInput): Promise<RecordFi
       }
     }
 
+    // ───── Hard proof gate (Gap #3) ─────
+    // 'exploited' tier requires a deterministic marker. Otherwise downgrade.
+    let tier = input.proofTier ?? "signal";
+    if (tier === "exploited") {
+      const blob = JSON.stringify(input.evidence || {}) + " " + (input.response?.body || "") + " " + (input.payload || "");
+      const HARD_MARKERS = [
+        /CYBERSCOPE_PROVEN/, /SPECTER_LLM_CONFIRMED/i,
+        /root:.*:0:0:/, /\boob[_-]?(callback|hit|received)\b/i,
+        /ami-id|instance-id|iam\/security-credentials/i,
+        /serviceAccounts|projectNumber/i,
+        /redis_version|connected_clients/i,
+        /you have an error in your sql syntax/i,
+        /ORA-\d{4,5}|PG::SyntaxError|psql: ERROR|PostgreSQL.*ERROR/i,
+      ];
+      if (!HARD_MARKERS.some(rx => rx.test(blob))) {
+        tier = "reflected";
+      }
+    }
+
     // duplicate guard
     if (input.payload) {
       const { data: existing } = await supa.from("vulnerability_findings")
@@ -138,7 +157,8 @@ export async function recordFinding(input: RecordFindingInput): Promise<RecordFi
       description: input.description ?? null,
       payload: input.payload ?? null,
       poc: input.poc ?? null,
-      proof_tier: input.proofTier ?? "signal",
+      proof_tier: tier,
+
       source: input.source,
       finding_type: input.category ?? input.source,
       hard_evidence: input.evidence ?? {},
