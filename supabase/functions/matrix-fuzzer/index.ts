@@ -42,8 +42,12 @@ Deno.serve(async (req) => {
     if (!targetId) return ok({ ok: false, error: "targetId required" });
     const db = createClient(SUPA, SVC);
 
+    // Gap #1: auth-aware — load persisted session jar for this target
+    const jar = await loadJar(db, targetId);
+
     const assets = await expandScope(db, targetId);
     if (!assets.length) return ok({ ok: false, error: "no assets in scope" });
+
 
     await db.from("scan_logs").insert({
       target_id: targetId, log_type: "action",
