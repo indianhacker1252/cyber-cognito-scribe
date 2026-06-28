@@ -45,7 +45,16 @@ const JOB_ROUTES: Record<string, string> = {
   openapi_import: "openapi-importer",
   juicy: "recon-juicy",
   advanced_detect: "advanced-detectors",
+  // Gap wiring (1-10)
+  differential: "differential-oracle",  // Gap #5
+  js_deep: "js-deep-expand",            // Gap #7
+  ssrf_deep: "ssrf-deep",               // Gap #8
+  cve_exploit: "cve-to-exploit",        // Gap #9
+  report_rewrite: "report-rewrite",     // Gap #10
+  matrix_fuzz: "matrix-fuzzer",         // Gap #1 (auth-aware fuzz)
+  form_attack: "form-attacker",
 };
+
 
 // Per-type dispatch timeout (ms). Long-running types return 202 quickly via
 // EdgeRuntime.waitUntil OR keep running on the backend — we only need to wait
@@ -71,7 +80,16 @@ const ACK_TIMEOUT_MS: Record<string, number> = {
   openapi_import: 15000,
   nvd_sync: 20000,
   mythos_step: 15000,
+  // Gap wiring
+  differential: 15000,
+  js_deep: 15000,
+  ssrf_deep: 20000,
+  cve_exploit: 12000,
+  report_rewrite: 20000,
+  matrix_fuzz: 20000,
+  form_attack: 15000,
 };
+
 const DEFAULT_TIMEOUT_MS = 45000;
 
 async function runJob(job: any): Promise<{ ok: boolean; result?: any; error?: string }> {
@@ -270,7 +288,16 @@ Deno.serve(async (req) => {
               { target_id: job.target_id, job_type: "jwt_attack",      status: "queued", priority: 6, payload: {}, next_run_at: nowIso },
               { target_id: job.target_id, job_type: "waf_evasion",     status: "queued", priority: 9, payload: {}, next_run_at: nowIso },
               { target_id: job.target_id, job_type: "chain_exploit",   status: "queued", priority: 5, payload: {}, next_run_at: new Date(Date.now() + 120_000).toISOString() },
+              // Gap wiring fan-out (1-10):
+              { target_id: job.target_id, job_type: "js_deep",         status: "queued", priority: 8, payload: {}, next_run_at: nowIso },                                       // Gap #7
+              { target_id: job.target_id, job_type: "matrix_fuzz",     status: "queued", priority: 7, payload: {}, next_run_at: new Date(Date.now() + 30_000).toISOString() },   // Gap #1 (auth-aware)
+              { target_id: job.target_id, job_type: "form_attack",     status: "queued", priority: 7, payload: {}, next_run_at: new Date(Date.now() + 45_000).toISOString() },
+              { target_id: job.target_id, job_type: "differential",    status: "queued", priority: 6, payload: {}, next_run_at: new Date(Date.now() + 60_000).toISOString() },   // Gap #5
+              { target_id: job.target_id, job_type: "ssrf_deep",       status: "queued", priority: 6, payload: {}, next_run_at: new Date(Date.now() + 60_000).toISOString() },   // Gap #8
+              { target_id: job.target_id, job_type: "cve_exploit",     status: "queued", priority: 7, payload: {}, next_run_at: new Date(Date.now() + 30_000).toISOString() },   // Gap #9
+              { target_id: job.target_id, job_type: "report_rewrite",  status: "queued", priority: 2, payload: {}, next_run_at: new Date(Date.now() + 300_000).toISOString() },  // Gap #10 (runs late)
             ];
+
             if (tgt?.api_schema_url) {
               followups.push({ target_id: job.target_id, job_type: "openapi_import", status: "queued", priority: 8, payload: { autoAttack: true }, next_run_at: nowIso });
             }

@@ -53,8 +53,21 @@ function extractFromJs(text: string, baseUrl: string): string[] {
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   try {
-    const { targetId, seedUrl, maxDepth = 3, maxPerLevel = 40 } = await req.json();
+    const body = await req.json().catch(() => ({}));
+    const { targetId, maxDepth = 3, maxPerLevel = 40 } = body;
+    let { seedUrl } = body;
     const supa = db();
+
+    // Gap #7 auto-mode: if no seedUrl, derive from target_workspaces
+    if (!seedUrl && targetId) {
+      const { data: tw } = await supa.from("target_workspaces").select("url,domain").eq("id", targetId).maybeSingle();
+      seedUrl = tw?.url || (tw?.domain ? `https://${tw.domain}` : null);
+    }
+    if (!seedUrl) {
+      return new Response(JSON.stringify({ ok: false, error: "seedUrl or targetId required" }),
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
+
     const seenTemplates = new Set<string>();
     const discovered: string[] = [];
 
@@ -63,6 +76,7 @@ Deno.serve(async (req) => {
     const scriptSrcs = [...seedRes.body.matchAll(/<script[^>]+src=["']([^"']+)["']/gi)]
       .map(m => m[1].startsWith("http") ? m[1] : new URL(m[1], seedUrl).toString())
       .slice(0, 10);
+
 
     let frontier: string[] = scriptSrcs;
     for (let depth = 0; depth < maxDepth && frontier.length; depth++) {

@@ -5,6 +5,8 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { expandScope } from "../_shared/scope-expander.ts";
 import { buildProbes, applyProbe, detectProof, extractParamsFromUrl, type EndpointSpec, type PayloadClass } from "../_shared/injection-matrix.ts";
 import { recordFinding } from "../_shared/findings-writer.ts";
+import { loadJar, applyJar } from "../_shared/session-jar.ts";
+
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -40,8 +42,12 @@ Deno.serve(async (req) => {
     if (!targetId) return ok({ ok: false, error: "targetId required" });
     const db = createClient(SUPA, SVC);
 
+    // Gap #1: auth-aware — load persisted session jar for this target
+    const jar = await loadJar(db, targetId);
+
     const assets = await expandScope(db, targetId);
     if (!assets.length) return ok({ ok: false, error: "no assets in scope" });
+
 
     await db.from("scan_logs").insert({
       target_id: targetId, log_type: "action",
@@ -77,8 +83,11 @@ Deno.serve(async (req) => {
         for (const probe of buildProbes(spec, { perClassCap: 2, methods, classes })) {
           if (tl() < 2500 || sentForAsset >= perAssetCap) break;
           const { url, init } = applyProbe(ep.url, probe);
+          // inject session jar headers (cookies/JWT/CSRF)
+          init.headers = applyJar(jar, (init.headers as Record<string, string>) || {});
           try {
             const r = await safeFetch(url, init, 5500);
+
             const body = await r.text().catch(() => "");
             probesSent++; sentForAsset++;
             methodsTested.add(probe.method);

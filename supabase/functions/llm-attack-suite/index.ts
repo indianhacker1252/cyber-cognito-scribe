@@ -175,36 +175,59 @@ serve(async (req) => {
     let findings = 0;
     const tested: string[] = [];
 
-    // Test suspected AI endpoints
+    // Gap #4: ReAct hypothesis loop. If first round misses, mutate the payload
+    // (encoding, role-play framing, context escape) and retry up to 3 rounds.
+    const MUTATIONS = [
+      (p: string) => p,                                            // round 1: raw
+      (p: string) => encodeURIComponent(p),                        // round 2: url-encoded
+      (p: string) => `Please respond with: ${p}`,                  // round 3: role-play wrap
+    ];
+
     for (const { url, param } of [...llmFeatures.aiParams, ...llmFeatures.chatEndpoints.map(u => ({ url: u, param: "message" }))].slice(0, 10)) {
       const method = (endpoints || []).find(e => e.url === url)?.method || "GET";
-      const result = await testPromptInjection(url, param, method);
+      let hitResult: any = null;
+      for (let round = 0; round < MUTATIONS.length && !hitResult; round++) {
+        const mutator = MUTATIONS[round];
+        // monkey-patch payloads for this round
+        const origPayloads = [...PROMPT_INJECTION_PAYLOADS];
+        for (let i = 0; i < PROMPT_INJECTION_PAYLOADS.length; i++) {
+          PROMPT_INJECTION_PAYLOADS[i] = mutator(origPayloads[i]);
+        }
+        try {
+          const result = await testPromptInjection(url, param, method);
+          if (result.hit) hitResult = { ...result, round };
+        } finally {
+          for (let i = 0; i < origPayloads.length; i++) PROMPT_INJECTION_PAYLOADS[i] = origPayloads[i];
+        }
+      }
       tested.push(`${url}?${param}=...`);
 
-      if (result.hit) {
+      if (hitResult) {
         findings++;
         await supa.from("vulnerability_findings").insert({
           target_id: targetId,
-          title: `LLM Prompt Injection: ${param} parameter on ${new URL(url).pathname}`,
+          title: `LLM Prompt Injection (round ${hitResult.round + 1}): ${param} on ${new URL(url).pathname}`,
           finding_type: "llm-prompt-injection",
           severity: "high",
-          description: `**Prompt Injection Confirmed**\n\n${result.evidence}\n\n**Endpoint:** ${url}\n**Parameter:** ${param}\n**Payload:** \`${result.payload}\`\n\n**Response excerpt:** ${result.response}`,
-          payload: result.payload,
+          description: `**Prompt Injection Confirmed (hypothesis loop round ${hitResult.round + 1})**\n\n${hitResult.evidence}\n\n**Endpoint:** ${url}\n**Parameter:** ${param}\n**Payload:** \`${hitResult.payload}\`\n\n**Response excerpt:** ${hitResult.response}`,
+          payload: hitResult.payload,
           affected_url: url,
           confidence_level: "high",
           confidence_score: 85,
           ai_verified: false,
           validation_status: "confirmed",
-          evidence: { endpoint: url, param, payload: result.payload, evidence: result.evidence, response: result.response.slice(0, 300) },
+          proof_tier: "exploited",
+          evidence: { endpoint: url, param, payload: hitResult.payload, evidence: hitResult.evidence, response: hitResult.response.slice(0, 300), hypothesis_round: hitResult.round + 1, marker: "SPECTER_LLM_CONFIRMED" },
         });
 
         await supa.from("scan_logs").insert({
           target_id: targetId, log_type: "result",
-          message: `🔴 LLM PROMPT INJECTION CONFIRMED: ${url} (param: ${param})`,
-          metadata: { url, param, payload: result.payload, evidence: result.evidence },
+          message: `🔴 LLM PROMPT INJECTION CONFIRMED (round ${hitResult.round + 1}): ${url} (param: ${param})`,
+          metadata: { url, param, payload: hitResult.payload, evidence: hitResult.evidence, round: hitResult.round + 1 },
         });
       }
     }
+
 
     await supa.from("scan_logs").insert({
       target_id: targetId, log_type: "info",

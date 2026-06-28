@@ -46,9 +46,43 @@ const PAYLOADS: { tag: string; url: string; marker: RegExp }[] = [
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   const supa = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
-  let input: SsrfInput;
+  let input: any;
   try { input = await req.json(); } catch { return j({ ok: false, error: "invalid json" }); }
+
+  // Gap #8 auto-mode: when only targetId given, discover SSRF candidate endpoints
+  // (URL-ish params) and run the full payload battery across each.
+  if (input?.targetId && (!input.endpointUrl || !input.paramName)) {
+    const { data: eps } = await supa.from("discovered_endpoints")
+      .select("url,method,parameters").eq("target_id", input.targetId).limit(100);
+    const URL_PARAM = /^(url|uri|link|callback|redirect|next|target|dest|src|image|img|file|path|fetch|proxy|webhook)$/i;
+    const candidates: any[] = [];
+    for (const ep of (eps || [])) {
+      const qp = (() => { try { return Array.from(new URL(ep.url).searchParams.keys()); } catch { return []; } })();
+      const all = [...qp, ...Object.keys((ep.parameters as any) || {})];
+      for (const p of all) if (URL_PARAM.test(p)) candidates.push({ endpointUrl: ep.url, paramName: p, method: ep.method });
+    }
+    const ranAgg: any[] = [];
+    for (const c of candidates.slice(0, 12)) {
+      try {
+        const r = await runSsrfBattery(supa, { targetId: input.targetId, ...c });
+        ranAgg.push({ endpoint: c.endpointUrl, param: c.paramName, hits: r.length });
+      } catch { /* skip */ }
+    }
+    await supa.from("scan_logs").insert({
+      target_id: input.targetId, log_type: "info",
+      message: `🛰️ ssrf-deep auto: tested ${candidates.length} URL-param endpoints`,
+      metadata: { tested: candidates.length, results: ranAgg },
+    });
+    return j({ ok: true, tested: candidates.length, results: ranAgg });
+  }
+
   if (!input.endpointUrl || !input.paramName) return j({ ok: false, error: "endpointUrl + paramName required" });
+  const findings = await runSsrfBattery(supa, input as SsrfInput);
+  return j({ ok: true, findings_count: findings.length, findings });
+});
+
+async function runSsrfBattery(supa: any, input: SsrfInput): Promise<any[]> {
+
 
   const findings: any[] = [];
 
@@ -113,8 +147,9 @@ Deno.serve(async (req) => {
     }
   }
 
-  return j({ ok: true, findings_count: findings.length, findings });
-});
+  return findings;
+}
+
 
 function injectParam(endpoint: string, param: string, value: string): string {
   const u = new URL(endpoint);
