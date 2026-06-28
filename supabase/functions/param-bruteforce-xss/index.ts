@@ -19,17 +19,28 @@ const corsHeaders = {
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
-// Top params seen across ASP.NET / PHP / Node apps + bug bounty corpus
+// Gap #6: deep wordlist (burp-parameter-names + common framework params).
+// XBOW-parity: fan out across ~150 candidate names instead of ~30.
 const COMMON_PARAMS = [
-  "q", "query", "search", "s", "keyword", "keywords",
-  "id", "page", "pid", "uid", "user", "username", "name",
-  "tfSearch", "txtSearch", "txtName", "txtUserName", "txtEmail",
-  "category", "cat", "type", "lang", "locale", "ref", "redirect",
-  "url", "next", "return", "returnUrl", "callback",
-  "msg", "message", "error", "warning", "info",
-  "file", "path", "dir", "view", "action", "do",
-  "comment", "comments", "title", "subject", "content",
+  "q", "query", "search", "s", "keyword", "keywords", "term", "find", "filter",
+  "id", "page", "p", "pid", "uid", "user", "userid", "user_id", "username", "name", "fname", "lname",
+  "tfSearch", "txtSearch", "txtName", "txtUserName", "txtEmail", "txtPassword",
+  "category", "cat", "type", "kind", "lang", "language", "locale", "country", "region",
+  "ref", "referer", "referrer", "src", "source", "dest", "destination", "from", "to",
+  "redirect", "redir", "url", "next", "return", "returnUrl", "return_url", "callback", "cb", "jsonp",
+  "msg", "message", "error", "warning", "info", "notice", "alert", "status", "code",
+  "file", "filename", "path", "filepath", "dir", "directory", "folder", "view", "template", "tpl",
+  "action", "act", "do", "op", "operation", "method", "cmd", "command", "exec", "func",
+  "comment", "comments", "title", "subject", "content", "body", "text", "description", "data", "input", "value", "val",
+  "email", "mail", "phone", "tel", "address", "city", "state", "zip", "postal",
+  "token", "key", "api_key", "apikey", "access_token", "auth", "session", "sid",
+  "debug", "test", "demo", "dev", "admin", "role", "perm", "permission",
+  "lat", "lng", "lon", "longitude", "latitude", "geo", "location",
+  "image", "img", "photo", "avatar", "picture", "media",
+  "limit", "offset", "size", "count", "max", "min", "start", "end", "sort", "order", "dir",
+  "format", "ext", "encoding", "charset", "version", "v",
 ];
+
 
 // Sinks chosen to maximize triage-brain confidence without firing real alerts.
 // Each contains the canary token; we test reflection of either the raw token
