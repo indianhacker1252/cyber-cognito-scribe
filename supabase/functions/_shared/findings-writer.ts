@@ -102,6 +102,21 @@ const OWASP_MAP: Record<string,string> = {
 export async function recordFinding(input: RecordFindingInput): Promise<RecordFindingResult> {
   const supa = db();
   try {
+    // ───── 3xx redirect guard ─────
+    // A 301/302/303/307/308 response is almost always an auth/login redirect
+    // or framework-level routing — NOT a vulnerability. Drop unless the
+    // source is explicitly a redirect/smuggling/cache check that needs 3xx.
+    const status = input.response?.status;
+    if (status && status >= 300 && status < 400) {
+      const allow3xx = /open[-_ ]?redirect|smuggl|cache|host[-_ ]?header|desync|auth[-_ ]?bypass|redirect/i
+        .test(`${input.source} ${input.category ?? ""} ${input.vulnClass ?? ""} ${input.title}`);
+      const loc = input.response?.headers?.["location"] || input.response?.headers?.["Location"] || "";
+      const looksLikeLogin = /login|signin|sign-in|auth|sso|oauth|account/i.test(loc);
+      if (!allow3xx || looksLikeLogin) {
+        return { ok: true, duplicate: true, error: `suppressed: ${status} redirect${loc ? ` → ${loc.slice(0, 80)}` : ""}` };
+      }
+    }
+
     // duplicate guard
     if (input.payload) {
       const { data: existing } = await supa.from("vulnerability_findings")
@@ -109,6 +124,7 @@ export async function recordFinding(input: RecordFindingInput): Promise<RecordFi
         .eq("payload", input.payload).limit(1).maybeSingle();
       if (existing?.id) return { ok: true, findingId: existing.id, duplicate: true };
     }
+
 
     const requestRaw = serializeRequest(input.request);
     const responseRaw = serializeResponse(input.response);
