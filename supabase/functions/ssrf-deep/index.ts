@@ -147,8 +147,9 @@ async function runSsrfBattery(supa: any, input: SsrfInput): Promise<any[]> {
     }
   }
 
-  return j({ ok: true, findings_count: findings.length, findings });
-});
+  return findings;
+}
+
 
 function injectParam(endpoint: string, param: string, value: string): string {
   const u = new URL(endpoint);
