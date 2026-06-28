@@ -80,7 +80,16 @@ const ACK_TIMEOUT_MS: Record<string, number> = {
   openapi_import: 15000,
   nvd_sync: 20000,
   mythos_step: 15000,
+  // Gap wiring
+  differential: 15000,
+  js_deep: 15000,
+  ssrf_deep: 20000,
+  cve_exploit: 12000,
+  report_rewrite: 20000,
+  matrix_fuzz: 20000,
+  form_attack: 15000,
 };
+
 const DEFAULT_TIMEOUT_MS = 45000;
 
 async function runJob(job: any): Promise<{ ok: boolean; result?: any; error?: string }> {
