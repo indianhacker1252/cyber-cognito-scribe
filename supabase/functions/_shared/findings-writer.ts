@@ -137,11 +137,48 @@ export async function recordFinding(input: RecordFindingInput): Promise<RecordFi
       }
     }
 
-    // duplicate guard
-    if (input.payload) {
+    // ───── 401/403 noise filter ─────
+    // Generic auth-gate responses are not findings unless source is BAC/auth.
+    if (status === 401 || status === 403) {
+      const allowAuth = /bac|idor|auth|differential|priv|jwt|oauth|access/i
+        .test(`${input.source} ${input.category ?? ""} ${input.vulnClass ?? ""}`);
+      if (!allowAuth) {
+        return { ok: true, duplicate: true, error: `suppressed: ${status} auth gate` };
+      }
+    }
+
+    // ───── Response-similarity filter ─────
+    // For "signal"/"reflected" tiers, require either a status change OR ≥5% length delta
+    // OR a hard proof marker. Stops fuzzers that ping-spam an unchanged page.
+    if ((input.proofTier === "signal" || input.proofTier === "reflected" || !input.proofTier)) {
+      const ev = input.evidence as any;
+      const baselineLen = Number(ev?.baseline_length ?? ev?.baselineLength ?? 0);
+      const respLen = input.response?.body?.length ?? 0;
+      const baselineStatus = Number(ev?.baseline_status ?? ev?.baselineStatus ?? 0);
+      const hasHardMarker = /CYBERSCOPE_PROVEN|SPECTER_LLM_CONFIRMED/i.test(
+        (input.response?.body || "") + " " + (input.payload || "")
+      );
+      if (baselineLen > 0 && respLen > 0 && !hasHardMarker) {
+        const delta = Math.abs(respLen - baselineLen) / Math.max(baselineLen, respLen);
+        const statusChanged = baselineStatus > 0 && baselineStatus !== status;
+        if (!statusChanged && delta < 0.05) {
+          return { ok: true, duplicate: true, error: `suppressed: noise (Δ${(delta * 100).toFixed(1)}%)` };
+        }
+      }
+    }
+
+    // ───── Dedup key + DB-level unique guard ─────
+    const param = inferParam(input.request, input.evidence as Record<string, unknown>);
+    const dedupKey = buildDedupKey({
+      url: input.request?.url,
+      method: input.request?.method,
+      param,
+      vulnClass: input.vulnClass || input.category || input.source,
+      source: input.source,
+    });
+    {
       const { data: existing } = await supa.from("vulnerability_findings")
-        .select("id").eq("target_id", input.targetId).eq("source", input.source)
-        .eq("payload", input.payload).limit(1).maybeSingle();
+        .select("id").eq("target_id", input.targetId).eq("dedup_key", dedupKey).limit(1).maybeSingle();
       if (existing?.id) return { ok: true, findingId: existing.id, duplicate: true };
     }
 
@@ -168,11 +205,20 @@ export async function recordFinding(input: RecordFindingInput): Promise<RecordFi
       response_raw: responseRaw,
       response_diff: responseDiff,
       ai_verified: false,
+      dedup_key: dedupKey,
     };
 
     const { data: inserted, error } = await supa.from("vulnerability_findings")
       .insert(row).select("id").single();
-    if (error) return { ok: false, error: error.message };
+    if (error) {
+      // Unique violation = race; treat as duplicate, not error.
+      if (/duplicate key|unique/i.test(error.message)) {
+        const { data: row2 } = await supa.from("vulnerability_findings")
+          .select("id").eq("target_id", input.targetId).eq("dedup_key", dedupKey).maybeSingle();
+        if (row2?.id) return { ok: true, findingId: row2.id, duplicate: true };
+      }
+      return { ok: false, error: error.message };
+    }
 
     // replay row (best-effort)
     if (input.request) {
