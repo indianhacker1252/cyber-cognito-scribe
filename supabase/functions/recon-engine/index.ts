@@ -919,7 +919,25 @@ serve(async (req) => {
       })
       .eq("id", targetId);
     await log(db, targetId, taskId, "info", `🔍 Elite recon pipeline started for ${domain}`);
+    // Synthesize injectable endpoints from dork patterns even without CDX data
+    const INJECTABLE_PARAM_PATTERNS = [
+      { path: "/search", params: { q: "", s: "", query: "" } },
+      { path: "/products", params: { id: "", category: "", sort: "", page: "" } },
+      { path: "/api/v1/search", params: { q: "", term: "" } },
+      { path: "/api/v2/products", params: { id: "", filter: "" } },
+      { path: "/account/login", params: { redirect: "", next: "", return_url: "" } },
+      { path: "/checkout", params: { redirect: "", return: "" } },
+      { path: "/api/user", params: { id: "", uid: "" } },
+      { path: "/collections", params: { sort_by: "", page: "" } },
+      { path: "/?s", params: { s: "" } },
+    ];
 
+    for (const pat of INJECTABLE_PARAM_PATTERNS) {
+      const url = `${SCHEME}://${domain}${pat.path}`;
+      if (!allUrls.has(url)) {
+        allUrls.set(url, { method: "GET", params: pat.params, source: "synthetic-injectable" });
+      }
+    }
     // ── Step 0: Protocol fallback engine (Rule 1) ──
     // Test https first with a strict 3000ms timeout. If it drops/times out,
     // downgrade to http so the spider/fingerprint never hangs on legacy targets.
