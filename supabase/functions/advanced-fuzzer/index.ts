@@ -187,7 +187,7 @@ async function fuzzEndpoint(
   for (const payload of payloads) {
   if (timeLeft() < 4000) break;
   const stampedPayload = /CYBERSCOPE_PROVEN/.test(payload) ? payload
-    : payload.replace(/alert\([^)]*\)/g, `alert('${PROOF_TOKEN}')`);
+  : payload.replace(/alert\([^)]*\)/g, `alert('${PROOF_TOKEN}')`);
 
   // Inject into EVERY known parameter, not just hardcoded "q"
   const urlObj = new URL(url);
