@@ -2001,7 +2001,54 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
               },
               15000,
             );
+            for (const test of followUpTests.slice(0, 10)) {
+              if (timeLeft() <= 0) break;
+              if (!test.url || !test.paramName || !test.payload) continue;
 
+              try {
+                const u = new URL(test.url.startsWith("http") ? test.url : `https://${domain}${test.url}`);
+                u.searchParams.set(test.paramName, test.payload);
+                const baseline = await safeFetch(
+                  u.toString().replace(`?${test.paramName}=${encodeURIComponent(test.payload)}`, ""),
+                  {},
+                  5000,
+                );
+                const baseBody = await baseline.text().catch(() => "");
+                const probe = await safeFetch(u.toString(), {}, 5000);
+                const probeBody = await probe.text().catch(() => "");
+
+                const errLeak =
+                  /SQL syntax|ORA-\d|stack trace|Exception|MySQL|PostgreSQL/i.test(probeBody) &&
+                  !/SQL syntax|ORA-\d|stack trace/i.test(baseBody);
+                const reflected = probeBody.includes(test.payload) && !baseBody.includes(test.payload);
+                const timingHit = false; // time-based handled separately
+
+                if (errLeak || reflected) {
+                  await recordFinding({
+                    targetId,
+                    source: "ai-brain-followup",
+                    severity: errLeak ? "high" : "medium",
+                    vulnClass: test.vulnClass || "unknown",
+                    title: `[AI-Brain] ${test.vulnClass} confirmed on ${test.paramName}`,
+                    description: `AI-generated follow-up test confirmed: ${errLeak ? "error leak" : "reflection"} on ${u.toString()}`,
+                    payload: test.payload,
+                    proofTier: reflected ? "reflected" : "signal",
+                    autoEnqueueExploit: true,
+                    request: { method: "GET", url: u.toString() },
+                    response: { status: probe.status, body: probeBody.slice(0, 500) },
+                  });
+                  await log(
+                    db,
+                    targetId,
+                    taskId,
+                    "result",
+                    `🧠 AI-Brain follow-up CONFIRMED: ${test.vulnClass} on ${test.paramName} at ${u.toString()}`,
+                  );
+                }
+              } catch {
+                /* skip failed follow-up */
+              }
+            }
             if (reasoningResp.ok) {
               const rData = await reasoningResp.json();
               const tc = rData.choices?.[0]?.message?.tool_calls?.[0];
