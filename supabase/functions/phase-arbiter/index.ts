@@ -1,0 +1,161 @@
+// phase-arbiter — runs every minute via pg_cron and after every job completes.
+// Detects stalled phases, force-advances the pipeline, seeds the OWASP checklist,
+// and triggers the AI strategist after owasp_matrix.
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+};
+
+const SUPA = Deno.env.get("SUPABASE_URL")!;
+const SVC = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+const FN_BASE = `${SUPA}/functions/v1`;
+
+const PHASES = ["recon", "discovery", "owasp_matrix", "deep_modules", "exploit", "chain", "report"] as const;
+const STALL_MS = 5 * 60_000;
+
+// Map phase → job types that fulfill it
+const PHASE_JOBS: Record<string, { type: string; priority: number; payload?: any }[]> = {
+  discovery:    [{ type: "juicy", priority: 8 }, { type: "js_deep", priority: 7 }],
+  owasp_matrix: [
+    { type: "fuzz", priority: 7 }, { type: "matrix_fuzz", priority: 7 },
+    { type: "advanced_detect", priority: 7 }, { type: "form_attack", priority: 6 },
+    { type: "graphql", priority: 6 }, { type: "jwt_attack", priority: 6 },
+    { type: "ssrf_deep", priority: 6 }, { type: "differential", priority: 6 },
+  ],
+  deep_modules: [
+    { type: "llm_attack", priority: 6 }, { type: "waf_evasion", priority: 8 },
+    { type: "cve_exploit", priority: 7 }, { type: "ai_strategist", priority: 7 },
+  ],
+  exploit:      [{ type: "exploit_watchdog", priority: 8 }],
+  chain:        [{ type: "chain", priority: 5 }, { type: "chain_exploit", priority: 5 }],
+  report:       [{ type: "report_rewrite", priority: 2 }],
+};
+
+async function callFn(name: string, body: any) {
+  try {
+    await fetch(`${FN_BASE}/${name}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${SVC}` },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(6000),
+    }).catch(() => {});
+  } catch { /* ignore */ }
+}
+
+async function enqueue(db: any, targetId: string, jobs: { type: string; priority: number; payload?: any }[]) {
+  const now = new Date().toISOString();
+  // Filter out: already running, or queued + recent
+  const types = jobs.map(j => j.type);
+  const { data: existing } = await db.from("scan_jobs")
+    .select("job_type,status")
+    .eq("target_id", targetId).in("job_type", types).in("status", ["queued", "running"]);
+  const busy = new Set((existing || []).map((e: any) => e.job_type));
+  const rows = jobs.filter(j => !busy.has(j.type)).map(j => ({
+    target_id: targetId, job_type: j.type, status: "queued",
+    priority: j.priority, payload: j.payload ?? {}, next_run_at: now,
+  }));
+  if (rows.length) await db.from("scan_jobs").insert(rows).then(() => {}, () => {});
+  return rows.length;
+}
+
+async function arbitrateTarget(db: any, targetId: string) {
+  // Ensure checklist seeded
+  try { await db.rpc("seed_owasp_checklist", { _target_id: targetId }); } catch { /* ignore */ }
+
+  const { data: phaseRows } = await db.from("scan_phase_state")
+    .select("phase,status,last_heartbeat,checks_attempted,findings_count")
+    .eq("target_id", targetId);
+
+  const phaseMap = new Map((phaseRows || []).map((p: any) => [p.phase, p]));
+  const advanced: string[] = [];
+
+  for (const phase of PHASES) {
+    const p: any = phaseMap.get(phase);
+
+    // If phase is running but stale → mark failed and advance
+    if (p?.status === "running") {
+      const age = Date.now() - new Date(p.last_heartbeat).getTime();
+      if (age > STALL_MS) {
+        await db.from("scan_phase_state").update({
+          status: "failed", completed_at: new Date().toISOString(),
+          metadata: { ...(p.metadata || {}), stalled: true, stalled_after_ms: age },
+        }).eq("target_id", targetId).eq("phase", phase);
+      } else {
+        // still alive, don't advance
+        return advanced;
+      }
+    }
+
+    // If phase is pending or failed → trigger its jobs (recon is triggered by user)
+    if (!p || p.status === "pending" || p.status === "failed") {
+      if (phase === "recon") continue; // recon kicks off externally
+
+      // Require previous phase to be complete (or failed → keep moving)
+      const prevIdx = PHASES.indexOf(phase) - 1;
+      if (prevIdx >= 0) {
+        const prevPhase = PHASES[prevIdx];
+        const prev: any = phaseMap.get(prevPhase);
+        if (!prev || prev.status === "pending" || prev.status === "running") return advanced;
+      }
+
+      const jobs = PHASE_JOBS[phase];
+      if (jobs?.length) {
+        await db.from("scan_phase_state").upsert({
+          target_id: targetId, phase, status: "running",
+          started_at: new Date().toISOString(), last_heartbeat: new Date().toISOString(),
+        }, { onConflict: "target_id,phase" });
+
+        // Special: ai_strategist + exploit_watchdog are called directly, not via job worker
+        const direct = jobs.filter(j => j.type === "ai_strategist" || j.type === "exploit_watchdog");
+        const queued = jobs.filter(j => j.type !== "ai_strategist" && j.type !== "exploit_watchdog");
+        for (const d of direct) await callFn(d.type === "ai_strategist" ? "ai-strategist" : "exploit-watchdog", { targetId });
+        const n = await enqueue(db, targetId, queued);
+        advanced.push(`${phase}+${n}`);
+      } else {
+        // No jobs needed → mark complete
+        await db.from("scan_phase_state").upsert({
+          target_id: targetId, phase, status: "complete",
+          completed_at: new Date().toISOString(), last_heartbeat: new Date().toISOString(),
+        }, { onConflict: "target_id,phase" });
+      }
+      return advanced;
+    }
+
+    // If complete → continue to next phase
+  }
+  return advanced;
+}
+
+async function detectActiveTargets(db: any): Promise<string[]> {
+  // Targets with activity in last 30 min
+  const since = new Date(Date.now() - 30 * 60_000).toISOString();
+  const { data: jobs } = await db.from("scan_jobs")
+    .select("target_id").gte("created_at", since).limit(500);
+  const { data: phases } = await db.from("scan_phase_state")
+    .select("target_id").gte("last_heartbeat", since).limit(500);
+  const set = new Set<string>();
+  for (const j of jobs || []) if (j.target_id) set.add(j.target_id);
+  for (const p of phases || []) if (p.target_id) set.add(p.target_id);
+  return [...set];
+}
+
+Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
+  try {
+    const db = createClient(SUPA, SVC);
+    let body: any = {};
+    try { body = await req.json(); } catch { /* ignore */ }
+    const targets: string[] = body.targetId ? [body.targetId] : await detectActiveTargets(db);
+    const out: Record<string, string[]> = {};
+    for (const t of targets.slice(0, 20)) {
+      out[t] = await arbitrateTarget(db, t);
+    }
+    return new Response(JSON.stringify({ ok: true, arbitrated: out }),
+      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+  } catch (e) {
+    return new Response(JSON.stringify({ ok: false, error: e instanceof Error ? e.message : "err" }),
+      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+  }
+});
