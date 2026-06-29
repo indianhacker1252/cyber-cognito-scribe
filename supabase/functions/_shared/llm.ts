@@ -247,6 +247,7 @@ export async function llmCall(opts: LlmCallOptions): Promise<LlmResult> {
               phase: opts.phase || "llm-call",
               reason: out.error,
             });
+            setGlobalCreditExhausted();
           }
           return { ok: false, text: "", provider: out.provider, error: `AI credits exhausted: ${out.error}` };
         }
