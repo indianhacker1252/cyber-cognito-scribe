@@ -490,10 +490,27 @@ Deno.serve(async (req) => {
     }
 
     const { data: endpoints } = await db
-      .from("discovered_endpoints")
-     .select("url, method, parameters")
-      .eq("target_id", targetId)
-      .limit(250);
+  .from("discovered_endpoints")
+  .select("url, method, parameters")
+  .eq("target_id", targetId)
+  .order("created_at", { ascending: false })
+  .limit(250);  // ← increase from 25
+
+// ALSO: pull live subdomains and add their root as fuzz targets
+const { data: assets } = await db
+  .from("scan_assets")
+  .select("host, base_url")
+  .eq("target_id", targetId)
+  .eq("source", "recon-subdomain")
+  .limit(250);
+
+// Build expanded endpoint list including subdomain roots
+const subdomainEndpoints = (assets || []).map(a => ({
+  url: a.base_url,
+  method: "GET",
+  parameters: {}
+}));
+const allEndpoints = [...(endpoints || []), ...subdomainEndpoints];
     if (!endpoints || endpoints.length === 0) {
       return new Response(JSON.stringify({ ok: false, error: "no endpoints — run recon first" }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },

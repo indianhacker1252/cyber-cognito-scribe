@@ -9,17 +9,17 @@ const corsHeaders = {
 };
 
 function supabaseAdmin() {
-  return createClient(
-    Deno.env.get("SUPABASE_URL")!,
-    Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
-  );
+  return createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 }
 
 async function safeFetch(url: string, opts: RequestInit = {}, timeoutMs = 8000): Promise<Response> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-  try { return await fetch(url, { ...opts, signal: ctrl.signal }); }
-  finally { clearTimeout(timer); }
+  try {
+    return await fetch(url, { ...opts, signal: ctrl.signal });
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function log(
@@ -28,7 +28,7 @@ async function log(
   taskId: string,
   type: "thought" | "action" | "result" | "error" | "info",
   message: string,
-  metadata: Record<string, unknown> = {}
+  metadata: Record<string, unknown> = {},
 ) {
   await db.from("scan_logs").insert({
     target_id: targetId,
@@ -44,10 +44,9 @@ async function log(
 async function enumerateSubdomains(domain: string): Promise<string[]> {
   const subdomains = new Set<string>();
   try {
-    const resp = await safeFetch(
-      `https://crt.sh/?q=%25.${encodeURIComponent(domain)}&output=json`,
-      { headers: { Accept: "application/json" } }
-    );
+    const resp = await safeFetch(`https://crt.sh/?q=%25.${encodeURIComponent(domain)}&output=json`, {
+      headers: { Accept: "application/json" },
+    });
     if (resp.ok) {
       const data = await resp.json();
       for (const entry of data) {
@@ -69,10 +68,7 @@ async function enumerateSubdomains(domain: string): Promise<string[]> {
 // ─── 1b. Google Dorking for Subdomain & Param Discovery ───
 
 const DORK_CATEGORIES = {
-  subdomains: (d: string) => [
-    `site:*.${d}`,
-    `site:*.*.${d}`,
-  ],
+  subdomains: (d: string) => [`site:*.${d}`, `site:*.*.${d}`],
   sensitiveFiles: (d: string) => [
     `site:${d} ext:xml | ext:json | ext:conf | ext:env | ext:yml`,
     `site:${d} ext:sql | ext:bak | ext:log | ext:old | ext:swp`,
@@ -143,7 +139,8 @@ async function googleDorkDiscovery(domain: string): Promise<{
   try {
     const cdxResp = await safeFetch(
       `https://web.archive.org/cdx/search/cdx?url=${encodeURIComponent(domain)}/*&output=json&fl=original&collapse=urlkey&filter=mimetype:text/html&limit=500`,
-      {}, 10000
+      {},
+      10000,
     );
     if (cdxResp.ok) {
       const data = await cdxResp.json();
@@ -158,7 +155,9 @@ async function googleDorkDiscovery(domain: string): Promise<{
           // Extract URLs with parameters (gold for bug hunting)
           if (u.search) {
             const params: Record<string, string> = {};
-            u.searchParams.forEach((v, k) => { params[k] = v; });
+            u.searchParams.forEach((v, k) => {
+              params[k] = v;
+            });
             paramUrls.push({ url: `${u.origin}${u.pathname}`, params });
           }
           // Detect juicy paths
@@ -166,7 +165,9 @@ async function googleDorkDiscovery(domain: string): Promise<{
           if (/\/(admin|api|dashboard|config|debug|test|backup|upload|download|internal|swagger|graphql)/.test(path)) {
             juicyPaths.push(`${u.origin}${u.pathname}`);
           }
-        } catch { /* skip */ }
+        } catch {
+          /* skip */
+        }
       }
     }
   } catch (e) {
@@ -177,7 +178,8 @@ async function googleDorkDiscovery(domain: string): Promise<{
   try {
     const urlscanResp = await safeFetch(
       `https://urlscan.io/api/v1/search/?q=domain:${encodeURIComponent(domain)}&size=100`,
-      { headers: { "User-Agent": "CyberScope-Recon/2.0" } }, 8000
+      { headers: { "User-Agent": "CyberScope-Recon/2.0" } },
+      8000,
     );
     if (urlscanResp.ok) {
       const data = await urlscanResp.json();
@@ -190,19 +192,26 @@ async function googleDorkDiscovery(domain: string): Promise<{
           }
           if (u.search) {
             const params: Record<string, string> = {};
-            u.searchParams.forEach((v, k) => { params[k] = v; });
+            u.searchParams.forEach((v, k) => {
+              params[k] = v;
+            });
             paramUrls.push({ url: `${u.origin}${u.pathname}`, params });
           }
-        } catch { /* skip */ }
+        } catch {
+          /* skip */
+        }
       }
     }
-  } catch { /* skip */ }
+  } catch {
+    /* skip */
+  }
 
   // ── ThreatCrowd API for additional subdomain discovery ──
   try {
     const tcResp = await safeFetch(
       `https://www.threatcrowd.org/searchApi/v2/domain/report/?domain=${encodeURIComponent(domain)}`,
-      {}, 6000
+      {},
+      6000,
     );
     if (tcResp.ok) {
       const data = await tcResp.json();
@@ -210,7 +219,9 @@ async function googleDorkDiscovery(domain: string): Promise<{
         if (sub.endsWith(domain)) subdomains.add(sub.toLowerCase());
       }
     }
-  } catch { /* skip */ }
+  } catch {
+    /* skip */
+  }
 
   return {
     subdomains: [...subdomains],
@@ -222,37 +233,54 @@ async function googleDorkDiscovery(domain: string): Promise<{
 
 // ─── 1c. Probe Live Subdomains ───────────────────────────
 
-async function probeLiveSubdomains(subdomains: string[]): Promise<Array<{ subdomain: string; status: number; server: string; redirect?: string }>> {
+async function probeLiveSubdomains(
+  subdomains: string[],
+): Promise<Array<{ subdomain: string; status: number; server: string; redirect?: string }>> {
   const results: Array<{ subdomain: string; status: number; server: string; redirect?: string }> = [];
   const batch = subdomains.slice(0, 50); // Test up to 50 subdomains
 
   const promises = batch.map(async (sub) => {
     try {
-      const resp = await safeFetch(`https://${sub}`, {
-        method: "HEAD",
-        headers: { "User-Agent": "Mozilla/5.0 CyberScope-Probe/1.0" },
-        redirect: "manual",
-      }, 4000);
+      const resp = await safeFetch(
+        `https://${sub}`,
+        {
+          method: "HEAD",
+          headers: { "User-Agent": "Mozilla/5.0 CyberScope-Probe/1.0" },
+          redirect: "manual",
+        },
+        4000,
+      );
       const server = resp.headers.get("server") || "";
       const location = resp.headers.get("location") || "";
       results.push({ subdomain: sub, status: resp.status, server, redirect: location || undefined });
     } catch {
       // Try HTTP fallback
       try {
-        const resp = await safeFetch(`http://${sub}`, {
-          method: "HEAD",
-          headers: { "User-Agent": "Mozilla/5.0 CyberScope-Probe/1.0" },
-          redirect: "manual",
-        }, 3000);
-        results.push({ subdomain: sub, status: resp.status, server: resp.headers.get("server") || "", redirect: resp.headers.get("location") || undefined });
-      } catch { /* dead */ }
+        const resp = await safeFetch(
+          `http://${sub}`,
+          {
+            method: "HEAD",
+            headers: { "User-Agent": "Mozilla/5.0 CyberScope-Probe/1.0" },
+            redirect: "manual",
+          },
+          3000,
+        );
+        results.push({
+          subdomain: sub,
+          status: resp.status,
+          server: resp.headers.get("server") || "",
+          redirect: resp.headers.get("location") || undefined,
+        });
+      } catch {
+        /* dead */
+      }
     }
   });
 
   // Run in batches of 10 to avoid overwhelming
   for (let i = 0; i < promises.length; i += 10) {
     await Promise.allSettled(promises.slice(i, i + 10));
-    await new Promise(r => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, 200));
   }
 
   return results;
@@ -260,15 +288,13 @@ async function probeLiveSubdomains(subdomains: string[]): Promise<Array<{ subdom
 
 // ─── 2. Wayback Machine Harvesting ─────────────────────────
 
-async function harvestWayback(
-  domain: string
-): Promise<{ url: string; timestamp: string }[]> {
+async function harvestWayback(domain: string): Promise<{ url: string; timestamp: string }[]> {
   const urls: { url: string; timestamp: string }[] = [];
   try {
     const resp = await safeFetch(
       `https://web.archive.org/cdx/search/cdx?url=${encodeURIComponent(
-        domain
-      )}/*&output=json&fl=timestamp,original&collapse=urlkey&limit=300`
+        domain,
+      )}/*&output=json&fl=timestamp,original&collapse=urlkey&limit=300`,
     );
     if (resp.ok) {
       const data = await resp.json();
@@ -284,15 +310,11 @@ async function harvestWayback(
 
 // ─── 3. OTX AlienVault Passive DNS ─────────────────────────
 
-async function harvestOTX(
-  domain: string
-): Promise<{ url: string; type: string }[]> {
+async function harvestOTX(domain: string): Promise<{ url: string; type: string }[]> {
   const results: { url: string; type: string }[] = [];
   try {
     const resp = await safeFetch(
-      `https://otx.alienvault.com/api/v1/indicators/domain/${encodeURIComponent(
-        domain
-      )}/url_list?limit=100`
+      `https://otx.alienvault.com/api/v1/indicators/domain/${encodeURIComponent(domain)}/url_list?limit=100`,
     );
     if (resp.ok) {
       const data = await resp.json();
@@ -363,7 +385,9 @@ async function spiderCrawl(
               queue.push({ url: `${parsed.origin}${parsed.pathname}`, depth: item.depth + 1 });
             }
           }
-        } catch { /* skip malformed */ }
+        } catch {
+          /* skip malformed */
+        }
       }
 
       // Extract forms with inputs
@@ -381,7 +405,9 @@ async function spiderCrawl(
         if (inputs.length > 0) {
           let action = actionMatch?.[1] || item.url;
           if (!action.startsWith("http")) {
-            action = action.startsWith("/") ? `https://${domain}${action}` : `${item.url.replace(/\/[^/]*$/, "/")}${action}`;
+            action = action.startsWith("/")
+              ? `https://${domain}${action}`
+              : `${item.url.replace(/\/[^/]*$/, "/")}${action}`;
           }
           forms.push({ action, method: (methodMatch?.[1] || "GET").toUpperCase(), inputs });
         }
@@ -398,7 +424,9 @@ async function spiderCrawl(
       }
 
       await new Promise((r) => setTimeout(r, 150));
-    } catch { /* skip failed pages */ }
+    } catch {
+      /* skip failed pages */
+    }
   }
 
   return { urls: [...new Set(discovered)], forms, jsFiles: [...new Set(jsFiles)] };
@@ -435,11 +463,7 @@ async function analyzeJsFiles(jsFiles: string[]): Promise<{
     /\.post\s*\(\s*['"]([^'"]+)['"]/g,
   ];
 
-  const paramPatterns = [
-    /[?&](\w+)=/g,
-    /params\.\s*(\w+)/g,
-    /['"](\w+)['"]\s*:/g,
-  ];
+  const paramPatterns = [/[?&](\w+)=/g, /params\.\s*(\w+)/g, /['"](\w+)['"]\s*:/g];
 
   for (const jsUrl of jsFiles.slice(0, 40)) {
     try {
@@ -480,7 +504,9 @@ async function analyzeJsFiles(jsFiles: string[]): Promise<{
           }
         }
       }
-    } catch { /* skip */ }
+    } catch {
+      /* skip */
+    }
   }
 
   return {
@@ -561,8 +587,16 @@ async function aiAnalyzeTarget(
   subdomains: string[],
   waybackUrls: string[],
   fingerprint: TechFingerprint,
-  jsAnalysis: { apiEndpoints: string[]; potentialSecrets: Array<{ file: string; type: string; snippet: string }>; hiddenParams: string[] },
-  dorkResults: { subdomains: string[]; paramUrls: Array<{ url: string; params: Record<string, string> }>; juicyPaths: string[] }
+  jsAnalysis: {
+    apiEndpoints: string[];
+    potentialSecrets: Array<{ file: string; type: string; snippet: string }>;
+    hiddenParams: string[];
+  },
+  dorkResults: {
+    subdomains: string[];
+    paramUrls: Array<{ url: string; params: Record<string, string> }>;
+    juicyPaths: string[];
+  },
 ): Promise<{
   apiEndpoints: string[];
   hiddenParams: string[];
@@ -585,7 +619,7 @@ WAF: ${fingerprint.waf || "none detected"}
 
 JS Analysis:
 - API endpoints found: ${jsAnalysis.apiEndpoints.slice(0, 20).join(", ")}
-- Potential secrets: ${jsAnalysis.potentialSecrets.map(s => `${s.type} in ${s.file}`).join(", ") || "none"}
+- Potential secrets: ${jsAnalysis.potentialSecrets.map((s) => `${s.type} in ${s.file}`).join(", ") || "none"}
 - Hidden params from JS: ${jsAnalysis.hiddenParams.slice(0, 30).join(", ")}
 
 Google Dork Results:
@@ -598,21 +632,24 @@ Based on this recon data, identify:
 3. Attack surface observations: What would a bug bounty hunter target FIRST? What looks misconfigured? What's the most likely vulnerability class?`;
 
   try {
-    const resp = await safeFetch(
-      "https://ai.gateway.lovable.dev/v1/chat/completions",
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${LOVABLE_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: "google/gemini-3-flash-preview",
-          messages: [
-            { role: "system", content: "You are an elite bug bounty hunter. Analyze recon data and identify the highest-value attack vectors. Be aggressive but legal. Return structured JSON only." },
-            { role: "user", content: prompt },
-          ],
-          tools: [{
+    const resp = await safeFetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${LOVABLE_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "google/gemini-3-flash-preview",
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are an elite bug bounty hunter. Analyze recon data and identify the highest-value attack vectors. Be aggressive but legal. Return structured JSON only.",
+          },
+          { role: "user", content: prompt },
+        ],
+        tools: [
+          {
             type: "function",
             function: {
               name: "report_recon_findings",
@@ -620,22 +657,38 @@ Based on this recon data, identify:
               parameters: {
                 type: "object",
                 properties: {
-                  apiEndpoints: { type: "array", items: { type: "string" }, description: "High-priority API endpoints to test" },
-                  hiddenParams: { type: "array", items: { type: "string" }, description: "Hidden parameters worth testing" },
-                  securityNotes: { type: "array", items: { type: "string" }, description: "Attack surface observations and priority targets" },
+                  apiEndpoints: {
+                    type: "array",
+                    items: { type: "string" },
+                    description: "High-priority API endpoints to test",
+                  },
+                  hiddenParams: {
+                    type: "array",
+                    items: { type: "string" },
+                    description: "Hidden parameters worth testing",
+                  },
+                  securityNotes: {
+                    type: "array",
+                    items: { type: "string" },
+                    description: "Attack surface observations and priority targets",
+                  },
                 },
                 required: ["apiEndpoints", "hiddenParams", "securityNotes"],
                 additionalProperties: false,
               },
             },
-          }],
-          tool_choice: { type: "function", function: { name: "report_recon_findings" } },
-        }),
-      }
-    );
+          },
+        ],
+        tool_choice: { type: "function", function: { name: "report_recon_findings" } },
+      }),
+    });
 
     if (resp.status === 429 || resp.status === 402) {
-      return { apiEndpoints: [], hiddenParams: [], securityNotes: [`AI ${resp.status === 429 ? "rate limited" : "credits exhausted"}`] };
+      return {
+        apiEndpoints: [],
+        hiddenParams: [],
+        securityNotes: [`AI ${resp.status === 429 ? "rate limited" : "credits exhausted"}`],
+      };
     }
 
     if (resp.ok) {
@@ -658,7 +711,8 @@ serve(async (req) => {
     const { targetId } = await req.json();
     if (!targetId) {
       return new Response(JSON.stringify({ error: "targetId is required" }), {
-        status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
@@ -666,42 +720,68 @@ serve(async (req) => {
     const { data: target, error: tErr } = await db.from("target_workspaces").select("*").eq("id", targetId).single();
     if (tErr || !target) {
       return new Response(JSON.stringify({ error: "Target not found" }), {
-        status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        status: 404,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
     const domain = target.domain;
     if (!domain) {
       return new Response(JSON.stringify({ error: "Target has no domain configured" }), {
-        status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
-    const { data: task } = await db.from("agent_tasks")
+    const { data: task } = await db
+      .from("agent_tasks")
       .insert({ target_id: targetId, task_type: "reconnaissance", status: "running" })
-      .select().single();
+      .select()
+      .single();
     const taskId = task!.id;
 
-    await db.from("target_workspaces").update({ 
-      status: "scanning",
-      resolved_protocol: SCHEME  // FIX: persist resolved protocol for all downstream modules
-    }).eq("id", targetId);
+    await db
+      .from("target_workspaces")
+      .update({
+        status: "scanning",
+        resolved_protocol: SCHEME, // FIX: persist resolved protocol for all downstream modules
+      })
+      .eq("id", targetId);
     await log(db, targetId, taskId, "info", `🔍 Elite recon pipeline started for ${domain}`);
 
     // ── Step 0: Protocol fallback engine (Rule 1) ──
     // Test https first with a strict 3000ms timeout. If it drops/times out,
     // downgrade to http so the spider/fingerprint never hangs on legacy targets.
-    await log(db, targetId, taskId, "thought", `🔌 Resolving protocol for ${domain} (https first, 3s timeout, http fallback)`);
+    await log(
+      db,
+      targetId,
+      taskId,
+      "thought",
+      `🔌 Resolving protocol for ${domain} (https first, 3s timeout, http fallback)`,
+    );
     const resolved = await resolveTargetProtocol(domain, 3000);
     if (resolved.downgraded) {
-      await log(db, targetId, taskId, "action", `⬇️  HTTPS unreachable (${resolved.reason || "timeout"}) — downgraded to http://`, { resolved });
+      await log(
+        db,
+        targetId,
+        taskId,
+        "action",
+        `⬇️  HTTPS unreachable (${resolved.reason || "timeout"}) — downgraded to http://`,
+        { resolved },
+      );
     } else {
       await log(db, targetId, taskId, "info", `🔒 Using ${resolved.scheme}:// for ${domain}`, { resolved });
     }
     const SCHEME = resolved.scheme;
 
     // ── Step 1: Parallel subdomain enumeration (crt.sh + Google Dorks + ThreatCrowd + URLScan) ──
-    await log(db, targetId, taskId, "thought", `Enumerating ALL subdomains via crt.sh, Google Dorks, URLScan, ThreatCrowd for ${domain}`);
+    await log(
+      db,
+      targetId,
+      taskId,
+      "thought",
+      `Enumerating ALL subdomains via crt.sh, Google Dorks, URLScan, ThreatCrowd for ${domain}`,
+    );
 
     const [crtSubdomains, dorkResults, waybackResults, otxResults] = await Promise.all([
       enumerateSubdomains(domain),
@@ -712,24 +792,84 @@ serve(async (req) => {
 
     // Merge all subdomains
     const allSubdomains = [...new Set([...crtSubdomains, ...dorkResults.subdomains])];
-    await log(db, targetId, taskId, "action", `Found ${allSubdomains.length} total subdomains (crt.sh: ${crtSubdomains.length}, dorks: ${dorkResults.subdomains.length})`);
-    await log(db, targetId, taskId, "action", `🎯 Google Dorks found ${dorkResults.paramUrls.length} URLs with params, ${dorkResults.juicyPaths.length} juicy paths`);
-    await log(db, targetId, taskId, "action", `Harvested ${waybackResults.length} Wayback URLs, ${otxResults.length} OTX URLs`);
+    await log(
+      db,
+      targetId,
+      taskId,
+      "action",
+      `Found ${allSubdomains.length} total subdomains (crt.sh: ${crtSubdomains.length}, dorks: ${dorkResults.subdomains.length})`,
+    );
+    await log(
+      db,
+      targetId,
+      taskId,
+      "action",
+      `🎯 Google Dorks found ${dorkResults.paramUrls.length} URLs with params, ${dorkResults.juicyPaths.length} juicy paths`,
+    );
+    await log(
+      db,
+      targetId,
+      taskId,
+      "action",
+      `Harvested ${waybackResults.length} Wayback URLs, ${otxResults.length} OTX URLs`,
+    );
 
     // ── Step 2: Probe live subdomains ──
     await log(db, targetId, taskId, "thought", `Probing ${allSubdomains.length} subdomains for live hosts`);
     const liveSubdomains = await probeLiveSubdomains(allSubdomains);
-    const liveCount = liveSubdomains.filter(s => s.status < 400).length;
-    await log(db, targetId, taskId, "result", `🟢 ${liveCount}/${allSubdomains.length} subdomains are LIVE`, { liveSubdomains: liveSubdomains.slice(0, 20) });
+    const liveCount = liveSubdomains.filter((s) => s.status < 400).length;
+    await log(db, targetId, taskId, "result", `🟢 ${liveCount}/${allSubdomains.length} subdomains are LIVE`, {
+      liveSubdomains: liveSubdomains.slice(0, 20),
+    });
+    // ── MISSING: Store live subdomains into scan_assets so all attack modules can find them ──
+    const assetRows = liveSubdomains
+      .filter((s) => s.status < 400)
+      .map((s) => ({
+        target_id: targetId,
+        host: s.subdomain,
+        base_url: `https://${s.subdomain}`,
+        source: "recon-subdomain",
+        status_code: s.status,
+        server_header: s.server || null,
+        discovered_at: new Date().toISOString(),
+      }));
+
+    if (assetRows.length > 0) {
+      await db.from("scan_assets").upsert(assetRows, { onConflict: "target_id,host" });
+      await log(
+        db,
+        targetId,
+        taskId,
+        "action",
+        `📦 Stored ${assetRows.length} live subdomains into scan_assets for attack modules`,
+      );
+    }
+
+    // Also spider crawl ALL live subdomains — not just top 5
+    const allLiveHosts = liveSubdomains.filter((s) => s.status < 400).map((s) => s.subdomain);
+    // (existing code uses slice(0,5) — REMOVE that limit)
 
     // ── Step 3: Tech fingerprinting (uses resolved scheme) ──
     await log(db, targetId, taskId, "thought", `Fingerprinting technology stack for ${SCHEME}://${domain}`);
     const fingerprint = await fingerprintTech(`${SCHEME}://${domain}`);
-    await log(db, targetId, taskId, "result", `Tech stack: Server=${fingerprint.server || "unknown"}, Framework=${fingerprint.framework || "unknown"}, WAF=${fingerprint.waf || "none"}`, { fingerprint });
+    await log(
+      db,
+      targetId,
+      taskId,
+      "result",
+      `Tech stack: Server=${fingerprint.server || "unknown"}, Framework=${fingerprint.framework || "unknown"}, WAF=${fingerprint.waf || "none"}`,
+      { fingerprint },
+    );
 
     // ── Step 4: Spider crawl on main domain + top live subdomains ──
-    const spiderTargets = [domain, ...liveSubdomains.filter(s => s.status < 400).map(s => s.subdomain).slice(0, 5)];
-    await log(db, targetId, taskId, "thought", `🕷️ Spider crawling ${spiderTargets.length} targets via ${SCHEME}:// (main + top subdomains)`);
+    const spiderTargets = [domain, ...liveSubdomains.filter((s) => s.status < 400).map((s) => s.subdomain)]; // ← No limit
+    await log(
+      db,
+      targetId,
+      taskId,
+      "thought",
+      `🕷️ Spider crawling ${spiderTargets.length} targets via ${SCHEME}:// (main + top subdomains)`,
+    );
 
     let allSpiderUrls: string[] = [];
     let allForms: Array<{ action: string; method: string; inputs: string[] }> = [];
@@ -747,7 +887,13 @@ serve(async (req) => {
     // Bug #4 fix — if HTTP spider found almost nothing, target is likely an SPA.
     // Fall back to headless-browser to render JS and harvest real links/forms.
     if (allSpiderUrls.length < 5) {
-      await log(db, targetId, taskId, "thought", `🌐 SPA suspected — only ${allSpiderUrls.length} static links. Switching to headless browser`);
+      await log(
+        db,
+        targetId,
+        taskId,
+        "thought",
+        `🌐 SPA suspected — only ${allSpiderUrls.length} static links. Switching to headless browser`,
+      );
       try {
         const hbRes = await safeFetch(
           `${Deno.env.get("SUPABASE_URL")}/functions/v1/headless-browser`,
@@ -766,12 +912,20 @@ serve(async (req) => {
           // Fix #11 — headless-browser actually returns `endpoints`, not `urls`. Accept either.
           const hbUrls: string[] = Array.isArray(hbData?.endpoints)
             ? hbData.endpoints
-            : Array.isArray(hbData?.urls) ? hbData.urls : [];
+            : Array.isArray(hbData?.urls)
+              ? hbData.urls
+              : [];
           const hbForms: any[] = Array.isArray(hbData?.forms) ? hbData.forms : [];
           allSpiderUrls.push(...hbUrls);
           allForms.push(...hbForms);
           allSpiderUrls = [...new Set(allSpiderUrls)];
-          await log(db, targetId, taskId, "result", `🌐 Headless browser added ${hbUrls.length} URLs, ${hbForms.length} forms`);
+          await log(
+            db,
+            targetId,
+            taskId,
+            "result",
+            `🌐 Headless browser added ${hbUrls.length} URLs, ${hbForms.length} forms`,
+          );
         } else {
           await log(db, targetId, taskId, "info", `headless-browser returned ${hbRes.status}`);
         }
@@ -780,15 +934,39 @@ serve(async (req) => {
       }
     }
 
-    await log(db, targetId, taskId, "result", `🕷️ Spider found ${allSpiderUrls.length} links, ${allForms.length} forms, ${allJsFiles.length} JS files across ${spiderTargets.length} targets`);
+    await log(
+      db,
+      targetId,
+      taskId,
+      "result",
+      `🕷️ Spider found ${allSpiderUrls.length} links, ${allForms.length} forms, ${allJsFiles.length} JS files across ${spiderTargets.length} targets`,
+    );
 
     // ── Step 5: JS File Analysis — Extract secrets, API endpoints, hidden params ──
-    await log(db, targetId, taskId, "thought", `🔍 Analyzing ${allJsFiles.length} JS files for secrets, API endpoints, hidden params`);
+    await log(
+      db,
+      targetId,
+      taskId,
+      "thought",
+      `🔍 Analyzing ${allJsFiles.length} JS files for secrets, API endpoints, hidden params`,
+    );
     const jsAnalysis = await analyzeJsFiles(allJsFiles);
-    await log(db, targetId, taskId, "result", `JS Analysis: ${jsAnalysis.apiEndpoints.length} API endpoints, ${jsAnalysis.potentialSecrets.length} potential secrets, ${jsAnalysis.hiddenParams.length} hidden params`);
+    await log(
+      db,
+      targetId,
+      taskId,
+      "result",
+      `JS Analysis: ${jsAnalysis.apiEndpoints.length} API endpoints, ${jsAnalysis.potentialSecrets.length} potential secrets, ${jsAnalysis.hiddenParams.length} hidden params`,
+    );
 
     if (jsAnalysis.potentialSecrets.length > 0) {
-      await log(db, targetId, taskId, "result", `🔴 SECRETS FOUND IN JS: ${jsAnalysis.potentialSecrets.map(s => `${s.type} in ${s.file}`).join(", ")}`);
+      await log(
+        db,
+        targetId,
+        taskId,
+        "result",
+        `🔴 SECRETS FOUND IN JS: ${jsAnalysis.potentialSecrets.map((s) => `${s.type} in ${s.file}`).join(", ")}`,
+      );
       // Part A — push secrets into the global findings queue (was previously dropped)
       try {
         const { recordFinding } = await import("../_shared/findings-writer.ts");
@@ -808,14 +986,28 @@ serve(async (req) => {
             scanLogId: taskId,
           });
         }
-      } catch (e) { console.error("recordFinding(secret) failed", e); }
+      } catch (e) {
+        console.error("recordFinding(secret) failed", e);
+      }
     }
-
 
     // ── Step 6: AI Analysis ──
     await log(db, targetId, taskId, "thought", `Running AI attack surface analysis on collected recon data`);
-    const aiResults = await aiAnalyzeTarget(domain, allSubdomains, waybackResults.map(w => w.url), fingerprint, jsAnalysis, dorkResults);
-    await log(db, targetId, taskId, "result", `AI identified ${aiResults.apiEndpoints.length} priority endpoints, ${aiResults.hiddenParams.length} hidden params`);
+    const aiResults = await aiAnalyzeTarget(
+      domain,
+      allSubdomains,
+      waybackResults.map((w) => w.url),
+      fingerprint,
+      jsAnalysis,
+      dorkResults,
+    );
+    await log(
+      db,
+      targetId,
+      taskId,
+      "result",
+      `AI identified ${aiResults.apiEndpoints.length} priority endpoints, ${aiResults.hiddenParams.length} hidden params`,
+    );
 
     for (const note of aiResults.securityNotes) {
       await log(db, targetId, taskId, "info", `[AI] ${note}`);
@@ -844,7 +1036,9 @@ serve(async (req) => {
         u.hostname = u.hostname.toLowerCase().replace(/^www\./, "");
         if (u.pathname.length > 1 && u.pathname.endsWith("/")) u.pathname = u.pathname.replace(/\/+$/, "");
         return u.toString();
-      } catch { return raw; }
+      } catch {
+        return raw;
+      }
     };
     const setUrl = (rawKey: string, info: { method: string; params: Record<string, unknown>; source: string }) => {
       const key = normalizeUrl(rawKey, SCHEME);
@@ -865,7 +1059,9 @@ serve(async (req) => {
         const params: Record<string, string> = {};
         u.searchParams.forEach((v, k) => (params[k] = v));
         if (!allUrls.has(key)) allUrls.set(key, { method: "GET", params, source: "wayback" });
-      } catch { /* skip */ }
+      } catch {
+        /* skip */
+      }
     }
 
     // OTX URLs
@@ -876,7 +1072,9 @@ serve(async (req) => {
         const params: Record<string, string> = {};
         u.searchParams.forEach((v, k) => (params[k] = v));
         if (!allUrls.has(key)) allUrls.set(key, { method: "GET", params, source: "otx" });
-      } catch { /* skip */ }
+      } catch {
+        /* skip */
+      }
     }
 
     // Google Dork param URLs (HIGH VALUE — real params from real users)
@@ -909,13 +1107,17 @@ serve(async (req) => {
         const params: Record<string, string> = {};
         u.searchParams.forEach((v, k) => (params[k] = v));
         if (!allUrls.has(key)) allUrls.set(key, { method: "GET", params, source: "spider" });
-      } catch { /* skip */ }
+      } catch {
+        /* skip */
+      }
     }
 
     // Spider forms
     for (const form of allForms) {
       const params: Record<string, string> = {};
-      for (const input of form.inputs) { params[input] = "test"; }
+      for (const input of form.inputs) {
+        params[input] = "test";
+      }
       if (!allUrls.has(form.action)) allUrls.set(form.action, { method: form.method, params, source: "spider-form" });
     }
 
@@ -945,53 +1147,66 @@ serve(async (req) => {
     await log(db, targetId, taskId, "result", `Ingested ${insertedCount} unique endpoints into database`);
 
     // Store results
-    await db.from("agent_tasks").update({
-      status: "completed",
-      result: {
-        subdomains_found: allSubdomains.length,
-        live_subdomains: liveCount,
-        wayback_urls: waybackResults.length,
-        otx_urls: otxResults.length,
-        google_dork_param_urls: dorkResults.paramUrls.length,
-        juicy_paths: dorkResults.juicyPaths.length,
-        spider_urls: allSpiderUrls.length,
-        spider_forms: allForms.length,
-        js_files_analyzed: allJsFiles.length,
-        js_api_endpoints: jsAnalysis.apiEndpoints.length,
-        js_secrets_found: jsAnalysis.potentialSecrets.length,
-        js_hidden_params: jsAnalysis.hiddenParams.length,
-        endpoints_ingested: insertedCount,
-        tech_fingerprint: fingerprint,
-        ai_analysis: aiResults,
-      },
-    }).eq("id", taskId);
+    await db
+      .from("agent_tasks")
+      .update({
+        status: "completed",
+        result: {
+          subdomains_found: allSubdomains.length,
+          live_subdomains: liveCount,
+          wayback_urls: waybackResults.length,
+          otx_urls: otxResults.length,
+          google_dork_param_urls: dorkResults.paramUrls.length,
+          juicy_paths: dorkResults.juicyPaths.length,
+          spider_urls: allSpiderUrls.length,
+          spider_forms: allForms.length,
+          js_files_analyzed: allJsFiles.length,
+          js_api_endpoints: jsAnalysis.apiEndpoints.length,
+          js_secrets_found: jsAnalysis.potentialSecrets.length,
+          js_hidden_params: jsAnalysis.hiddenParams.length,
+          endpoints_ingested: insertedCount,
+          tech_fingerprint: fingerprint,
+          ai_analysis: aiResults,
+        },
+      })
+      .eq("id", taskId);
 
     await db.from("target_workspaces").update({ status: "completed" }).eq("id", targetId);
 
-    await log(db, targetId, taskId, "info", `✅ Elite recon completed for ${domain} — ${insertedCount} endpoints, ${allSubdomains.length} subdomains (${liveCount} live), ${jsAnalysis.potentialSecrets.length} secrets found`);
+    await log(
+      db,
+      targetId,
+      taskId,
+      "info",
+      `✅ Elite recon completed for ${domain} — ${insertedCount} endpoints, ${allSubdomains.length} subdomains (${liveCount} live), ${jsAnalysis.potentialSecrets.length} secrets found`,
+    );
 
-    return new Response(JSON.stringify({
-      success: true,
-      subdomains: allSubdomains.length,
-      liveSubdomains: liveCount,
-      waybackUrls: waybackResults.length,
-      otxUrls: otxResults.length,
-      googleDorkParams: dorkResults.paramUrls.length,
-      juicyPaths: dorkResults.juicyPaths.length,
-      spiderUrls: allSpiderUrls.length,
-      spiderForms: allForms.length,
-      jsFilesAnalyzed: allJsFiles.length,
-      jsSecretsFound: jsAnalysis.potentialSecrets.length,
-      jsApiEndpoints: jsAnalysis.apiEndpoints.length,
-      endpointsIngested: insertedCount,
-      fingerprint,
-    }), {
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    return new Response(
+      JSON.stringify({
+        success: true,
+        subdomains: allSubdomains.length,
+        liveSubdomains: liveCount,
+        waybackUrls: waybackResults.length,
+        otxUrls: otxResults.length,
+        googleDorkParams: dorkResults.paramUrls.length,
+        juicyPaths: dorkResults.juicyPaths.length,
+        spiderUrls: allSpiderUrls.length,
+        spiderForms: allForms.length,
+        jsFilesAnalyzed: allJsFiles.length,
+        jsSecretsFound: jsAnalysis.potentialSecrets.length,
+        jsApiEndpoints: jsAnalysis.apiEndpoints.length,
+        endpointsIngested: insertedCount,
+        fingerprint,
+      }),
+      {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      },
+    );
   } catch (e) {
     console.error("Recon engine error:", e);
     return new Response(JSON.stringify({ error: e instanceof Error ? e.message : "Unknown error" }), {
-      status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
+      status: 500,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
 });
