@@ -278,6 +278,15 @@ Deno.serve(async (req) => {
           status: "done", completed_at: new Date().toISOString(), result: out.result || {},
         }).eq("id", job.id);
 
+        // Mark recon phase complete so the arbiter can advance the pipeline.
+        if (job.job_type === "recon") {
+          await supa.from("scan_phase_state").upsert({
+            target_id: job.target_id, phase: "recon", status: "complete",
+            completed_at: new Date().toISOString(), last_heartbeat: new Date().toISOString(),
+          }, { onConflict: "target_id,phase" }).then(() => {}, () => {});
+          await supa.rpc("seed_owasp_checklist", { _target_id: job.target_id }).then(() => {}, () => {});
+        }
+
         // ── Post-phase fan-out: ensure the chain keeps moving even if a
         // module forgets to enqueue the next stage. Idempotent: scan_jobs
         // unique index + per-type "running" check prevents duplicates.
