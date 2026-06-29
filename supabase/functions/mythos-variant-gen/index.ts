@@ -353,7 +353,26 @@ Given a known CVE, identify its ROOT-CAUSE PATTERN, then return 3-5 novel varian
         try {
           const u = new URL(v.test_endpoint);
           u.searchParams.set(v._paramName, v.variant_payload);
-          const r = await fetch(u.toString(), { signal: AbortSignal.timeout(12000) });
+          const r = await fetch(u.toString(), {
+            signal: AbortSignal.timeout(12000),
+            redirect: "manual", // ← don't silently lose the payload
+          });
+
+          // Handle redirect manually:
+          if (r.status >= 300 && r.status < 400) {
+            const loc = r.headers.get("location");
+            if (loc) {
+              const dest = new URL(loc, u.toString());
+              dest.searchParams.set(v._paramName, v.variant_payload);
+              const r2 = await fetch(dest.toString(), { signal: AbortSignal.timeout(8000) });
+              const body = await r2.text();
+              const reflected = body.includes(v.variant_payload);
+              const errorSig = /SQL|syntax error|stack trace|TypeError|fatal error/i.test(body);
+              // use reflected/errorSig for isCand check below
+            }
+            continue;
+          }
+          const body = await r.text();
           const body = await r.text();
           const reflected = body.includes(v.variant_payload);
           const errorSig = /SQL|syntax error|stack trace|undefined|TypeError|fatal error/i.test(body);
