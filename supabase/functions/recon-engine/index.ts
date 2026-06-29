@@ -65,6 +65,177 @@ async function enumerateSubdomains(domain: string): Promise<string[]> {
   return [...subdomains];
 }
 
+// ── HackerTarget (free, no key) ──
+try {
+  const r = await safeFetch(`https://api.hackertarget.com/hostsearch/?q=${domain}`, {}, 8000);
+  if (r.ok) {
+    const text = await r.text();
+    for (const line of text.split("\n")) {
+      const sub = line.split(",")[0]?.trim().toLowerCase();
+      if (sub && sub.endsWith(domain) && sub !== domain) subdomains.add(sub);
+    }
+  }
+} catch {
+  /* skip */
+}
+
+// ── RapidDNS (free) ──
+try {
+  const r = await safeFetch(`https://rapiddns.io/subdomain/${domain}?full=1`, {}, 8000);
+  if (r.ok) {
+    const text = await r.text();
+    const matches = text.matchAll(/<td>([a-z0-9.-]+\.[a-z]{2,})<\/td>/gi);
+    for (const m of matches) {
+      const sub = m[1].toLowerCase();
+      if (sub.endsWith(domain) && sub !== domain) subdomains.add(sub);
+    }
+  }
+} catch {
+  /* skip */
+}
+
+// ── CertSpotter (free, high accuracy) ──
+try {
+  const r = await safeFetch(
+    `https://api.certspotter.com/v1/issuances?domain=${domain}&include_subdomains=true&expand=dns_names`,
+    {},
+    10000,
+  );
+  if (r.ok) {
+    const data = await r.json();
+    for (const cert of data) {
+      for (const name of cert.dns_names || []) {
+        const clean = name.replace(/^\*\./, "").toLowerCase();
+        if (clean.endsWith(domain) && clean !== domain) subdomains.add(clean);
+      }
+    }
+  }
+} catch {
+  /* skip */
+}
+
+// ── DNS Brute Force with common wordlist ──
+const COMMON_SUBS = [
+  "www",
+  "mail",
+  "remote",
+  "blog",
+  "webmail",
+  "server",
+  "ns1",
+  "ns2",
+  "smtp",
+  "secure",
+  "vpn",
+  "m",
+  "shop",
+  "ftp",
+  "mail2",
+  "test",
+  "portal",
+  "api",
+  "dev",
+  "staging",
+  "admin",
+  "app",
+  "cdn",
+  "static",
+  "media",
+  "img",
+  "images",
+  "assets",
+  "upload",
+  "download",
+  "beta",
+  "alpha",
+  "demo",
+  "old",
+  "new",
+  "v2",
+  "v1",
+  "support",
+  "help",
+  "docs",
+  "wiki",
+  "status",
+  "monitor",
+  "dashboard",
+  "panel",
+  "login",
+  "auth",
+  "sso",
+  "oauth",
+  "account",
+  "accounts",
+  "my",
+  "user",
+  "users",
+  "cp",
+  "cpanel",
+  "whm",
+  "webdisk",
+  "autodiscover",
+  "autoconfig",
+  "imap",
+  "pop",
+  "pop3",
+  "exchange",
+  "owa",
+  "web",
+  "crm",
+  "erp",
+  "hr",
+  "intranet",
+  "internal",
+  "corp",
+  "office",
+  "backup",
+  "db",
+  "database",
+  "sql",
+  "mysql",
+  "mongo",
+  "redis",
+  "elastic",
+  "kibana",
+  "grafana",
+  "jenkins",
+  "gitlab",
+  "git",
+  "svn",
+  "jira",
+  "confluence",
+  "bitbucket",
+  "sonar",
+  "nexus",
+  "registry",
+  "docker",
+  "k8s",
+  "kubernetes",
+  "rancher",
+  "traefik",
+  "nginx",
+  "apache",
+  "proxy",
+  "lb",
+  "load",
+  "fw",
+];
+const dnsResults = await Promise.allSettled(
+  COMMON_SUBS.map(async (sub) => {
+    const fqdn = `${sub}.${domain}`;
+    try {
+      const r = await safeFetch(`https://${fqdn}`, { method: "HEAD", redirect: "manual" }, 3000);
+      if (r.status > 0) return fqdn;
+    } catch {
+      /* dead */
+    }
+    return null;
+  }),
+);
+for (const r of dnsResults) {
+  if (r.status === "fulfilled" && r.value) subdomains.add(r.value);
+}
 // ─── 1b. Google Dorking for Subdomain & Param Discovery ───
 
 const DORK_CATEGORIES = {
