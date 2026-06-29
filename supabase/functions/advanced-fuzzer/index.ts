@@ -166,29 +166,40 @@ async function fuzzEndpoint(
   vulnClass: string,
   payloads: string[],
   strategy: string,
+  knownParams?: string[],
 ): Promise<FuzzResult[]> {
   const results: FuzzResult[] = [];
 
   // Baseline
-  let baselineStatus = 0,
-    baselineLen = 0,
-    baselineMs = 0;
+  let baselineStatus = 0, baselineLen = 0, baselineMs = 0, baselineBody = "";
   try {
     const t0 = Date.now();
     const r = await safeFetch(url, { method: "GET", headers: { "User-Agent": "CyberScope-ProFuzz/1.0" } }, 5000);
     baselineMs = Date.now() - t0;
     baselineStatus = r.status;
-    baselineLen = (await r.text()).length;
+    baselineBody = await r.text();
+    baselineLen = baselineBody.length;
+
   } catch {
     /* ignore */
   }
 
   for (const payload of payloads) {
-    if (timeLeft() < 4000) break;
-    const sep = url.includes("?") ? "&" : "?";
-    // 🪤 stamp every payload with the proof token so a successful echo is verifiable
-    const stampedPayload = /CYBERSCOPE_PROVEN/.test(payload) ? payload : payload.replace(/alert\(1\)/g, `alert('${PROOF_TOKEN}')`);
-    const probeUrl = `${url}${sep}q=${encodeURIComponent(stampedPayload)}`;
+  if (timeLeft() < 4000) break;
+  const stampedPayload = /CYBERSCOPE_PROVEN/.test(payload) ? payload
+    : payload.replace(/alert\([^)]*\)/g, `alert('${PROOF_TOKEN}')`);
+
+  // Inject into EVERY known parameter, not just hardcoded "q"
+  const urlObj = new URL(url);
+  const existingParams = [...urlObj.searchParams.keys()];
+  const injectParams = existingParams.length > 0 ? existingParams
+    : (knownParams && knownParams.length > 0) ? knownParams
+    : ["q", "id", "search", "page", "url", "redirect", "file", "path", "input", "name", "query", "s"];
+
+  for (const injectParam of injectParams.slice(0, 5)) {
+    const u = new URL(url);
+    u.searchParams.set(injectParam, stampedPayload);
+    const probeUrl = u.toString();
     try {
       const t0 = Date.now();
       const r = await safeFetch(probeUrl, { method: "GET", headers: { "User-Agent": "CyberScope-ProFuzz/1.0" } }, 5000);
@@ -204,7 +215,10 @@ async function fuzzEndpoint(
       const bodyAnomaly = delta > 0.3;
       // 🔥 EXPLOITED tier — reflected payload appears un-encoded in body (deterministic proof)
       const isXssClass = /xss/i.test(vulnClass);
-      const reflectedRaw = isXssClass && stampedPayload.length > 6 && body.includes(stampedPayload);
+      const reflectedRaw = isXssClass
+     && stampedPayload.length > 6
+     && body.includes(stampedPayload)
+     && !baselineBody.includes(stampedPayload);  // ← critical false-positive guard
       const errLeak = /SQL syntax|ORA-\d+|MySQL|PostgreSQL|stack trace|Traceback|System\.Data\.SqlClient/i.test(body);
       const anomaly = timeAnomaly || statusAnomaly || bodyAnomaly || errLeak || reflectedRaw;
       const signal: FuzzResult["signal"] = reflectedRaw || errLeak ? "high" : anomaly ? "medium" : "none";
@@ -477,9 +491,9 @@ Deno.serve(async (req) => {
 
     const { data: endpoints } = await db
       .from("discovered_endpoints")
-      .select("url, method")
+     .select("url, method, parameters")
       .eq("target_id", targetId)
-      .limit(25);
+      .limit(250);
     if (!endpoints || endpoints.length === 0) {
       return new Response(JSON.stringify({ ok: false, error: "no endpoints — run recon first" }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -495,13 +509,15 @@ Deno.serve(async (req) => {
 
     const allResults: FuzzResult[] = [];
     const summary: Record<string, { total: number; anomalies: number }> = {};
-
-    // Round 1: grammar-based payloads on first 4 endpoints
+    // Round 1: CVE template execution from intel_feeds
+    const cveReport = await testCveTemplates(db, targetId, endpoints);
+    // Round 2: grammar-based payloads on first 40 endpoints
     for (const ep of endpoints.slice(0, 10)) {
       if (timeLeft() < 6000) break;
       for (const [vc, payloads] of Object.entries(FUZZ_GRAMMARS)) {
         if (timeLeft() < 5000) break;
-        const r = await fuzzEndpoint(ep.url, vc, payloads.slice(0, 12), "grammar");
+        const epParams = Object.keys((ep as any).parameters || {});
+const r = await fuzzEndpoint(ep.url, vc, payloads.slice(0, 12), "grammar", epParams);
         allResults.push(...r);
         summary[vc] = summary[vc] || { total: 0, anomalies: 0 };
         summary[vc].total += r.length;
@@ -509,7 +525,7 @@ Deno.serve(async (req) => {
       }
     }
 
-    // Round 2: genetic mutation on top-signal payloads
+    // Round 3: genetic mutation on top-signal payloads
     const topSignals = allResults.filter((r) => r.signal === "high" || r.signal === "medium").slice(0, 15);
     for (const seed of topSignals) {
       if (timeLeft() < 5000) break;
@@ -518,8 +534,7 @@ Deno.serve(async (req) => {
       allResults.push(...r);
     }
 
-    // Round 3: CVE template execution from intel_feeds
-    const cveReport = await testCveTemplates(db, targetId, endpoints);
+    
 
     // ── Persist findings via central writer (auto-enqueues exploit-engine job)
     // Separate REFLECTED-RAW (deterministic proof = exploited tier) from heuristics.
