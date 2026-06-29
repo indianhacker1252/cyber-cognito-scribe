@@ -305,6 +305,9 @@ Deno.serve(async (req) => {
               { target_id: job.target_id, job_type: "ssrf_deep",       status: "queued", priority: 6, payload: {}, next_run_at: new Date(Date.now() + 60_000).toISOString() },   // Gap #8
               { target_id: job.target_id, job_type: "cve_exploit",     status: "queued", priority: 7, payload: {}, next_run_at: new Date(Date.now() + 30_000).toISOString() },   // Gap #9
               { target_id: job.target_id, job_type: "report_rewrite",  status: "queued", priority: 2, payload: {}, next_run_at: new Date(Date.now() + 300_000).toISOString() },  // Gap #10 (runs late)
+              // Phase-arbiter wiring
+              { target_id: job.target_id, job_type: "ai_strategist",   status: "queued", priority: 7, payload: { round: 1 }, next_run_at: new Date(Date.now() + 90_000).toISOString() },
+              { target_id: job.target_id, job_type: "exploit_watchdog",status: "queued", priority: 6, payload: {}, next_run_at: new Date(Date.now() + 180_000).toISOString() },
             ];
 
             if (tgt?.api_schema_url) {
