@@ -53,6 +53,11 @@ const JOB_ROUTES: Record<string, string> = {
   report_rewrite: "report-rewrite",     // Gap #10
   matrix_fuzz: "matrix-fuzzer",         // Gap #1 (auth-aware fuzz)
   form_attack: "form-attacker",
+  // Phase arbiter + AI strategist + watchdog
+  hypothesis_test: "hypothesis-test-runner",
+  ai_strategist: "ai-strategist",
+  exploit_watchdog: "exploit-watchdog",
+  phase_arbiter: "phase-arbiter",
 };
 
 
