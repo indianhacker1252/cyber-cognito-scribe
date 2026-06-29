@@ -64,7 +64,109 @@ async function enumerateSubdomains(domain: string): Promise<string[]> {
   }
   return [...subdomains];
 }
+// ADD: SecurityTrails-style passive DNS via free alternative (crt.sh full search)
+try {
+  // Try both %25.domain AND exact domain on crt.sh
+  const resp2 = await safeFetch(`https://crt.sh/?q=${encodeURIComponent(domain)}&output=json`, {
+    headers: { Accept: "application/json" },
+  });
+  if (resp2.ok) {
+    const data2 = await resp2.json();
+    for (const entry of data2) {
+      const names = (entry.name_value || "").split("\n");
+      for (const name of names) {
+        const clean = name.trim().toLowerCase().replace(/^\*\./, "");
+        if (clean.endsWith(`.${domain}`) || clean === domain) subdomains.add(clean);
+      }
+    }
+  }
+} catch {
+  /* skip */
+}
 
+// ADD: DNS brute force with Nike-specific + common wordlist
+const NIKE_COMMON_SUBS = [
+  "www",
+  "store",
+  "shop",
+  "api",
+  "app",
+  "m",
+  "mobile",
+  "cdn",
+  "static",
+  "media",
+  "img",
+  "images",
+  "assets",
+  "jobs",
+  "careers",
+  "blog",
+  "news",
+  "help",
+  "support",
+  "account",
+  "accounts",
+  "login",
+  "auth",
+  "sso",
+  "checkout",
+  "payment",
+  "pay",
+  "secure",
+  "ssl",
+  "admin",
+  "portal",
+  "dev",
+  "staging",
+  "beta",
+  "test",
+  "demo",
+  "api2",
+  "v2",
+  "v1",
+  "mail",
+  "smtp",
+  "ns1",
+  "ns2",
+  "ftp",
+  "vpn",
+  "remote",
+  "partners",
+  "wholesale",
+  "b2b",
+  "corporate",
+  "enterprise",
+  "analytics",
+  "tracking",
+  "tag",
+  "pixel",
+  "events",
+];
+
+const dnsChecks = await Promise.allSettled(
+  NIKE_COMMON_SUBS.map(async (sub) => {
+    const fqdn = `${sub}.${domain}`;
+    try {
+      const r = await safeFetch(
+        `https://${fqdn}`,
+        {
+          method: "HEAD",
+          redirect: "manual",
+          headers: { "User-Agent": "Mozilla/5.0" },
+        },
+        3000,
+      );
+      if (r.status > 0 && r.status !== 0) return fqdn;
+    } catch {
+      /* dead */
+    }
+    return null;
+  }),
+);
+for (const r of dnsChecks) {
+  if (r.status === "fulfilled" && r.value) subdomains.add(r.value);
+}
 // ── HackerTarget (free, no key) ──
 try {
   const r = await safeFetch(`https://api.hackertarget.com/hostsearch/?q=${domain}`, {}, 8000);
