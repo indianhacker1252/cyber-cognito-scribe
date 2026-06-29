@@ -541,7 +541,60 @@ const r = await fuzzEndpoint(ep.url, vc, payloads.slice(0, 12), "grammar", epPar
         summary[vc].anomalies += r.filter((x) => x.anomaly).length;
       }
     }
+// ── NEW Round 1.5: AI Brain — generate targeted payloads from tech stack + partial hits ──
+const partialHits = allResults.filter(r => r.signal === "medium" || r.anomaly).slice(0, 8);
+const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
 
+if (LOVABLE_API_KEY && partialHits.length > 0 && timeLeft() > 20000) {
+  try {
+    const aiResp = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${LOVABLE_API_KEY}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "google/gemini-2.5-flash",
+        max_tokens: 800,
+        messages: [{
+          role: "system",
+          content: `You are an elite offensive security engineer. Given partial HTTP anomalies from a fuzzer, generate 5-10 TARGETED follow-up payloads that exploit the specific behavior observed. Return ONLY a JSON array of strings — raw injectable payloads, no prose, no explanations.`
+        }, {
+          role: "user",
+          content: `Tech stack: ${JSON.stringify(tech)}
+WAF: ${wafDetected ? "YES" : "none"}
+Partial anomalies observed:
+${partialHits.map(h =>
+  `URL: ${h.url}\nParam: q\nPayload sent: ${h.payload}\nStatus: ${h.probeStatus} (baseline: ${h.baselineStatus})\nBody delta: ${h.bodyDeltaPct}%\nNotes: ${h.notes}`
+).join("\n---\n")}
+
+Generate targeted follow-up payloads that go DEEPER on these anomalies. Think like a bug bounty hunter. Return JSON array only: ["payload1","payload2",...]`
+        }],
+      }),
+      signal: AbortSignal.timeout(15000),
+    });
+
+    if (aiResp.ok) {
+      const aiData = await aiResp.json();
+      const raw = aiData.choices?.[0]?.message?.content?.trim() || "[]";
+      const cleaned = raw.replace(/```json|```/g, "").trim();
+      const aiPayloads: string[] = JSON.parse(cleaned).filter(
+        (p: unknown) => typeof p === "string" && p.length < 200
+      );
+
+      await db.from("scan_logs").insert({
+        target_id: targetId, log_type: "thought",
+        message: `🧠 AI Brain generated ${aiPayloads.length} targeted payloads from ${partialHits.length} anomalies`,
+      });
+
+      // Test AI-generated payloads on the anomalous endpoints
+      for (const hit of partialHits.slice(0, 5)) {
+        if (timeLeft() < 8000) break;
+        const baseUrl = hit.url.split("?")[0];
+        const epParams = Object.keys((endpoints?.find(e => e.url === baseUrl) as any)?.parameters || {});
+        const r = await fuzzEndpoint(baseUrl, hit.vulnClass, aiPayloads, "ai-brain", epParams);
+        allResults.push(...r);
+      }
+    }
+  } catch { /* AI unavailable — continue */ }
+}
     // Round 3: genetic mutation on top-signal payloads
     const topSignals = allResults.filter((r) => r.signal === "high" || r.signal === "medium").slice(0, 15);
     for (const seed of topSignals) {
