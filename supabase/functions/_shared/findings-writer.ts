@@ -267,17 +267,55 @@ export async function recordFinding(input: RecordFindingInput): Promise<RecordFi
       }).then(() => {}, () => {});
     }
 
-    // Auto-enqueue exploit-engine job (Section 1 of plan).
+    // Mark OWASP checklist row (best-effort, mapped by vuln_class/source).
+    try {
+      const checkKey = (input.vulnClass || input.category || input.source || "").toLowerCase();
+      // Lightweight map → check_name; if no match, skip (arbiter still counts category coverage).
+      const CHECK_MAP: Record<string, [string, string]> = {
+        "xss": ["A03_injection", "reflected_xss"],
+        "sqli": ["A03_injection", "sqli_error_based"],
+        "ssti": ["A03_injection", "ssti"],
+        "rce": ["A03_injection", "command_injection"],
+        "lfi": ["A03_injection", "command_injection"],
+        "xxe": ["A03_injection", "xxe"],
+        "ssrf": ["A10_ssrf", "ssrf_basic"],
+        "idor": ["A01_broken_access_control", "idor_numeric_id"],
+        "bac": ["A01_broken_access_control", "horizontal_priv_escalation"],
+        "jwt": ["A07_auth_failures", "jwt_weak_secret"],
+        "oauth": ["A07_auth_failures", "oauth_redirect"],
+        "redirect": ["A05_misconfig", "cors_misconfig"],
+        "secret-exposure": ["A02_crypto_failures", "exposed_secrets_in_js"],
+        "recon-secret": ["A02_crypto_failures", "exposed_secrets_in_js"],
+        "cve": ["A06_vuln_components", "known_cve_match"],
+        "prototype-pollution": ["A08_software_integrity", "prototype_pollution"],
+      };
+      for (const k of Object.keys(CHECK_MAP)) {
+        if (checkKey.includes(k)) {
+          const [cat2, cname] = CHECK_MAP[k];
+          await supa.from("owasp_checklist").upsert({
+            target_id: input.targetId, category: cat2, check_name: cname,
+            status: "evidence", last_run_at: new Date().toISOString(),
+          }, { onConflict: "target_id,category,check_name" }).then(() => {}, () => {});
+          break;
+        }
+      }
+    } catch { /* ignore */ }
+
+    // Auto-enqueue exploit-engine job — broader trigger.
     let exploitJobId: string | undefined;
+    const cls = (input.vulnClass || input.category || input.source || "").toLowerCase();
+    const HIGH_VALUE_CLASSES = ["xss", "sqli", "ssrf", "ssti", "rce", "lfi", "idor", "xxe", "redirect", "command_injection", "ldap_injection", "jwt", "oauth"];
+    const isHighValue = HIGH_VALUE_CLASSES.some(k => cls.includes(k));
     const shouldQueue = input.autoEnqueueExploit
       || ["high", "critical"].includes(input.severity)
-      || ["indicator", "suspected", "reflected"].includes(input.proofTier || "");
+      || ["indicator", "suspected", "reflected", "exploited"].includes(input.proofTier || "")
+      || isHighValue;
     if (shouldQueue) {
       try {
         const { data: job } = await supa.from("scan_jobs").insert({
           target_id: input.targetId,
           job_type: "exploit",
-          priority: input.severity === "critical" ? 9 : input.severity === "high" ? 8 : 5,
+          priority: input.severity === "critical" ? 9 : input.severity === "high" ? 8 : isHighValue ? 7 : 5,
           payload: {
             findingId: inserted.id,
             vuln_class: input.vulnClass || input.category || input.source,
