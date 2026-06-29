@@ -335,6 +335,16 @@ Deno.serve(async (req) => {
       results.push({ id: job.id, type: job.job_type, ok: out.ok, error: out.error });
     }
 
+    // Ping the phase arbiter for active targets so the pipeline keeps moving.
+    const activeTargets = [...new Set(jobs.map((j: any) => j.target_id).filter(Boolean))];
+    for (const t of activeTargets) {
+      fetch(`${FN_BASE}/phase-arbiter`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${SERVICE_KEY}` },
+        body: JSON.stringify({ targetId: t }),
+        signal: AbortSignal.timeout(3000),
+      }).catch(() => {});
+
     return new Response(JSON.stringify({ picked: jobs.length, results }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } });
   } catch (e) {
