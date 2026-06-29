@@ -5,7 +5,13 @@
 // public.owasp_coverage and findings into vulnerability_findings.
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { safeFetch, readBodySafe } from "../_shared/safe-fetch.ts";
-import { detectWaf, AdaptiveThrottle, encodingVariants, isStrictXssReflection } from "../_shared/waf-detect.ts";
+import {
+  detectWaf,
+  detectWafActive,
+  AdaptiveThrottle,
+  encodingVariants,
+  isStrictXssReflection,
+} from "../_shared/waf-detect.ts";
 import { recordFinding } from "../_shared/findings-writer.ts";
 
 const corsHeaders = {
@@ -266,7 +272,7 @@ Deno.serve(async (req) => {
     const authMode = authp ? authp.auth_type : "none";
 
     // 1) WAF probe up-front
-    const waf = await detectWaf(targetUrl);
+    const waf = await detectWafActive(targetUrl);
     const throttle = new AdaptiveThrottle(waf.detected);
     await db.from("scan_logs").insert({
       target_id: targetId,
