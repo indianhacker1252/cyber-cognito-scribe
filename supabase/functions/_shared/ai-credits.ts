@@ -1,6 +1,26 @@
 // Tiny helper to detect & propagate Lovable AI credit exhaustion.
 // Writes a single sentinel scan_log row that other functions can poll.
+// ADD at top of ai-credits.ts, after existing imports:
 
+// ── Global in-memory exhaustion flag (shared within single Deno isolate) ──
+// Prevents modules from re-trying after exhaustion within the same scan invocation
+let _globalExhausted = false;
+let _globalExhaustedAt = 0;
+const EXHAUSTION_COOLDOWN_MS = 15 * 60 * 1000; // 15 minutes
+
+export function setGlobalCreditExhausted() {
+  _globalExhausted = true;
+  _globalExhaustedAt = Date.now();
+}
+
+export function isGlobalCreditExhausted(): boolean {
+  if (!_globalExhausted) return false;
+  if (Date.now() - _globalExhaustedAt > EXHAUSTION_COOLDOWN_MS) {
+    _globalExhausted = false; // reset after cooldown
+    return false;
+  }
+  return true;
+}
 export class AiCreditsExhaustedError extends Error {
   status: number = 402;
   constructor(msg = "AI credits exhausted", status = 402) {
@@ -35,7 +55,9 @@ export async function markCreditsExhausted(
         until: new Date(Date.now() + 10 * 60_000).toISOString(),
       },
     });
-  } catch { /* best-effort */ }
+  } catch {
+    /* best-effort */
+  }
 }
 
 /** Return true if a credit-exhaustion sentinel was written for this target in the last `minutes` minutes. */
