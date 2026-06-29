@@ -2,6 +2,7 @@
 // All scanner modules MUST go through this so nothing gets dropped from the
 // global findings queue (Part A of the plan).
 import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { buildDedupKey, inferParam } from "./dedup-key.ts";
 
 const MAX_RAW = 32 * 1024; // 32 KB cap on raw req/resp blobs
 
