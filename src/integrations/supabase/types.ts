@@ -517,6 +517,60 @@ export type Database = {
           },
         ]
       }
+      attack_hypotheses: {
+        Row: {
+          asset_host: string | null
+          created_at: string
+          endpoint_url: string | null
+          expected_proof: string | null
+          finding_id: string | null
+          hypothesis: string
+          id: string
+          method: string | null
+          mutation: Json
+          result: Json | null
+          round: number
+          status: string
+          target_id: string
+          updated_at: string
+          vuln_class: string | null
+        }
+        Insert: {
+          asset_host?: string | null
+          created_at?: string
+          endpoint_url?: string | null
+          expected_proof?: string | null
+          finding_id?: string | null
+          hypothesis: string
+          id?: string
+          method?: string | null
+          mutation?: Json
+          result?: Json | null
+          round?: number
+          status?: string
+          target_id: string
+          updated_at?: string
+          vuln_class?: string | null
+        }
+        Update: {
+          asset_host?: string | null
+          created_at?: string
+          endpoint_url?: string | null
+          expected_proof?: string | null
+          finding_id?: string | null
+          hypothesis?: string
+          id?: string
+          method?: string | null
+          mutation?: Json
+          result?: Json | null
+          round?: number
+          status?: string
+          target_id?: string
+          updated_at?: string
+          vuln_class?: string | null
+        }
+        Relationships: []
+      }
       auth_profiles: {
         Row: {
           auth_type: string
@@ -2105,6 +2159,45 @@ export type Database = {
         }
         Relationships: []
       }
+      owasp_checklist: {
+        Row: {
+          category: string
+          check_name: string
+          created_at: string
+          evidence_count: number
+          id: string
+          last_run_at: string | null
+          metadata: Json
+          status: string
+          target_id: string
+          updated_at: string
+        }
+        Insert: {
+          category: string
+          check_name: string
+          created_at?: string
+          evidence_count?: number
+          id?: string
+          last_run_at?: string | null
+          metadata?: Json
+          status?: string
+          target_id: string
+          updated_at?: string
+        }
+        Update: {
+          category?: string
+          check_name?: string
+          created_at?: string
+          evidence_count?: number
+          id?: string
+          last_run_at?: string | null
+          metadata?: Json
+          status?: string
+          target_id?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
       owasp_coverage: {
         Row: {
           checks_run: number
@@ -2507,6 +2600,7 @@ export type Database = {
           id: string
           is_dead: boolean
           last_scanned_at: string | null
+          phase_state: Json
           scheme: string
           source: string
           target_id: string
@@ -2518,6 +2612,7 @@ export type Database = {
           id?: string
           is_dead?: boolean
           last_scanned_at?: string | null
+          phase_state?: Json
           scheme?: string
           source?: string
           target_id: string
@@ -2529,6 +2624,7 @@ export type Database = {
           id?: string
           is_dead?: boolean
           last_scanned_at?: string | null
+          phase_state?: Json
           scheme?: string
           source?: string
           target_id?: string
@@ -2662,6 +2758,54 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      scan_phase_state: {
+        Row: {
+          checks_attempted: number
+          checks_passed: number
+          completed_at: string | null
+          created_at: string
+          findings_count: number
+          id: string
+          last_heartbeat: string
+          metadata: Json
+          phase: string
+          started_at: string | null
+          status: string
+          target_id: string
+          updated_at: string
+        }
+        Insert: {
+          checks_attempted?: number
+          checks_passed?: number
+          completed_at?: string | null
+          created_at?: string
+          findings_count?: number
+          id?: string
+          last_heartbeat?: string
+          metadata?: Json
+          phase: string
+          started_at?: string | null
+          status?: string
+          target_id: string
+          updated_at?: string
+        }
+        Update: {
+          checks_attempted?: number
+          checks_passed?: number
+          completed_at?: string | null
+          created_at?: string
+          findings_count?: number
+          id?: string
+          last_heartbeat?: string
+          metadata?: Json
+          phase?: string
+          started_at?: string | null
+          status?: string
+          target_id?: string
+          updated_at?: string
+        }
+        Relationships: []
       }
       scan_usage: {
         Row: {
@@ -2904,6 +3048,7 @@ export type Database = {
           confidence_score: number | null
           created_at: string
           cvss_score: number | null
+          dedup_key: string | null
           description: string | null
           endpoint_id: string | null
           evidence: Json | null
@@ -2935,6 +3080,7 @@ export type Database = {
           confidence_score?: number | null
           created_at?: string
           cvss_score?: number | null
+          dedup_key?: string | null
           description?: string | null
           endpoint_id?: string | null
           evidence?: Json | null
@@ -2966,6 +3112,7 @@ export type Database = {
           confidence_score?: number | null
           created_at?: string
           cvss_score?: number | null
+          dedup_key?: string | null
           description?: string | null
           endpoint_id?: string | null
           evidence?: Json | null
@@ -3084,6 +3231,7 @@ export type Database = {
         Args: { _scope?: string; _target_id?: string }
         Returns: Json
       }
+      seed_owasp_checklist: { Args: { _target_id: string }; Returns: number }
       target_is_exploit_authorized: {
         Args: { _target_id: string }
         Returns: boolean

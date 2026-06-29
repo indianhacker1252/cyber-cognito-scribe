@@ -53,6 +53,11 @@ const JOB_ROUTES: Record<string, string> = {
   report_rewrite: "report-rewrite",     // Gap #10
   matrix_fuzz: "matrix-fuzzer",         // Gap #1 (auth-aware fuzz)
   form_attack: "form-attacker",
+  // Phase arbiter + AI strategist + watchdog
+  hypothesis_test: "hypothesis-test-runner",
+  ai_strategist: "ai-strategist",
+  exploit_watchdog: "exploit-watchdog",
+  phase_arbiter: "phase-arbiter",
 };
 
 
@@ -88,6 +93,10 @@ const ACK_TIMEOUT_MS: Record<string, number> = {
   report_rewrite: 20000,
   matrix_fuzz: 20000,
   form_attack: 15000,
+  hypothesis_test: 15000,
+  ai_strategist: 10000,
+  exploit_watchdog: 10000,
+  phase_arbiter: 8000,
 };
 
 const DEFAULT_TIMEOUT_MS = 45000;
@@ -269,6 +278,15 @@ Deno.serve(async (req) => {
           status: "done", completed_at: new Date().toISOString(), result: out.result || {},
         }).eq("id", job.id);
 
+        // Mark recon phase complete so the arbiter can advance the pipeline.
+        if (job.job_type === "recon") {
+          await supa.from("scan_phase_state").upsert({
+            target_id: job.target_id, phase: "recon", status: "complete",
+            completed_at: new Date().toISOString(), last_heartbeat: new Date().toISOString(),
+          }, { onConflict: "target_id,phase" }).then(() => {}, () => {});
+          await supa.rpc("seed_owasp_checklist", { _target_id: job.target_id }).then(() => {}, () => {});
+        }
+
         // ── Post-phase fan-out: ensure the chain keeps moving even if a
         // module forgets to enqueue the next stage. Idempotent: scan_jobs
         // unique index + per-type "running" check prevents duplicates.
@@ -296,6 +314,9 @@ Deno.serve(async (req) => {
               { target_id: job.target_id, job_type: "ssrf_deep",       status: "queued", priority: 6, payload: {}, next_run_at: new Date(Date.now() + 60_000).toISOString() },   // Gap #8
               { target_id: job.target_id, job_type: "cve_exploit",     status: "queued", priority: 7, payload: {}, next_run_at: new Date(Date.now() + 30_000).toISOString() },   // Gap #9
               { target_id: job.target_id, job_type: "report_rewrite",  status: "queued", priority: 2, payload: {}, next_run_at: new Date(Date.now() + 300_000).toISOString() },  // Gap #10 (runs late)
+              // Phase-arbiter wiring
+              { target_id: job.target_id, job_type: "ai_strategist",   status: "queued", priority: 7, payload: { round: 1 }, next_run_at: new Date(Date.now() + 90_000).toISOString() },
+              { target_id: job.target_id, job_type: "exploit_watchdog",status: "queued", priority: 6, payload: {}, next_run_at: new Date(Date.now() + 180_000).toISOString() },
             ];
 
             if (tgt?.api_schema_url) {
@@ -324,6 +345,17 @@ Deno.serve(async (req) => {
         }).catch(() => {});
       }
       results.push({ id: job.id, type: job.job_type, ok: out.ok, error: out.error });
+    }
+
+    // Ping the phase arbiter for active targets so the pipeline keeps moving.
+    const activeTargets = [...new Set(jobs.map((j: any) => j.target_id).filter(Boolean))];
+    for (const t of activeTargets) {
+      fetch(`${FN_BASE}/phase-arbiter`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${SERVICE_KEY}` },
+        body: JSON.stringify({ targetId: t }),
+        signal: AbortSignal.timeout(3000),
+      }).catch(() => {});
     }
 
     return new Response(JSON.stringify({ picked: jobs.length, results }),

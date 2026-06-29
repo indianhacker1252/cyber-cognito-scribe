@@ -2,6 +2,7 @@
 // All scanner modules MUST go through this so nothing gets dropped from the
 // global findings queue (Part A of the plan).
 import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { buildDedupKey, inferParam } from "./dedup-key.ts";
 
 const MAX_RAW = 32 * 1024; // 32 KB cap on raw req/resp blobs
 
@@ -136,11 +137,48 @@ export async function recordFinding(input: RecordFindingInput): Promise<RecordFi
       }
     }
 
-    // duplicate guard
-    if (input.payload) {
+    // ───── 401/403 noise filter ─────
+    // Generic auth-gate responses are not findings unless source is BAC/auth.
+    if (status === 401 || status === 403) {
+      const allowAuth = /bac|idor|auth|differential|priv|jwt|oauth|access/i
+        .test(`${input.source} ${input.category ?? ""} ${input.vulnClass ?? ""}`);
+      if (!allowAuth) {
+        return { ok: true, duplicate: true, error: `suppressed: ${status} auth gate` };
+      }
+    }
+
+    // ───── Response-similarity filter ─────
+    // For "signal"/"reflected" tiers, require either a status change OR ≥5% length delta
+    // OR a hard proof marker. Stops fuzzers that ping-spam an unchanged page.
+    if ((input.proofTier === "signal" || input.proofTier === "reflected" || !input.proofTier)) {
+      const ev = input.evidence as any;
+      const baselineLen = Number(ev?.baseline_length ?? ev?.baselineLength ?? 0);
+      const respLen = input.response?.body?.length ?? 0;
+      const baselineStatus = Number(ev?.baseline_status ?? ev?.baselineStatus ?? 0);
+      const hasHardMarker = /CYBERSCOPE_PROVEN|SPECTER_LLM_CONFIRMED/i.test(
+        (input.response?.body || "") + " " + (input.payload || "")
+      );
+      if (baselineLen > 0 && respLen > 0 && !hasHardMarker) {
+        const delta = Math.abs(respLen - baselineLen) / Math.max(baselineLen, respLen);
+        const statusChanged = baselineStatus > 0 && baselineStatus !== status;
+        if (!statusChanged && delta < 0.05) {
+          return { ok: true, duplicate: true, error: `suppressed: noise (Δ${(delta * 100).toFixed(1)}%)` };
+        }
+      }
+    }
+
+    // ───── Dedup key + DB-level unique guard ─────
+    const param = inferParam(input.request, input.evidence as Record<string, unknown>);
+    const dedupKey = buildDedupKey({
+      url: input.request?.url,
+      method: input.request?.method,
+      param,
+      vulnClass: input.vulnClass || input.category || input.source,
+      source: input.source,
+    });
+    {
       const { data: existing } = await supa.from("vulnerability_findings")
-        .select("id").eq("target_id", input.targetId).eq("source", input.source)
-        .eq("payload", input.payload).limit(1).maybeSingle();
+        .select("id").eq("target_id", input.targetId).eq("dedup_key", dedupKey).limit(1).maybeSingle();
       if (existing?.id) return { ok: true, findingId: existing.id, duplicate: true };
     }
 
@@ -167,11 +205,20 @@ export async function recordFinding(input: RecordFindingInput): Promise<RecordFi
       response_raw: responseRaw,
       response_diff: responseDiff,
       ai_verified: false,
+      dedup_key: dedupKey,
     };
 
     const { data: inserted, error } = await supa.from("vulnerability_findings")
       .insert(row).select("id").single();
-    if (error) return { ok: false, error: error.message };
+    if (error) {
+      // Unique violation = race; treat as duplicate, not error.
+      if (/duplicate key|unique/i.test(error.message)) {
+        const { data: row2 } = await supa.from("vulnerability_findings")
+          .select("id").eq("target_id", input.targetId).eq("dedup_key", dedupKey).maybeSingle();
+        if (row2?.id) return { ok: true, findingId: row2.id, duplicate: true };
+      }
+      return { ok: false, error: error.message };
+    }
 
     // replay row (best-effort)
     if (input.request) {
@@ -220,17 +267,55 @@ export async function recordFinding(input: RecordFindingInput): Promise<RecordFi
       }).then(() => {}, () => {});
     }
 
-    // Auto-enqueue exploit-engine job (Section 1 of plan).
+    // Mark OWASP checklist row (best-effort, mapped by vuln_class/source).
+    try {
+      const checkKey = (input.vulnClass || input.category || input.source || "").toLowerCase();
+      // Lightweight map → check_name; if no match, skip (arbiter still counts category coverage).
+      const CHECK_MAP: Record<string, [string, string]> = {
+        "xss": ["A03_injection", "reflected_xss"],
+        "sqli": ["A03_injection", "sqli_error_based"],
+        "ssti": ["A03_injection", "ssti"],
+        "rce": ["A03_injection", "command_injection"],
+        "lfi": ["A03_injection", "command_injection"],
+        "xxe": ["A03_injection", "xxe"],
+        "ssrf": ["A10_ssrf", "ssrf_basic"],
+        "idor": ["A01_broken_access_control", "idor_numeric_id"],
+        "bac": ["A01_broken_access_control", "horizontal_priv_escalation"],
+        "jwt": ["A07_auth_failures", "jwt_weak_secret"],
+        "oauth": ["A07_auth_failures", "oauth_redirect"],
+        "redirect": ["A05_misconfig", "cors_misconfig"],
+        "secret-exposure": ["A02_crypto_failures", "exposed_secrets_in_js"],
+        "recon-secret": ["A02_crypto_failures", "exposed_secrets_in_js"],
+        "cve": ["A06_vuln_components", "known_cve_match"],
+        "prototype-pollution": ["A08_software_integrity", "prototype_pollution"],
+      };
+      for (const k of Object.keys(CHECK_MAP)) {
+        if (checkKey.includes(k)) {
+          const [cat2, cname] = CHECK_MAP[k];
+          await supa.from("owasp_checklist").upsert({
+            target_id: input.targetId, category: cat2, check_name: cname,
+            status: "evidence", last_run_at: new Date().toISOString(),
+          }, { onConflict: "target_id,category,check_name" }).then(() => {}, () => {});
+          break;
+        }
+      }
+    } catch { /* ignore */ }
+
+    // Auto-enqueue exploit-engine job — broader trigger.
     let exploitJobId: string | undefined;
+    const cls = (input.vulnClass || input.category || input.source || "").toLowerCase();
+    const HIGH_VALUE_CLASSES = ["xss", "sqli", "ssrf", "ssti", "rce", "lfi", "idor", "xxe", "redirect", "command_injection", "ldap_injection", "jwt", "oauth"];
+    const isHighValue = HIGH_VALUE_CLASSES.some(k => cls.includes(k));
     const shouldQueue = input.autoEnqueueExploit
       || ["high", "critical"].includes(input.severity)
-      || ["indicator", "suspected", "reflected"].includes(input.proofTier || "");
+      || ["indicator", "suspected", "reflected", "exploited"].includes(input.proofTier || "")
+      || isHighValue;
     if (shouldQueue) {
       try {
         const { data: job } = await supa.from("scan_jobs").insert({
           target_id: input.targetId,
           job_type: "exploit",
-          priority: input.severity === "critical" ? 9 : input.severity === "high" ? 8 : 5,
+          priority: input.severity === "critical" ? 9 : input.severity === "high" ? 8 : isHighValue ? 7 : 5,
           payload: {
             findingId: inserted.id,
             vuln_class: input.vulnClass || input.category || input.source,
