@@ -62,13 +62,19 @@ Output ONLY a JSON array of hypothesis objects. No prose.`;
     if (!m) return [];
     const arr = JSON.parse(m[0]);
     return Array.isArray(arr) ? arr.slice(0, 15) : [];
-  } catch { return []; }
+  } catch {
+    return [];
+  }
 }
 
 async function strategize(db: any, targetId: string, round: number) {
   const [{ data: assets }, { data: findings }, { data: tgt }, { data: oob }] = await Promise.all([
     db.from("scan_assets").select("host,base_url,source").eq("target_id", targetId).limit(50),
-    db.from("vulnerability_findings").select("vuln_class,finding_type,severity,affected_url,proof_tier").eq("target_id", targetId).limit(80),
+    db
+      .from("vulnerability_findings")
+      .select("vuln_class,finding_type,severity,affected_url,proof_tier")
+      .eq("target_id", targetId)
+      .limit(80),
     db.from("target_workspaces").select("domain,waf_profile").eq("id", targetId).maybeSingle(),
     db.from("oob_callbacks").select("id", { count: "exact", head: true }).eq("target_id", targetId),
   ]);
@@ -76,14 +82,20 @@ async function strategize(db: any, targetId: string, round: number) {
   const techStack: Record<string, string> = {};
   // Best-effort: pull most-recent tech from scan_logs
   try {
-    const { data: techLogs } = await db.from("scan_logs")
-      .select("metadata").eq("target_id", targetId).eq("log_type", "info")
-      .order("created_at", { ascending: false }).limit(20);
+    const { data: techLogs } = await db
+      .from("scan_logs")
+      .select("metadata")
+      .eq("target_id", targetId)
+      .eq("log_type", "info")
+      .order("created_at", { ascending: false })
+      .limit(20);
     for (const t of techLogs || []) {
       const m = t.metadata as any;
       if (m?.tech) Object.assign(techStack, m.tech);
     }
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
 
   const ctx = {
     assets: assets || [],
@@ -95,16 +107,24 @@ async function strategize(db: any, targetId: string, round: number) {
 
   const hyps = await generateHypotheses(ctx);
   if (!hyps.length) {
-    await db.from("scan_logs").insert({
-      target_id: targetId, log_type: "warn",
-      message: `🧠 ai-strategist round ${round}: no hypotheses generated (AI gateway empty/error)`,
-      metadata: { kind: "ai_strategist_empty", round },
-    }).then(() => {}, () => {});
+    await db
+      .from("scan_logs")
+      .insert({
+        target_id: targetId,
+        log_type: "warn",
+        message: `🧠 ai-strategist round ${round}: no hypotheses generated (AI gateway empty/error)`,
+        metadata: { kind: "ai_strategist_empty", round },
+      })
+      .then(
+        () => {},
+        () => {},
+      );
     return { generated: 0 };
   }
 
-  const rows = hyps.map(h => ({
-    target_id: targetId, round,
+  const rows = hyps.map((h) => ({
+    target_id: targetId,
+    round,
     asset_host: h.asset_host || null,
     endpoint_url: h.endpoint_url || null,
     method: h.method || "GET",
@@ -114,21 +134,60 @@ async function strategize(db: any, targetId: string, round: number) {
     expected_proof: h.expected_proof || null,
     status: "pending",
   }));
-  const { data: inserted } = await db.from("attack_hypotheses").insert(rows).select("id");
+
+  const inserted = await db
+    .from("attack_hypotheses")
+    .insert(hyps.map((h) => ({ target_id: targetId, ...h, status: "pending", round })))
+    .select("id");
+
+  // Schedule each hypothesis as a job
+  const jobs = (inserted.data || []).map((h) => ({
+    target_id: targetId,
+    job_type: "hypothesis_test",
+    priority: 7,
+    status: "queued",
+    payload: { hypothesisId: h.id },
+    next_run_at: new Date().toISOString(),
+  }));
+  if (jobs.length) await db.from("scan_jobs").insert(jobs);
+
+  await db.from("scan_logs").insert({
+    target_id: targetId,
+    log_type: "action",
+    message: `🧠 AI Strategist queued ${jobs.length} hypothesis tests from round ${round}`,
+  });
 
   // Queue a hypothesis_test job per hypothesis
   const now = new Date().toISOString();
   const jobs = (inserted || []).map((row: any) => ({
-    target_id: targetId, job_type: "hypothesis_test", status: "queued",
-    priority: 7, payload: { hypothesisId: row.id }, next_run_at: now,
+    target_id: targetId,
+    job_type: "hypothesis_test",
+    status: "queued",
+    priority: 7,
+    payload: { hypothesisId: row.id },
+    next_run_at: now,
   }));
-  if (jobs.length) await db.from("scan_jobs").insert(jobs).then(() => {}, () => {});
+  if (jobs.length)
+    await db
+      .from("scan_jobs")
+      .insert(jobs)
+      .then(
+        () => {},
+        () => {},
+      );
 
-  await db.from("scan_logs").insert({
-    target_id: targetId, log_type: "action",
-    message: `🧠 ai-strategist round ${round}: ${rows.length} hypotheses generated`,
-    metadata: { kind: "ai_strategist", round, count: rows.length },
-  }).then(() => {}, () => {});
+  await db
+    .from("scan_logs")
+    .insert({
+      target_id: targetId,
+      log_type: "action",
+      message: `🧠 ai-strategist round ${round}: ${rows.length} hypotheses generated`,
+      metadata: { kind: "ai_strategist", round, count: rows.length },
+    })
+    .then(
+      () => {},
+      () => {},
+    );
 
   return { generated: rows.length };
 }
@@ -140,8 +199,10 @@ Deno.serve(async (req) => {
     const body = await req.json().catch(() => ({}));
     const { targetId, round = 1 } = body;
     if (!targetId) {
-      return new Response(JSON.stringify({ ok: false, error: "targetId required" }),
-        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      return new Response(JSON.stringify({ ok: false, error: "targetId required" }), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
     // Run in background to dodge gateway 150s timeout
     const work = strategize(db, targetId, round);
@@ -149,14 +210,20 @@ Deno.serve(async (req) => {
     if (typeof EdgeRuntime !== "undefined" && (EdgeRuntime as any).waitUntil) {
       // @ts-ignore
       (EdgeRuntime as any).waitUntil(work);
-      return new Response(JSON.stringify({ ok: true, accepted: true }),
-        { status: 202, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      return new Response(JSON.stringify({ ok: true, accepted: true }), {
+        status: 202,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
     const out = await work;
-    return new Response(JSON.stringify({ ok: true, ...out }),
-      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    return new Response(JSON.stringify({ ok: true, ...out }), {
+      status: 200,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   } catch (e) {
-    return new Response(JSON.stringify({ ok: false, error: e instanceof Error ? e.message : "err" }),
-      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    return new Response(JSON.stringify({ ok: false, error: e instanceof Error ? e.message : "err" }), {
+      status: 200,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   }
 });
