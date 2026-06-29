@@ -93,6 +93,10 @@ const ACK_TIMEOUT_MS: Record<string, number> = {
   report_rewrite: 20000,
   matrix_fuzz: 20000,
   form_attack: 15000,
+  hypothesis_test: 15000,
+  ai_strategist: 10000,
+  exploit_watchdog: 10000,
+  phase_arbiter: 8000,
 };
 
 const DEFAULT_TIMEOUT_MS = 45000;
