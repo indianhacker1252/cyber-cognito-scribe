@@ -10,7 +10,9 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-function db() { return createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!); }
+function db() {
+  return createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
+}
 
 interface BrowserConfig {
   mode: "cloud" | "self_hosted" | "disabled";
@@ -19,8 +21,12 @@ interface BrowserConfig {
 }
 
 async function loadConfig(): Promise<BrowserConfig> {
-  const { data } = await db().from("external_infra_config")
-    .select("*").eq("service", "browserless").eq("is_active", true).maybeSingle();
+  const { data } = await db()
+    .from("external_infra_config")
+    .select("*")
+    .eq("service", "browserless")
+    .eq("is_active", true)
+    .maybeSingle();
   if (data) {
     return {
       mode: ((data as any).mode as BrowserConfig["mode"]) || "cloud",
@@ -30,14 +36,99 @@ async function loadConfig(): Promise<BrowserConfig> {
   }
   // Fallback to env BROWSERLESS_API_KEY
   if (Deno.env.get("BROWSERLESS_API_KEY")) {
-    return { mode: "cloud", endpoint_url: "https://chrome.browserless.io",
-      auth_token: Deno.env.get("BROWSERLESS_API_KEY") };
+    return {
+      mode: "cloud",
+      endpoint_url: "https://chrome.browserless.io",
+      auth_token: Deno.env.get("BROWSERLESS_API_KEY"),
+    };
   }
   return { mode: "disabled" };
 }
+// When browserless is disabled, use a smarter static extraction fallback
+// that handles React SPAs by analyzing bundle JS files:
 
+async function spaFallbackExtraction(url: string): Promise<{ endpoints: string[]; forms: any[] }> {
+  const endpoints = new Set<string>();
+  const forms: any[] = [];
+
+  try {
+    // Fetch the main HTML
+    const r = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(10000) });
+    const html = await r.text();
+
+    // Extract JS bundle URLs
+    const jsBundles = [...html.matchAll(/src=["']([^"']+\.js[^"']*)['"]/gi)]
+      .map((m) => {
+        try {
+          return new URL(m[1], url).toString();
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean) as string[];
+
+    // Fetch and analyze each JS bundle for API routes
+    await Promise.allSettled(
+      jsBundles.slice(0, 5).map(async (bundleUrl) => {
+        try {
+          const br = await fetch(bundleUrl!, { signal: AbortSignal.timeout(8000) });
+          const code = await br.text();
+
+          // Extract API paths from React Router / Next.js patterns
+          const apiPaths = [
+            ...code.matchAll(/["'](\/api\/[^"'\s,)]{2,60})["']/g),
+            ...code.matchAll(/path:\s*["'](\/[^"'\s,)]{2,60})["']/g),
+            ...code.matchAll(/route\(['"](\/[^'"]+)['"]/g),
+            ...code.matchAll(/axios\.(get|post|put|delete)\(['"](\/[^'"]+)['"]/g),
+            ...code.matchAll(/fetch\(['"](\/[^'"]+)['"]/g),
+          ];
+
+          for (const m of apiPaths) {
+            const path = m[m.length - 1]; // last capture group = the path
+            if (path && path.length > 1 && !path.includes("*")) {
+              try {
+                endpoints.add(new URL(path, url).toString());
+              } catch {
+                /* skip */
+              }
+            }
+          }
+
+          // Extract form-like patterns (login, checkout etc.)
+          const formPaths = [...code.matchAll(/["'](\/(?:login|signup|checkout|account|register|auth)[^"']*)['"]/gi)];
+          for (const m of formPaths) {
+            try {
+              const ep = new URL(m[1], url).toString();
+              endpoints.add(ep);
+              forms.push({ action: ep, method: "POST", inputs: ["email", "password", "username"] });
+            } catch {
+              /* skip */
+            }
+          }
+        } catch {
+          /* skip bundle */
+        }
+      }),
+    );
+  } catch {
+    /* skip */
+  }
+
+  return { endpoints: [...endpoints].slice(0, 50), forms };
+}
 async function browserlessScrape(cfg: BrowserConfig, url: string): Promise<{ html: string; xhr: string[] } | null> {
-  if (cfg.mode === "disabled") return null;
+  if (cfg.mode === "disabled") {
+    // Don't give up — use SPA fallback extraction
+    const fallback = await spaFallbackExtraction(url);
+    return new Response(
+      JSON.stringify({
+        endpoints: fallback.endpoints,
+        forms: fallback.forms,
+        source: "spa-fallback",
+      }),
+      { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+    );
+  }
   const base = (cfg.endpoint_url || "https://chrome.browserless.io").replace(/\/$/, "");
   const tokenQS = cfg.auth_token ? `?token=${encodeURIComponent(cfg.auth_token)}` : "";
   try {
@@ -57,7 +148,9 @@ async function browserlessScrape(cfg: BrowserConfig, url: string): Promise<{ htm
     const data = await r.json();
     const html = data.data?.[0]?.results?.[0]?.html || "";
     return { html, xhr: [] };
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
 function extractEndpoints(html: string, baseUrl: string): string[] {
@@ -69,12 +162,20 @@ function extractEndpoints(html: string, baseUrl: string): string[] {
     const apiRx = /["'](\/api\/[^"'\s?#]+|https?:\/\/[^"'\s]+\/api\/[^"'\s?#]+)["']/g;
     let am;
     while ((am = apiRx.exec(code)) !== null) {
-      try { urls.add(new URL(am[1], baseUrl).toString()); } catch { /* skip */ }
+      try {
+        urls.add(new URL(am[1], baseUrl).toString());
+      } catch {
+        /* skip */
+      }
     }
     const gql = /["']([^"']*graphql[^"']*)["']/gi;
     let gm;
     while ((gm = gql.exec(code)) !== null) {
-      try { urls.add(new URL(gm[1], baseUrl).toString()); } catch { /* skip */ }
+      try {
+        urls.add(new URL(gm[1], baseUrl).toString());
+      } catch {
+        /* skip */
+      }
     }
   }
   const attrRx = /(?:href|action)\s*=\s*["']([^"']+)["']/gi;
@@ -82,7 +183,9 @@ function extractEndpoints(html: string, baseUrl: string): string[] {
     try {
       const u = new URL(m[1], baseUrl);
       if (u.search || /\.(php|aspx|jsp|json|xml)$/i.test(u.pathname)) urls.add(u.toString());
-    } catch { /* skip */ }
+    } catch {
+      /* skip */
+    }
   }
   return [...urls].slice(0, 40);
 }
@@ -91,14 +194,20 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   try {
     const { targetId, url } = await req.json();
-    if (!url) return new Response(JSON.stringify({ error: "url required" }),
-      { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    if (!url)
+      return new Response(JSON.stringify({ error: "url required" }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
 
     const cfg = await loadConfig();
-    let html = "", mode = "fallback-fetch";
+    let html = "",
+      mode = "fallback-fetch";
     const bl = await browserlessScrape(cfg, url);
-    if (bl) { html = bl.html; mode = `browserless:${cfg.mode}`; }
-    else {
+    if (bl) {
+      html = bl.html;
+      mode = `browserless:${cfg.mode}`;
+    } else {
       const r = await fetch(url, {
         headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 CyberScope-SPA/2.0" },
         signal: AbortSignal.timeout(10000),
@@ -109,15 +218,25 @@ Deno.serve(async (req) => {
     const endpoints = extractEndpoints(html, url);
 
     if (targetId && endpoints.length > 0) {
-      const rows = endpoints.map(u => ({
-        target_id: targetId, url: u, method: "GET", parameters: {}, status_code: null,
+      const rows = endpoints.map((u) => ({
+        target_id: targetId,
+        url: u,
+        method: "GET",
+        parameters: {},
+        status_code: null,
       }));
-      await db().from("discovered_endpoints").upsert(rows as any, { onConflict: "url" } as any).select();
-      await db().from("scan_logs").insert({
-        target_id: targetId, log_type: "info",
-        message: `🌐 Headless browser (${mode}) found ${endpoints.length} SPA endpoints`,
-        metadata: { mode, sample: endpoints.slice(0, 5) },
-      } as any);
+      await db()
+        .from("discovered_endpoints")
+        .upsert(rows as any, { onConflict: "url" } as any)
+        .select();
+      await db()
+        .from("scan_logs")
+        .insert({
+          target_id: targetId,
+          log_type: "info",
+          message: `🌐 Headless browser (${mode}) found ${endpoints.length} SPA endpoints`,
+          metadata: { mode, sample: endpoints.slice(0, 5) },
+        } as any);
     }
 
     return new Response(JSON.stringify({ mode, endpoints, htmlLength: html.length }), {
@@ -125,7 +244,8 @@ Deno.serve(async (req) => {
     });
   } catch (e) {
     return new Response(JSON.stringify({ error: e instanceof Error ? e.message : "err" }), {
-      status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
+      status: 500,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
 });
