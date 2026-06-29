@@ -344,6 +344,7 @@ Deno.serve(async (req) => {
         body: JSON.stringify({ targetId: t }),
         signal: AbortSignal.timeout(3000),
       }).catch(() => {});
+    }
 
     return new Response(JSON.stringify({ picked: jobs.length, results }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } });
