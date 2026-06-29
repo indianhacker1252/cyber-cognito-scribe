@@ -1,147 +1,102 @@
-## Why the last run "completed" with nothing tested
+# Plan — Make CyberScope Actually Work End-to-End
 
-I read the latest `scan_logs` and `mythos_runs`. Two distinct bugs are stacked on top of each other.
+The pipeline keeps "looking" complete but never delivers because six independent breakages compound each other. This plan fixes them in one coordinated pass, then proves it with a forced end-to-end run.
 
-### Bug 1 — every probe failed silently
+## Root causes (verified against current code + DB)
 
-Every fuzz line in Neural Log looks like:
+1. **Fan-out is one-directional.** `scan-job-worker`'s post-recon fan-out enqueues many modules, but most modules don't call each other. If `recon` partially fails (very common on http-only / WAF'd hosts), the chain never starts. There is no "phase complete → next phase" arbiter.
+2. **OWASP scan never finishes.** `owasp_coverage` is written per-finding only, not per-check. There is no per-category checklist that says "A01..A10 all attempted" → UI shows partial forever.
+3. **Exploit engine starves.** Findings only auto-enqueue exploit jobs when severity is high/critical OR proof tier is reflected/indicator/suspected. Matrix-fuzzer + heuristics mostly write `medium`/`signal`, so nothing reaches `exploit-engine`.
+4. **Duplicates + false positives.**
+  - `vulnerability_findings` has no DB-level unique constraint; the in-code dedupe key is `(target, source, payload)` which misses same-bug-different-payload and same-param-different-URL-noise.
+  - 3xx guard exists but per-param noise (status-only diffs, length jitter < 5%) still passes.
+5. **AI doesn't reason deep.** `triage-brain` is called per finding in isolation. No cross-finding correlation, no asset-graph context, no "hypothesis → mutate → re-fire" loop wired into the worker.
+6. **Subdomains ignored.** `expandScope` exists and `scan_assets` is populated, but most modules (recon-juicy, advanced-fuzzer, llm-attack-suite, ssrf-deep, form-attacker for non-discovered forms) still read `target_workspaces.domain` and attack only the apex.
 
-```
-✓ tested: error (0, 0b, 0ms)
-```
+## Fix plan (single coordinated implementation)
 
-`status=0`, `bodyLen=0`, `latencyMs=0` means `fetch()` threw before a byte hit the wire. The emitter is `supabase/functions/mythos-variant-test/index.ts` (`probe()`), which catches every error and returns `{ status: 0, bodyLen: 0, latencyMs: 0 }` **without logging the underlying message**. The target was `https://testaspnet.vulnweb.com/default.aspx` — that host only serves cleartext `http://`, so the TLS handshake throws and every variant test is a no-op. The orchestrator can't see this because the error string is dropped.
+### A. Phase arbiter (fixes #1, #2)
 
-### Bug 2 — pipeline stops at `advanced-modules`
+- New table `scan_phase_state(target_id, phase, status, checks_attempted, checks_passed, last_heartbeat)`.
+- New edge function `phase-arbiter`:
+  - Runs every minute via pg_cron + after every job completes.
+  - For each active target: checks which phases have heartbeat in last 5 min; if a phase is `running` with no heartbeat → mark `failed` and force-fan-out the next phase.
+  - Phases: `recon → discovery → owasp_matrix → deep_modules → exploit → chain → report`.
+- Each module writes a heartbeat row on start + on each batch. No more silent stalls.
 
-`mythos_runs` row for the last run: `status=complete`, `current_phase=advanced-modules`, `completed_at` is **before** the last "Advanced modules done" log. The orchestrator only writes `current_phase='done'` when it completes; something marked it complete early. Two contributing causes in `mythos-orchestrator/index.ts`:
+### B. OWASP completion ledger (fixes #2)
 
-- Line 226 — any phase string that doesn't match a branch falls through to `return { done: true }`. A single typo / unknown `nextPhase` quietly ends the whole run.
-- `parsePhase` requires exactly `^iter-(\d+)-(\w+)$`. Any malformed enqueue payload (e.g. extra suffix from a retry) hits the unknown-phase fallthrough and "completes" the run.
+- New table `owasp_checklist(target_id, category, check_name, status, evidence_count)` seeded with the full A01–A10 check list (≈45 rows per target).
+- Every detector writes `check_name` it covered. UI/Coverage page reads checklist → real %.
+- Arbiter refuses to mark `owasp_matrix` complete until ≥90% of checks attempted.
 
-So the run never reached `iter-1-chain → variant → debate → kill-chain → patch`. That's why "complete testing was not completed".
+### C. Exploit engine wiring (fixes #3)
 
----
+- In `findings-writer.ts`: enqueue exploit job whenever proof tier is `signal`+ AND `vulnClass` is in `{xss, sqli, ssrf, ssti, rce, lfi, idor, xxe, redirect}` regardless of severity.
+- Add `exploit-engine` watchdog: if a target has ≥1 finding and 0 exploit_runs after 3 min → force-enqueue top 10 findings.
+- Add `exploit_runs.confirmed_proof` link back to finding for UI.
 
-## Fixes
+### D. Dedupe + FP killer (fixes #4)
 
-### F1. Surface real fetch errors (and try the right scheme)
+- DB migration: `CREATE UNIQUE INDEX vf_dedup_idx ON vulnerability_findings (target_id, finding_type, COALESCE(affected_url,''), COALESCE(payload,''))` + switch insert to upsert(ignoreDuplicates).
+- In `findings-writer.ts`:
+  - Hash `(host, method, path-without-id-segments, param, vulnClass)` → `dedup_key` column; reject inserts with existing key in last 24h.
+  - Add response-similarity filter: require ≥5% length delta AND status change OR a proof marker. Status-only 200→200 with <2% delta = drop.
+  - Drop 401/403 findings unless source is BAC/auth.
 
-- In `mythos-variant-test/probe()` and `_shared/safeFetch.ts` (used by `advanced-fuzzer`, `matrix-fuzzer`, `vuln-scanner`):
-  - On `catch`, record `error.name` + `error.message` (e.g. `"TypeError: error trying to connect"`).
-  - Push it into `scan_logs.metadata.error` and into `mythos_variants.test_result.error` instead of dropping it.
-  - Add a one-shot scheme fallback: if `https://` fails with a TLS/connect error, retry once on `http://` and tag the response with `scheme_downgraded=true`. Emit a finding `MISSING_HTTPS` when that downgrade succeeds.
-- In `scope-expander.ts`: when ingesting a target URL, probe both `https://` and `http://` once and persist the reachable scheme on `scan_assets.scheme`. Every downstream module reads from there.
+### E. AI deep-reasoning loop (fixes #5)
 
-### F2. Make the orchestrator fail loud instead of silently completing
+- New function `ai-strategist` invoked by arbiter at end of `owasp_matrix`:
+  - Inputs: full asset graph, all findings, tech stack, WAF profile, OOB hits.
+  - Outputs: `attack_hypotheses` rows with target endpoint + mutation idea + expected proof marker.
+  - Each hypothesis becomes a `scan_job` of type `hypothesis_test` that runs the mutation and updates the hypothesis row with result. Feeds back to strategist for round 2 (max 3 rounds).
+- `llm-attack-suite` upgraded: receives hypothesis context, not just raw URL.
 
-In `mythos-orchestrator/index.ts`:
+### F. Subdomain fan-out (fixes #6)
 
-- Replace the unknown-phase branch (line 226-227) with:
-  ```ts
-  await log(`❌ Unknown phase '${phase}' — refusing to complete; marking failed`);
-  return { done: false, nextPhase: null, error: `unknown_phase:${phase}` };
-  ```
-  and update the caller (line 284) so `out.error` writes `status='failed'` + the reason to `thought_log` instead of `complete`.
-- Harden `parsePhase` to also accept `iter-N-chain-retryK` and log unknown phase strings to `scan_logs` with `log_type='error'`.
-- Add a guard in `scan-job-worker` for `job_type='mythos_step'`: if `payload.nextPhase` is empty or the run is not `running`, drop the job and log it.
-- Add a DB index on `scan_jobs(job_type, status, priority, created_at)` so the worker dispatches `mythos_step` ahead of bulk variant_tests (it's currently starved by the variant fan-out).
+- All scanners switched from reading `target_workspaces.domain` to iterating `scan_assets` via `expandScope`.
+- Affected: `recon-juicy`, `advanced-fuzzer`, `llm-attack-suite`, `ssrf-deep`, `cve-to-exploit`, `waf-evasion-engine`, `chain-exploit`, `form-attacker`.
+- Add per-asset `scan_assets.phase_state` so UI shows progress per subdomain.
 
-### F3. Wire the missing phases end-to-end
+### G. Proof + verification gate (clean reports)
 
-After `advanced-modules` the chain `iter-1-chain → iter-1-variant → iter-1-debate → kill-chain-synthesis → patch → done` must actually execute. The fix above unblocks it; I'll also add an integration assertion in `e2e-selftest`:
+- `validate-finding` mandatory before a finding becomes UI-visible `confirmed`. Anything below stays in "candidates" tab.
+- Two-engine corroboration: a finding needs hits from ≥2 of {matrix-fuzzer, advanced-fuzzer, llm-attack-suite, exploit-engine} OR a hard proof marker.
 
-- After triggering a run, poll `mythos_runs` for ≤180s and assert it traverses **all** of: `recon, template-runner, advanced-modules, iter-1-chain, iter-1-debate, kill-chain-synthesis, patch, done`. Missing any of them = test failure with the exact missing phase reported.
-- Purge all history  need select  error which is  not working
+### H. Verification run
 
----
+- After deploy, force-trigger fresh recon on the current workspace.
+- Poll `scan_phase_state` for 15 min and paste the assertion table (phase, status, checks_passed, findings, exploits, dedupes dropped).
+- If any phase stalls → arbiter logs the reason; we fix and re-run.
 
-## "Juicy findings" detector plan — what this tool must check
+## Deliverables in this single implementation
 
-The current pipeline is heavy on injection (XSS/SQLi/SSRF) but light on the **passive/recon-grade** findings that make a report look like XBOW/ProjectDiscovery output. I'll add one new edge function per group and wire them into `advanced-modules`.
+**Migrations:** `scan_phase_state`, `owasp_checklist` + seed, `vulnerability_findings.dedup_key` + unique index, `attack_hypotheses`, `scan_assets.phase_state`.
 
-### G1. Domain & DNS hygiene — `recon-dns-audit`
+**New edge functions:** `phase-arbiter`, `ai-strategist`, `hypothesis-test-runner`, `exploit-watchdog`.
 
-- Subdomain takeover candidates: CNAME → unclaimed S3/Heroku/GitHub Pages/Azure/Fastly (fingerprint table).
-- Dangling `NS`, dangling `MX`, wildcard A records pointing to parking pages.
-- SPF: missing, `+all`, >10 DNS lookups, duplicate records.
-- DKIM: weak key (<1024-bit), missing selector.
-- DMARC: missing, `p=none`, `rua` pointing at unowned domain.
-- CAA: missing or permissive (`issue ";"`).
-- DNSSEC: not signed, broken chain.
-- Expired/expiring domain (`whois expires_at < 30d`).
-- Zone transfer (`AXFR`) allowed.
+**Updated edge functions:** `findings-writer.ts` (dedupe + FP gate + broader exploit enqueue), `scan-job-worker` (heartbeat + arbiter dispatch), `recon-juicy`, `advanced-fuzzer`, `llm-attack-suite`, `ssrf-deep`, `cve-to-exploit`, `waf-evasion-engine`, `chain-exploit`, `form-attacker`, `triage-brain` (cross-finding context).
 
-### G2. TLS & certificate posture — `recon-tls-audit`
+**Cron:** 1-min `phase-arbiter`, 2-min `exploit-watchdog`, 10-min stuck-run sweeper (already exists, extend).
 
-- Cert expiring <30d, expired, self-signed, hostname mismatch, weak signature (SHA-1, MD5).
-- TLS 1.0/1.1 still accepted, RC4/3DES/EXPORT ciphers, no forward secrecy.
-- HSTS missing / no `includeSubDomains` / no `preload`.
-- Mixed-content references in HTML/JS.
-- OCSP stapling missing.
-- Cert SAN leaks internal hostnames (`*.corp`, `internal.`, staging hosts).
+**UI:** Coverage page reads `owasp_checklist`; Targets page shows per-asset progress; Findings page hides un-validated unless toggle.
 
-### G3. IP, port, ASN & infra exposure — `recon-infra-audit`
+## Technical notes
 
-- Resolve every asset, group by `/24` and ASN; flag cloud (AWS/GCP/Azure) origin behind WAF when WAF is bypassable (already handled — link findings).
-- For each unique IP, probe a fixed safe-port set [21, 22, 23, 25, 53, 80, 110, 143, 443, 445, 1433, 3306, 3389, 5432, 5601, 5900, 6379, 8080, 8443, 8888, 9000, 9200, 11211, 27017] with a 2 s connect timeout — never authenticate.
-- Banner-grab only on 80/443/8080/8443/9200/5601/9000/8888 and run service fingerprints:
-  - Open Elasticsearch / Kibana / Grafana / Prometheus / Jenkins / Kubernetes API / Docker daemon (`/v1.40/info`) / etcd / Consul / RabbitMQ mgmt / Redis (`INFO` over HTTP via WebSocket fallback).
-  - Open `.git/HEAD`, `.svn/entries`, `.DS_Store`, `.env`, `backup.zip`, `phpinfo.php`, `server-status`.
-- Reverse-DNS leakage (PTR exposes `prod-db-01.internal`).
+- Heartbeat: `UPDATE scan_phase_state SET last_heartbeat=now() WHERE …` once per asset per module, cheap.
+- Dedup key normalization strips numeric path segments (`/user/123` → `/user/:id`) and sorts query keys.
+- Hypothesis loop bounded: ≤3 rounds, ≤30 hypotheses/round, hard timeout 8 min total.
+- All new functions use `EdgeRuntime.waitUntil` + 200-ack pattern to avoid 150s gateway timeout.
 
-### G4. Protocol / header misconfigurations — `recon-protocol-audit`
+## Sequence
 
-- Missing or weak security headers: CSP (missing/`unsafe-inline`/`*`), X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy, COOP/COEP/CORP.
-- CORS: `Access-Control-Allow-Origin: *` with credentials, reflected-origin trust, null-origin trust.
-- Cookies: missing `Secure`/`HttpOnly`/`SameSite`, overly broad `Domain=`, long `Max-Age` for session cookies.
-- HTTP smuggling indicators (already in `desync-smuggling-v2` — link to this group).
-- HTTP methods enabled: `TRACE`, `TRACK`, `PUT`, `DELETE`, `CONNECT`, `OPTIONS *`.
-- HTTP/2 / HTTP/3 misconfig (server advertises `h2c` upgrade upstream, etc).
-- Open redirect on common params (`?next=`, `?redirect=`, `?url=`).
-- Cache poisoning primitives: unkeyed `X-Forwarded-Host`, `X-Original-URL`, fat GET.
+1. Migrations (single file).
+2. Shared helpers (`dedup-key.ts`, `phase-heartbeat.ts`, `asset-iterator.ts`).
+3. New functions (4).
+4. Update existing functions (11) to use helpers + iterate `scan_assets`.
+5. Cron schedule.
+6. Force fresh recon → paste results.
 
-### G5. Publicly exposed sensitive info — `recon-public-leaks`
+In recon it must check for  all posible information to report. 
 
-- Wayback / commoncrawl / GitHub code search for the apex domain → harvest historic URLs, secret-shaped strings, leaked `.env`, S3 URLs.
-- `robots.txt`, `sitemap.xml`, `.well-known/security.txt`, `humans.txt`, `crossdomain.xml`, `clientaccesspolicy.xml`.
-- Source-map files (`.js.map`) → reconstruct original paths and leaked API endpoints.
-- Inline JS regex sweep: `AKIA[0-9A-Z]{16}`, `AIza[0-9A-Za-z_\\-]{35}`, `xox[baprs]-`, `ghp_`, `glpat-`, JWT, RSA/PEM blocks, Stripe `sk_live_`, Slack webhooks, Twilio `SK[0-9a-f]{32}`, Mailgun, SendGrid, internal Slack URLs.
-- `package.json` / `composer.json` / `requirements.txt` if served → known-vuln versions (cross-check `exploitdb_index`).
-- Public S3/GCS/Azure-blob bucket discovery via subdomain naming (`{name}.s3.amazonaws.com`, `storage.googleapis.com/{name}-prod`) — check `ListBucket` allowed (read-only).
-- GitHub & GitLab dorks: `"domain.com" AKIA`, `"domain.com" password`, `"domain.com" filename:.env`.
-- Pastebin / Have-I-Been-Pwned breach indicator for the apex domain.
-
-### G6. Auth & session juicy bits — extend `auth-confusion-suite`
-
-- JWT: `alg:none`, weak HS256 secret (rockyou top-1k crack ≤5 s), `kid` path traversal, JWK injection.
-- OAuth: open `redirect_uri`, missing `state`, PKCE downgrade.
-- SAML: XML signature wrapping (passive detection only).
-- WebAuthn / TOTP downgrade paths.
-- Default credentials on discovered admin panels (Tomcat, Jenkins, Joomla, WordPress `/wp-login.php`) — single attempt with the documented vendor default only, never brute force.
-
-### G7. Cloud-metadata & SSRF chain enrichment — extend `matrix-fuzzer`
-
-- For every SSRF candidate, try the full metadata family: AWS IMDSv1, GCP, Azure, Alibaba, DigitalOcean, OpenStack — each with the right `Metadata-Flavor`/`X-Aws-Ec2-Metadata-Token` quirks.
-- Detect Kubernetes service-account token at `/var/run/secrets/...` via file-read SSRF.
-
-### G8. Reportability + scoring
-
-- Every detector writes to `vulnerability_findings` with:
-  - `finding_type` from a fixed enum so the dashboard can group "Domain / DNS / TLS / Infra / Protocol / Public-Leak / Auth / Cloud".
-  - `severity` + `cvss_score` from a lookup table (e.g. dangling CNAME = High 8.6, missing HSTS = Low 3.1).
-  - A one-paragraph `remediation` and a `poc` curl/dig command.
-- Add an `e2e-selftest` assertion: at least one finding from each of G1, G2, G3, G4, G5 against the canary target `testphp.vulnweb.com`.
-
----
-
-## Order of work
-
-1. F1 — surface fetch errors + scheme fallback + persist `scan_assets.scheme`.
-2. F2 — orchestrator fails loud on unknown phase, worker drops orphan jobs, scan_jobs priority index.
-3. F3 — `e2e-selftest` phase-traversal assertion (will fail until F1+F2 ship).
-4. G1 → G5 detectors (new edge functions, wired into `advanced-modules`).
-5. G6 + G7 enrichments to existing functions.
-6. G8 grouping + scoring + final E2E assertion.
-
-I'll implement F1+F2+F3 and G1-G8 in single implementation by checking every code and wiring.
+Approving this plan will execute all steps in one implementation pass and end with the proof run.
