@@ -297,6 +297,7 @@ Deno.serve(async (req) => {
               .select("api_schema_url").eq("id", job.target_id).maybeSingle();
             const nowIso = new Date().toISOString();
             const followups: any[] = [
+              { target_id: job.target_id, job_type: "subdomain_enum", status: "queued", priority: 9, payload: {}, next_run_at: nowIso },
               { target_id: job.target_id, job_type: "juicy",           status: "queued", priority: 7, payload: {}, next_run_at: nowIso },
               { target_id: job.target_id, job_type: "advanced_detect", status: "queued", priority: 7, payload: {}, next_run_at: nowIso },
               { target_id: job.target_id, job_type: "fuzz",            status: "queued", priority: 6, payload: {}, next_run_at: nowIso },
