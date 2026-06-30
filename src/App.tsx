@@ -21,6 +21,7 @@ import AttackVisualization from "./pages/AttackVisualization";
 import MythosResults from "./pages/MythosResults";
 import AppPackages from "./pages/AppPackages";
 import OwaspCoverage from "./pages/OwaspCoverage";
+import OwaspChecklist from "./pages/OwaspChecklist";
 import KillChains from "./pages/KillChains";
 import NotFound from "./pages/NotFound";
 
