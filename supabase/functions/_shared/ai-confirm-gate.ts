@@ -35,11 +35,7 @@ const HONEYPOT_SIGNATURES = [
 ];
 
 // Telltales that a server is echoing payloads as a trap (always reflects)
-const ALWAYS_REFLECT_MARKERS = [
-  "<script>alert('xss')</script>",
-  "' OR '1'='1",
-  "<?php phpinfo();",
-];
+const ALWAYS_REFLECT_MARKERS = ["<script>alert('xss')</script>", "' OR '1'='1", "<?php phpinfo();"];
 
 export interface ProofBundle {
   vulnClass: string;
@@ -55,11 +51,11 @@ export interface ProofBundle {
 
 export interface ConfirmResult {
   confirmed: boolean;
-  confidence: number;          // 0-100
+  confidence: number; // 0-100
   reasoning: string;
   honeypot: boolean;
   honeypotReason?: string;
-  proofType: string;           // e.g. "sql_error", "template_eval", "honeypot_trap", "no_proof"
+  proofType: string; // e.g. "sql_error", "template_eval", "honeypot_trap", "no_proof"
   recommendedAction: "insert_finding" | "insert_approval" | "drop_false_positive" | "drop_honeypot";
 }
 
@@ -90,7 +86,7 @@ export function detectHoneypot(bundle: ProofBundle): { isHoneypot: boolean; reas
 
   // Trap: server reflects every payload (always echoes well-known XSS/SQLi strings)
   const mutatedBody = bundle.mutated?.bodySnippet || "";
-  const reflectedCount = ALWAYS_REFLECT_MARKERS.filter(m => mutatedBody.includes(m)).length;
+  const reflectedCount = ALWAYS_REFLECT_MARKERS.filter((m) => mutatedBody.includes(m)).length;
   if (reflectedCount >= 2) {
     return { isHoneypot: true, reason: "server reflects multiple canonical attack strings — honeypot trap" };
   }
@@ -99,7 +95,10 @@ export function detectHoneypot(bundle: ProofBundle): { isHoneypot: boolean; reas
 }
 
 // ─── AI confirmation via Lovable AI Gateway ──────────────────────────
-async function aiConfirm(bundle: ProofBundle, honeypot: boolean): Promise<{ confidence: number; reasoning: string; proofType: string }> {
+async function aiConfirm(
+  bundle: ProofBundle,
+  honeypot: boolean,
+): Promise<{ confidence: number; reasoning: string; proofType: string }> {
   if (!LOVABLE_API_KEY) {
     return { confidence: 0, reasoning: "AI gateway unavailable — defaulting to drop", proofType: "no_ai" };
   }
@@ -132,26 +131,35 @@ Return your verdict via the tool.`;
       body: JSON.stringify({
         model: "google/gemini-2.5-flash",
         messages: [
-          { role: "system", content: "Strict bug-bounty triage. No guesses. Status-code-only signals = false positive." },
+          {
+            role: "system",
+            content: "Strict bug-bounty triage. No guesses. Status-code-only signals = false positive.",
+          },
           { role: "user", content: prompt },
         ],
-        tools: [{
-          type: "function",
-          function: {
-            name: "confirm_vuln",
-            description: "Confirm or reject the vulnerability finding",
-            parameters: {
-              type: "object",
-              properties: {
-                confidence: { type: "number", description: "0-100 confidence this is a real exploitable vuln" },
-                reasoning: { type: "string", description: "Specific reason — cite proof string or absence" },
-                proofType: { type: "string", description: "e.g. sql_error, template_eval, command_output, file_leak, reflected_sink, honeypot_trap, no_proof" },
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "confirm_vuln",
+              description: "Confirm or reject the vulnerability finding",
+              parameters: {
+                type: "object",
+                properties: {
+                  confidence: { type: "number", description: "0-100 confidence this is a real exploitable vuln" },
+                  reasoning: { type: "string", description: "Specific reason — cite proof string or absence" },
+                  proofType: {
+                    type: "string",
+                    description:
+                      "e.g. sql_error, template_eval, command_output, file_leak, reflected_sink, honeypot_trap, no_proof",
+                  },
+                },
+                required: ["confidence", "reasoning", "proofType"],
+                additionalProperties: false,
               },
-              required: ["confidence", "reasoning", "proofType"],
-              additionalProperties: false,
             },
           },
-        }],
+        ],
         tool_choice: { type: "function", function: { name: "confirm_vuln" } },
       }),
       signal: AbortSignal.timeout(15000),
@@ -170,7 +178,11 @@ Return your verdict via the tool.`;
       proofType: String(parsed.proofType || "unknown"),
     };
   } catch (e) {
-    return { confidence: 0, reasoning: `AI confirm failed: ${e instanceof Error ? e.message : "err"}`, proofType: "ai_exception" };
+    return {
+      confidence: 0,
+      reasoning: `AI confirm failed: ${e instanceof Error ? e.message : "err"}`,
+      proofType: "ai_exception",
+    };
   }
 }
 
@@ -205,6 +217,27 @@ export async function confirmFinding(bundle: ProofBundle): Promise<ConfirmResult
 
   // Step 3: AI confirmation
   const ai = await aiConfirm(bundle, false);
+
+  // ── Deterministic-proof fallback ──────────────────────────────────
+  // If the AI gateway is unavailable/exhausted/erroring, do NOT silently
+  // drop a finding that already has strong heuristic/deterministic proof
+  // (e.g. AWS IMDS leak, SQL error string, SSTI evaluation result — proof
+  // types supplied by callers like zeroday-engine that already diffed
+  // baseline vs mutated before calling this gate). Route it to manual
+  // review instead of discarding it outright, so AI-credit exhaustion
+  // (which happens mid-scan routinely) doesn't erase real signals.
+  const aiUnavailable = ["no_ai", "ai_error", "ai_no_output", "ai_exception"].includes(ai.proofType);
+  if (aiUnavailable && bundle.deterministicProof && bundle.proofType && bundle.proofType !== "none") {
+    return {
+      confirmed: false,
+      confidence: 70,
+      reasoning: `AI gateway unavailable (${ai.proofType}) — falling back to deterministic proof "${bundle.proofType}" supplied by caller. Routed to manual review, not auto-confirmed.`,
+      honeypot: false,
+      proofType: bundle.proofType,
+      recommendedAction: "insert_approval",
+    };
+  }
+
   const confirmed = ai.confidence >= 85;
   let action: ConfirmResult["recommendedAction"];
   if (ai.confidence >= 90) action = "insert_finding";
