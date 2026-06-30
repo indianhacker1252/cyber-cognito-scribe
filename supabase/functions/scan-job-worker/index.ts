@@ -58,6 +58,7 @@ const JOB_ROUTES: Record<string, string> = {
   ai_strategist: "ai-strategist",
   exploit_watchdog: "exploit-watchdog",
   phase_arbiter: "phase-arbiter",
+  subdomain_enum: "subdomain-enum",
 };
 
 
