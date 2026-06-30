@@ -54,6 +54,7 @@ const App = () => (
                     <Route path="/mythos" element={<MythosResults />} />
                     <Route path="/app-packages" element={<AppPackages />} />
                     <Route path="/coverage" element={<OwaspCoverage />} />
+                    <Route path="/owasp-checklist" element={<OwaspChecklist />} />
                     <Route path="/kill-chains" element={<KillChains />} />
                     <Route path="*" element={<NotFound />} />
                   </Routes>
