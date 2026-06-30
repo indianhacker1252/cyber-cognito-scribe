@@ -104,22 +104,37 @@ export async function recordFinding(input: RecordFindingInput): Promise<RecordFi
   const supa = db();
   try {
     // ───── 3xx redirect guard ─────
-    // A 301/302/303/307/308 response is almost always an auth/login redirect
-    // or framework-level routing — NOT a vulnerability. Drop unless the
-    // source is explicitly a redirect/smuggling/cache check that needs 3xx.
     const status = input.response?.status;
     if (status && status >= 300 && status < 400) {
-      const allow3xx = /open[-_ ]?redirect|smuggl|cache|host[-_ ]?header|desync|auth[-_ ]?bypass|redirect/i
+      const allow3xx = /smuggl|cache|host[-_ ]?header|desync/i
         .test(`${input.source} ${input.category ?? ""} ${input.vulnClass ?? ""} ${input.title}`);
       const loc = input.response?.headers?.["location"] || input.response?.headers?.["Location"] || "";
-      const looksLikeLogin = /login|signin|sign-in|auth|sso|oauth|account/i.test(loc);
+      const looksLikeLogin = /login|signin|sign-in|auth|sso|oauth|account|callback|redirect_uri/i.test(loc + " " + input.title);
       if (!allow3xx || looksLikeLogin) {
         return { ok: true, duplicate: true, error: `suppressed: ${status} redirect${loc ? ` → ${loc.slice(0, 80)}` : ""}` };
       }
     }
 
-    // ───── Hard proof gate (Gap #3) ─────
-    // 'exploited' tier requires a deterministic marker. Otherwise downgrade.
+    // ───── Open-redirect / auth redirect_uri FP guard ─────
+    // Same-origin Location (or to a known auth provider) is NOT an open redirect.
+    {
+      const cls = (input.vulnClass || input.category || "").toLowerCase();
+      const isRedirectCheck = /redirect|oauth/.test(cls) || /redirect[_\s-]?uri|open[_\s-]?redirect/i.test(input.title);
+      if (isRedirectCheck) {
+        const loc = input.response?.headers?.["location"] || input.response?.headers?.["Location"] || "";
+        const reqHost = (() => { try { return new URL(input.request?.url || "").host.toLowerCase(); } catch { return ""; } })();
+        const locHost = (() => { try { return new URL(loc, input.request?.url || "https://x").host.toLowerCase(); } catch { return ""; } })();
+        const apex = reqHost.split(".").slice(-2).join(".");
+        const sameOrigin = !!locHost && (locHost === reqHost || (!!apex && locHost.endsWith("." + apex)));
+        const trustedAuth = /accounts\.google|login\.microsoftonline|github\.com\/login|appleid\.apple|facebook\.com\/(login|dialog)|okta\.com|auth0\.com/i.test(locHost);
+        const proofMarker = /CYBERSCOPE_PROVEN|attacker\.com|evil\.com/i.test((input.response?.body || "") + " " + loc);
+        if ((sameOrigin || trustedAuth) && !proofMarker) {
+          return { ok: true, duplicate: true, error: `suppressed: same-origin/trusted auth redirect (${locHost})` };
+        }
+      }
+    }
+
+    // ───── Hard proof gate ─────
     let tier = input.proofTier ?? "signal";
     if (tier === "exploited") {
       const blob = JSON.stringify(input.evidence || {}) + " " + (input.response?.body || "") + " " + (input.payload || "");
@@ -132,24 +147,17 @@ export async function recordFinding(input: RecordFindingInput): Promise<RecordFi
         /you have an error in your sql syntax/i,
         /ORA-\d{4,5}|PG::SyntaxError|psql: ERROR|PostgreSQL.*ERROR/i,
       ];
-      if (!HARD_MARKERS.some(rx => rx.test(blob))) {
-        tier = "reflected";
-      }
+      if (!HARD_MARKERS.some(rx => rx.test(blob))) tier = "reflected";
     }
 
     // ───── 401/403 noise filter ─────
-    // Generic auth-gate responses are not findings unless source is BAC/auth.
     if (status === 401 || status === 403) {
       const allowAuth = /bac|idor|auth|differential|priv|jwt|oauth|access/i
         .test(`${input.source} ${input.category ?? ""} ${input.vulnClass ?? ""}`);
-      if (!allowAuth) {
-        return { ok: true, duplicate: true, error: `suppressed: ${status} auth gate` };
-      }
+      if (!allowAuth) return { ok: true, duplicate: true, error: `suppressed: ${status} auth gate` };
     }
 
     // ───── Response-similarity filter ─────
-    // For "signal"/"reflected" tiers, require either a status change OR ≥5% length delta
-    // OR a hard proof marker. Stops fuzzers that ping-spam an unchanged page.
     if ((input.proofTier === "signal" || input.proofTier === "reflected" || !input.proofTier)) {
       const ev = input.evidence as any;
       const baselineLen = Number(ev?.baseline_length ?? ev?.baselineLength ?? 0);
@@ -167,51 +175,64 @@ export async function recordFinding(input: RecordFindingInput): Promise<RecordFi
       }
     }
 
-    // ───── Dedup key + DB-level unique guard ─────
+    // ───── Dedup + Grouping (master + evidence rows, mythos-style) ─────
     const param = inferParam(input.request, input.evidence as Record<string, unknown>);
+    const vulnClass = (input.vulnClass || input.category || input.source || "generic").toLowerCase();
     const dedupKey = buildDedupKey({
-      url: input.request?.url,
-      method: input.request?.method,
-      param,
-      vulnClass: input.vulnClass || input.category || input.source,
-      source: input.source,
+      url: input.request?.url, method: input.request?.method,
+      param, vulnClass, source: input.source,
     });
-    {
-      const { data: existing } = await supa.from("vulnerability_findings")
-        .select("id").eq("target_id", input.targetId).eq("dedup_key", dedupKey).limit(1).maybeSingle();
-      if (existing?.id) return { ok: true, findingId: existing.id, duplicate: true };
-    }
-
+    let host = "";
+    try { host = new URL(input.request?.url || "").host.toLowerCase(); } catch { /* ignore */ }
+    const apex = host.split(".").slice(-2).join(".");
+    const groupKey = [apex || host || input.targetId, vulnClass, (param || "").toLowerCase()].join("|");
 
     const requestRaw = serializeRequest(input.request);
     const responseRaw = serializeResponse(input.response);
     const responseDiff = computeDiff(input.request, input.response);
 
-    const row = {
-      target_id: input.targetId,
-      endpoint_id: input.endpointId ?? null,
-      title: input.title,
-      severity: input.severity,
-      description: input.description ?? null,
-      payload: input.payload ?? null,
-      poc: input.poc ?? null,
-      proof_tier: tier,
+    // Existing master → append evidence and bump counters
+    const { data: master } = await supa.from("vulnerability_findings")
+      .select("id,evidence_count")
+      .eq("target_id", input.targetId)
+      .or(`group_key.eq."${groupKey}",dedup_key.eq."${dedupKey}"`)
+      .order("created_at", { ascending: true })
+      .limit(1).maybeSingle();
 
-      source: input.source,
-      finding_type: input.category ?? input.source,
-      hard_evidence: input.evidence ?? {},
-      evidence: input.evidence ?? {},
-      request_raw: requestRaw,
-      response_raw: responseRaw,
-      response_diff: responseDiff,
-      ai_verified: false,
-      dedup_key: dedupKey,
+    if (master?.id) {
+      await supa.from("finding_evidence").insert({
+        finding_id: master.id, target_id: input.targetId,
+        affected_url: input.request?.url ?? null,
+        method: input.request?.method ?? null,
+        param: param || null, payload: input.payload ?? null,
+        status_code: status ?? null,
+        request_raw: requestRaw, response_raw: responseRaw,
+        evidence: input.evidence ?? {},
+      }).then(() => {}, () => {});
+      await supa.from("vulnerability_findings").update({
+        evidence_count: (master.evidence_count || 1) + 1,
+        last_seen_at: new Date().toISOString(),
+      }).eq("id", master.id);
+      return { ok: true, findingId: master.id, duplicate: true };
+    }
+
+    const row = {
+      target_id: input.targetId, endpoint_id: input.endpointId ?? null,
+      title: input.title, severity: input.severity,
+      description: input.description ?? null, payload: input.payload ?? null,
+      poc: input.poc ?? null, proof_tier: tier,
+      source: input.source, finding_type: input.category ?? input.source,
+      hard_evidence: input.evidence ?? {}, evidence: input.evidence ?? {},
+      request_raw: requestRaw, response_raw: responseRaw, response_diff: responseDiff,
+      ai_verified: false, dedup_key: dedupKey, group_key: groupKey,
+      evidence_count: 1,
+      first_seen_at: new Date().toISOString(),
+      last_seen_at: new Date().toISOString(),
     };
 
     const { data: inserted, error } = await supa.from("vulnerability_findings")
       .insert(row).select("id").single();
     if (error) {
-      // Unique violation = race; treat as duplicate, not error.
       if (/duplicate key|unique/i.test(error.message)) {
         const { data: row2 } = await supa.from("vulnerability_findings")
           .select("id").eq("target_id", input.targetId).eq("dedup_key", dedupKey).maybeSingle();
