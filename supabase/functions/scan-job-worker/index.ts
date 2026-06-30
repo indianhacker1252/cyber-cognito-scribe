@@ -8,7 +8,9 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-function db() { return createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!); }
+function db() {
+  return createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
+}
 
 const FN_BASE = `${Deno.env.get("SUPABASE_URL")}/functions/v1`;
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -46,12 +48,12 @@ const JOB_ROUTES: Record<string, string> = {
   juicy: "recon-juicy",
   advanced_detect: "advanced-detectors",
   // Gap wiring (1-10)
-  differential: "differential-oracle",  // Gap #5
-  js_deep: "js-deep-expand",            // Gap #7
-  ssrf_deep: "ssrf-deep",               // Gap #8
-  cve_exploit: "cve-to-exploit",        // Gap #9
-  report_rewrite: "report-rewrite",     // Gap #10
-  matrix_fuzz: "matrix-fuzzer",         // Gap #1 (auth-aware fuzz)
+  differential: "differential-oracle", // Gap #5
+  js_deep: "js-deep-expand", // Gap #7
+  ssrf_deep: "ssrf-deep", // Gap #8
+  cve_exploit: "cve-to-exploit", // Gap #9
+  report_rewrite: "report-rewrite", // Gap #10
+  matrix_fuzz: "matrix-fuzzer", // Gap #1 (auth-aware fuzz)
   form_attack: "form-attacker",
   // Phase arbiter + AI strategist + watchdog
   hypothesis_test: "hypothesis-test-runner",
@@ -59,8 +61,10 @@ const JOB_ROUTES: Record<string, string> = {
   exploit_watchdog: "exploit-watchdog",
   phase_arbiter: "phase-arbiter",
   subdomain_enum: "subdomain-enum",
+  vuln_scan: "vuln-scanner",
+  authz_graph: "authz-grapher",
+  auth_replay: "auth-replay",
 };
-
 
 // Per-type dispatch timeout (ms). Long-running types return 202 quickly via
 // EdgeRuntime.waitUntil OR keep running on the backend — we only need to wait
@@ -108,23 +112,28 @@ async function runJob(job: any): Promise<{ ok: boolean; result?: any; error?: st
   // FIX: dedup fuzz jobs per target — prevents 10+ concurrent fuzzers on same target
   if (job.job_type === "fuzz" || job.job_type === "template") {
     const supa = db();
-    const { count } = await supa.from("scan_jobs")
+    const { count } = await supa
+      .from("scan_jobs")
       .select("id", { count: "exact", head: true })
       .eq("target_id", job.target_id)
       .eq("job_type", job.job_type)
       .eq("status", "running");
     if ((count ?? 0) > 0) {
       // Defer 30s instead of running duplicate
-      await supa.from("scan_jobs").update({
-        status: "queued",
-        next_run_at: new Date(Date.now() + 30_000).toISOString(),
-      }).eq("id", job.id);
+      await supa
+        .from("scan_jobs")
+        .update({
+          status: "queued",
+          next_run_at: new Date(Date.now() + 30_000).toISOString(),
+        })
+        .eq("id", job.id);
       return { ok: true, result: { deferred: true, reason: "duplicate_running" } };
     }
   }
   const timeoutMs = ACK_TIMEOUT_MS[job.job_type] ?? DEFAULT_TIMEOUT_MS;
   try {
-    const modePayload = job.job_type === "ollama_mutate" ? { mode: "ai" } : job.job_type === "local_tool" ? { mode: "tool" } : {};
+    const modePayload =
+      job.job_type === "ollama_mutate" ? { mode: "ai" } : job.job_type === "local_tool" ? { mode: "tool" } : {};
     const r = await fetch(`${FN_BASE}/${route}`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${SERVICE_KEY}` },
@@ -140,23 +149,41 @@ async function runJob(job: any): Promise<{ ok: boolean; result?: any; error?: st
           r.text(),
           new Promise<string>((resolve) => setTimeout(() => resolve("{}"), 2000)),
         ]).catch(() => "{}");
-        let body: any = text; try { body = JSON.parse(text); } catch { /* ignore */ }
+        let body: any = text;
+        try {
+          body = JSON.parse(text);
+        } catch {
+          /* ignore */
+        }
         return { ok: true, result: { acked: true, status: r.status, body } };
       }
       const text = await r.text();
-      let body: any = text; try { body = JSON.parse(text); } catch { /* ignore */ }
+      let body: any = text;
+      try {
+        body = JSON.parse(text);
+      } catch {
+        /* ignore */
+      }
       return { ok: true, result: body };
     }
     const text = await r.text().catch(() => "");
-    let body: any = text; try { body = JSON.parse(text); } catch { /* ignore */ }
+    let body: any = text;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      /* ignore */
+    }
     return { ok: false, error: `HTTP ${r.status}`, result: body };
   } catch (e) {
     const msg = e instanceof Error ? e.message : "err";
     // Treat ack-timeout on long-running types as soft-success: the function
     // likely accepted the work and is running in background; the next worker
     // tick won't re-dispatch because we mark it done.
-    if (/timed out/i.test(msg) && (job.job_type in ACK_TIMEOUT_MS)) {
-      return { ok: true, result: { acked: false, soft_success: true, note: "dispatch ack timed out — function continues in background" } };
+    if (/timed out/i.test(msg) && job.job_type in ACK_TIMEOUT_MS) {
+      return {
+        ok: true,
+        result: { acked: false, soft_success: true, note: "dispatch ack timed out — function continues in background" },
+      };
     }
     return { ok: false, error: msg };
   }
@@ -165,19 +192,26 @@ async function runJob(job: any): Promise<{ ok: boolean; result?: any; error?: st
 async function sweepStuck(supa: any) {
   // Any job marked running >10min is presumed dead → requeue or fail.
   const cutoff = new Date(Date.now() - 10 * 60_000).toISOString();
-  const { data: stuck } = await supa.from("scan_jobs")
+  const { data: stuck } = await supa
+    .from("scan_jobs")
     .select("id, attempts, max_attempts, target_id, job_type")
-    .eq("status", "running").lt("started_at", cutoff).limit(20);
+    .eq("status", "running")
+    .lt("started_at", cutoff)
+    .limit(20);
   for (const j of stuck || []) {
     const isFinal = j.attempts >= j.max_attempts;
-    await supa.from("scan_jobs").update({
-      status: isFinal ? "failed" : "queued",
-      error_message: "stuck >10min — auto-recovered",
-      next_run_at: new Date().toISOString(),
-      completed_at: isFinal ? new Date().toISOString() : null,
-    }).eq("id", j.id);
+    await supa
+      .from("scan_jobs")
+      .update({
+        status: isFinal ? "failed" : "queued",
+        error_message: "stuck >10min — auto-recovered",
+        next_run_at: new Date().toISOString(),
+        completed_at: isFinal ? new Date().toISOString() : null,
+      })
+      .eq("id", j.id);
     await supa.from("scan_logs").insert({
-      target_id: j.target_id, log_type: "warn",
+      target_id: j.target_id,
+      log_type: "warn",
       message: `⏱️ Job ${j.job_type} stuck >10min, ${isFinal ? "failed" : "requeued"}`,
       metadata: { kind: "stuck_job_sweep", job_id: j.id },
     });
@@ -198,12 +232,15 @@ Deno.serve(async (req) => {
     // 🛑 Defensive gate: drop mythos_step jobs whose run is not 'running'.
     // Stops legacy orchestrator code from cascading against dead/paused/failed runs.
     {
-      const { data: queuedSteps } = await supa.from("scan_jobs")
-        .select("id, payload").eq("status", "queued").eq("job_type", "mythos_step").limit(2000);
+      const { data: queuedSteps } = await supa
+        .from("scan_jobs")
+        .select("id, payload")
+        .eq("status", "queued")
+        .eq("job_type", "mythos_step")
+        .limit(2000);
       const runIds = [...new Set((queuedSteps || []).map((j: any) => j.payload?.runId).filter(Boolean))];
       if (runIds.length) {
-        const { data: liveRuns } = await supa.from("mythos_runs")
-          .select("id").in("id", runIds).eq("status", "running");
+        const { data: liveRuns } = await supa.from("mythos_runs").select("id").in("id", runIds).eq("status", "running");
         const liveSet = new Set((liveRuns || []).map((r: any) => r.id));
         const deadIds = (queuedSteps || []).filter((j: any) => !liveSet.has(j.payload?.runId)).map((j: any) => j.id);
         if (deadIds.length) {
@@ -214,23 +251,30 @@ Deno.serve(async (req) => {
     }
 
     // 🛑 Circuit breaker: if mythos_step queue depth is still pathological, nuke it.
-    const { count: mythosQueued } = await supa.from("scan_jobs")
+    const { count: mythosQueued } = await supa
+      .from("scan_jobs")
       .select("id", { count: "exact", head: true })
-      .eq("status", "queued").eq("job_type", "mythos_step");
+      .eq("status", "queued")
+      .eq("job_type", "mythos_step");
     if ((mythosQueued ?? 0) > 1000) {
-      await supa.from("scan_jobs").delete()
-        .eq("status", "queued").eq("job_type", "mythos_step");
+      await supa.from("scan_jobs").delete().eq("status", "queued").eq("job_type", "mythos_step");
       console.log(`circuit_breaker tripped: deleted ${mythosQueued} mythos_step jobs`);
     }
 
     const limit = 5;
-    const { data: jobs } = await supa.from("scan_jobs")
-      .select("*").eq("status", "queued").lte("next_run_at", new Date().toISOString())
-      .order("priority", { ascending: false }).order("created_at").limit(limit);
+    const { data: jobs } = await supa
+      .from("scan_jobs")
+      .select("*")
+      .eq("status", "queued")
+      .lte("next_run_at", new Date().toISOString())
+      .order("priority", { ascending: false })
+      .order("created_at")
+      .limit(limit);
 
     if (!jobs || jobs.length === 0) {
-      return new Response(JSON.stringify({ picked: 0, message: "no queued jobs" }),
-        { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      return new Response(JSON.stringify({ picked: 0, message: "no queued jobs" }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
     // Targets recently flagged as AI-exhausted → skip AI-heavy job types for 10min.
@@ -239,9 +283,12 @@ Deno.serve(async (req) => {
     const targetIds = [...new Set(jobs.map((j: any) => j.target_id).filter(Boolean))];
     if (targetIds.length) {
       const since = new Date(Date.now() - 10 * 60_000).toISOString();
-      const { data: sentinels } = await supa.from("scan_logs")
-        .select("target_id, metadata").in("target_id", targetIds)
-        .eq("log_type", "error").gte("created_at", since);
+      const { data: sentinels } = await supa
+        .from("scan_logs")
+        .select("target_id, metadata")
+        .in("target_id", targetIds)
+        .eq("log_type", "error")
+        .gte("created_at", since);
       for (const s of sentinels || []) {
         if ((s.metadata as any)?.kind === "ai_credits_exhausted") recentExhausted.add(s.target_id);
       }
@@ -250,42 +297,76 @@ Deno.serve(async (req) => {
     const results: any[] = [];
     for (const job of jobs) {
       if (recentExhausted.has(job.target_id) && aiHeavy.has(job.job_type)) {
-        await supa.from("scan_jobs").update({
-          status: "queued",
-          error_message: "deferred: AI credits exhausted",
-          next_run_at: new Date(Date.now() + 10 * 60_000).toISOString(),
-        }).eq("id", job.id);
+        await supa
+          .from("scan_jobs")
+          .update({
+            status: "queued",
+            error_message: "deferred: AI credits exhausted",
+            next_run_at: new Date(Date.now() + 10 * 60_000).toISOString(),
+          })
+          .eq("id", job.id);
         results.push({ id: job.id, type: job.job_type, deferred: true });
         continue;
       }
 
-      await supa.from("scan_jobs").update({
-        status: "running", started_at: new Date().toISOString(), attempts: job.attempts + 1,
-      }).eq("id", job.id);
+      await supa
+        .from("scan_jobs")
+        .update({
+          status: "running",
+          started_at: new Date().toISOString(),
+          attempts: job.attempts + 1,
+        })
+        .eq("id", job.id);
 
       const out = await runJob(job);
 
       // Hard-stop on AI credit exhaustion — write sentinel so other jobs/UI react.
       if (detectCreditExhaustion(out.result, out.error)) {
         await supa.from("scan_logs").insert({
-          target_id: job.target_id, log_type: "error",
+          target_id: job.target_id,
+          log_type: "error",
           message: `🪫 AI credits exhausted during ${job.job_type} — scan paused.`,
-          metadata: { kind: "ai_credits_exhausted", phase: job.job_type, job_id: job.id, until: new Date(Date.now() + 10 * 60_000).toISOString() },
+          metadata: {
+            kind: "ai_credits_exhausted",
+            phase: job.job_type,
+            job_id: job.id,
+            until: new Date(Date.now() + 10 * 60_000).toISOString(),
+          },
         });
       }
 
       if (out.ok) {
-        await supa.from("scan_jobs").update({
-          status: "done", completed_at: new Date().toISOString(), result: out.result || {},
-        }).eq("id", job.id);
+        await supa
+          .from("scan_jobs")
+          .update({
+            status: "done",
+            completed_at: new Date().toISOString(),
+            result: out.result || {},
+          })
+          .eq("id", job.id);
 
         // Mark recon phase complete so the arbiter can advance the pipeline.
         if (job.job_type === "recon") {
-          await supa.from("scan_phase_state").upsert({
-            target_id: job.target_id, phase: "recon", status: "complete",
-            completed_at: new Date().toISOString(), last_heartbeat: new Date().toISOString(),
-          }, { onConflict: "target_id,phase" }).then(() => {}, () => {});
-          await supa.rpc("seed_owasp_checklist", { _target_id: job.target_id }).then(() => {}, () => {});
+          await supa
+            .from("scan_phase_state")
+            .upsert(
+              {
+                target_id: job.target_id,
+                phase: "recon",
+                status: "complete",
+                completed_at: new Date().toISOString(),
+                last_heartbeat: new Date().toISOString(),
+              },
+              { onConflict: "target_id,phase" },
+            )
+            .then(
+              () => {},
+              () => {},
+            );
+          await supa.rpc("seed_owasp_checklist", { _target_id: job.target_id }).then(
+            () => {},
+            () => {},
+          );
         }
 
         // ── Post-phase fan-out: ensure the chain keeps moving even if a
@@ -293,58 +374,249 @@ Deno.serve(async (req) => {
         // unique index + per-type "running" check prevents duplicates.
         if (job.job_type === "recon") {
           try {
-            const { data: tgt } = await supa.from("target_workspaces")
-              .select("api_schema_url").eq("id", job.target_id).maybeSingle();
+            const { data: tgt } = await supa
+              .from("target_workspaces")
+              .select("api_schema_url")
+              .eq("id", job.target_id)
+              .maybeSingle();
             const nowIso = new Date().toISOString();
             const followups: any[] = [
-              { target_id: job.target_id, job_type: "subdomain_enum", status: "queued", priority: 9, payload: {}, next_run_at: nowIso },
-              { target_id: job.target_id, job_type: "juicy",           status: "queued", priority: 7, payload: {}, next_run_at: nowIso },
-              { target_id: job.target_id, job_type: "advanced_detect", status: "queued", priority: 7, payload: {}, next_run_at: nowIso },
-              { target_id: job.target_id, job_type: "fuzz",            status: "queued", priority: 6, payload: {}, next_run_at: nowIso },
-              { target_id: job.target_id, job_type: "llm_attack",      status: "queued", priority: 6, payload: {}, next_run_at: nowIso },
-              { target_id: job.target_id, job_type: "chain",           status: "queued", priority: 5, payload: {}, next_run_at: nowIso },
-              { target_id: job.target_id, job_type: "nvd_sync",        status: "queued", priority: 4, payload: { action: "relevance-check", targetId: job.target_id }, next_run_at: nowIso },
-              { target_id: job.target_id, job_type: "graphql",         status: "queued", priority: 6, payload: {}, next_run_at: nowIso },
-              { target_id: job.target_id, job_type: "jwt_attack",      status: "queued", priority: 6, payload: {}, next_run_at: nowIso },
-              { target_id: job.target_id, job_type: "waf_evasion",     status: "queued", priority: 9, payload: {}, next_run_at: nowIso },
-              { target_id: job.target_id, job_type: "chain_exploit",   status: "queued", priority: 5, payload: {}, next_run_at: new Date(Date.now() + 120_000).toISOString() },
+              {
+                target_id: job.target_id,
+                job_type: "subdomain_enum",
+                status: "queued",
+                priority: 9,
+                payload: {},
+                next_run_at: nowIso,
+              },
+              {
+                target_id: job.target_id,
+                job_type: "juicy",
+                status: "queued",
+                priority: 7,
+                payload: {},
+                next_run_at: nowIso,
+              },
+              {
+                target_id: job.target_id,
+                job_type: "advanced_detect",
+                status: "queued",
+                priority: 7,
+                payload: {},
+                next_run_at: nowIso,
+              },
+              {
+                target_id: job.target_id,
+                job_type: "fuzz",
+                status: "queued",
+                priority: 6,
+                payload: {},
+                next_run_at: nowIso,
+              },
+              {
+                target_id: job.target_id,
+                job_type: "llm_attack",
+                status: "queued",
+                priority: 6,
+                payload: {},
+                next_run_at: nowIso,
+              },
+              {
+                target_id: job.target_id,
+                job_type: "chain",
+                status: "queued",
+                priority: 5,
+                payload: {},
+                next_run_at: nowIso,
+              },
+              {
+                target_id: job.target_id,
+                job_type: "nvd_sync",
+                status: "queued",
+                priority: 4,
+                payload: { action: "relevance-check", targetId: job.target_id },
+                next_run_at: nowIso,
+              },
+              {
+                target_id: job.target_id,
+                job_type: "graphql",
+                status: "queued",
+                priority: 6,
+                payload: {},
+                next_run_at: nowIso,
+              },
+              {
+                target_id: job.target_id,
+                job_type: "jwt_attack",
+                status: "queued",
+                priority: 6,
+                payload: {},
+                next_run_at: nowIso,
+              },
+              {
+                target_id: job.target_id,
+                job_type: "waf_evasion",
+                status: "queued",
+                priority: 9,
+                payload: {},
+                next_run_at: nowIso,
+              },
+              {
+                target_id: job.target_id,
+                job_type: "chain_exploit",
+                status: "queued",
+                priority: 5,
+                payload: {},
+                next_run_at: new Date(Date.now() + 120_000).toISOString(),
+              },
               // Gap wiring fan-out (1-10):
-              { target_id: job.target_id, job_type: "js_deep",         status: "queued", priority: 8, payload: {}, next_run_at: nowIso },                                       // Gap #7
-              { target_id: job.target_id, job_type: "matrix_fuzz",     status: "queued", priority: 7, payload: {}, next_run_at: new Date(Date.now() + 30_000).toISOString() },   // Gap #1 (auth-aware)
-              { target_id: job.target_id, job_type: "form_attack",     status: "queued", priority: 7, payload: {}, next_run_at: new Date(Date.now() + 45_000).toISOString() },
-              { target_id: job.target_id, job_type: "differential",    status: "queued", priority: 6, payload: {}, next_run_at: new Date(Date.now() + 60_000).toISOString() },   // Gap #5
-              { target_id: job.target_id, job_type: "ssrf_deep",       status: "queued", priority: 6, payload: {}, next_run_at: new Date(Date.now() + 60_000).toISOString() },   // Gap #8
-              { target_id: job.target_id, job_type: "cve_exploit",     status: "queued", priority: 7, payload: {}, next_run_at: new Date(Date.now() + 30_000).toISOString() },   // Gap #9
-              { target_id: job.target_id, job_type: "report_rewrite",  status: "queued", priority: 2, payload: {}, next_run_at: new Date(Date.now() + 300_000).toISOString() },  // Gap #10 (runs late)
+              {
+                target_id: job.target_id,
+                job_type: "js_deep",
+                status: "queued",
+                priority: 8,
+                payload: {},
+                next_run_at: nowIso,
+              }, // Gap #7
+              {
+                target_id: job.target_id,
+                job_type: "matrix_fuzz",
+                status: "queued",
+                priority: 7,
+                payload: {},
+                next_run_at: new Date(Date.now() + 30_000).toISOString(),
+              }, // Gap #1 (auth-aware)
+              {
+                target_id: job.target_id,
+                job_type: "form_attack",
+                status: "queued",
+                priority: 7,
+                payload: {},
+                next_run_at: new Date(Date.now() + 45_000).toISOString(),
+              },
+              {
+                target_id: job.target_id,
+                job_type: "differential",
+                status: "queued",
+                priority: 6,
+                payload: {},
+                next_run_at: new Date(Date.now() + 60_000).toISOString(),
+              }, // Gap #5
+              {
+                target_id: job.target_id,
+                job_type: "ssrf_deep",
+                status: "queued",
+                priority: 6,
+                payload: {},
+                next_run_at: new Date(Date.now() + 60_000).toISOString(),
+              }, // Gap #8
+              {
+                target_id: job.target_id,
+                job_type: "cve_exploit",
+                status: "queued",
+                priority: 7,
+                payload: {},
+                next_run_at: new Date(Date.now() + 30_000).toISOString(),
+              }, // Gap #9
+              {
+                target_id: job.target_id,
+                job_type: "report_rewrite",
+                status: "queued",
+                priority: 2,
+                payload: {},
+                next_run_at: new Date(Date.now() + 300_000).toISOString(),
+              }, // Gap #10 (runs late)
               // Phase-arbiter wiring
-              { target_id: job.target_id, job_type: "ai_strategist",   status: "queued", priority: 7, payload: { round: 1 }, next_run_at: new Date(Date.now() + 90_000).toISOString() },
-              { target_id: job.target_id, job_type: "exploit_watchdog",status: "queued", priority: 6, payload: {}, next_run_at: new Date(Date.now() + 180_000).toISOString() },
+              {
+                target_id: job.target_id,
+                job_type: "ai_strategist",
+                status: "queued",
+                priority: 7,
+                payload: { round: 1 },
+                next_run_at: new Date(Date.now() + 90_000).toISOString(),
+              },
+              {
+                target_id: job.target_id,
+                job_type: "exploit_watchdog",
+                status: "queued",
+                priority: 6,
+                payload: {},
+                next_run_at: new Date(Date.now() + 180_000).toISOString(),
+              },
+              // vuln-scanner — OWASP suite + zeroday-engine (SSTI/NoSQLi/proto-pollution/JWT/XXE),
+              // race-runner, bac-tester, cache-attack, smuggler, dom-fuzz, param-bruteforce-xss
+              {
+                target_id: job.target_id,
+                job_type: "vuln_scan",
+                status: "queued",
+                priority: 8,
+                payload: {},
+                next_run_at: new Date(Date.now() + 20_000).toISOString(),
+              },
             ];
 
             if (tgt?.api_schema_url) {
-              followups.push({ target_id: job.target_id, job_type: "openapi_import", status: "queued", priority: 8, payload: { autoAttack: true }, next_run_at: nowIso });
+              followups.push({
+                target_id: job.target_id,
+                job_type: "openapi_import",
+                status: "queued",
+                priority: 8,
+                payload: { autoAttack: true },
+                next_run_at: nowIso,
+              });
             }
+
+            // IDOR/BOLA detection — only fire when two test-user auth profiles exist;
+            // testing access control across two identities is meaningless with just one.
+            const { data: authProfiles } = await supa
+              .from("auth_profiles")
+              .select("profile_name")
+              .eq("target_id", job.target_id)
+              .eq("is_valid", true);
+            const hasUserA = (authProfiles || []).some((p: any) => p.profile_name === "user_a");
+            const hasUserB = (authProfiles || []).some((p: any) => p.profile_name === "user_b");
+            if (hasUserA && hasUserB) {
+              followups.push({
+                target_id: job.target_id,
+                job_type: "authz_graph",
+                status: "queued",
+                priority: 9,
+                payload: {},
+                next_run_at: new Date(Date.now() + 30_000).toISOString(),
+              });
+            }
+
             await supa.from("scan_jobs").insert(followups);
             await supa.from("scan_logs").insert({
-              target_id: job.target_id, log_type: "info",
+              target_id: job.target_id,
+              log_type: "info",
               message: `🔗 recon done → fanned out ${followups.length} follow-up phases`,
               metadata: { kind: "phase_fanout", types: followups.map((f: any) => f.job_type) },
             });
-          } catch (e) { /* dedup index may reject duplicates — fine */ }
+          } catch (e) {
+            /* dedup index may reject duplicates — fine */
+          }
         }
       } else {
         const isFinal = job.attempts + 1 >= job.max_attempts;
-        await supa.from("scan_jobs").update({
-          status: isFinal ? "failed" : "queued",
-          error_message: out.error,
-          next_run_at: new Date(Date.now() + 60_000 * Math.pow(2, job.attempts)).toISOString(),
-          completed_at: isFinal ? new Date().toISOString() : null,
-        }).eq("id", job.id);
-        await supa.from("scan_logs").insert({
-          target_id: job.target_id, log_type: "error",
-          message: `❌ ${job.job_type} failed: ${String(out.error).slice(0, 200)}`,
-          metadata: { kind: "job_failure", job_id: job.id, attempts: job.attempts + 1, final: isFinal },
-        }).catch(() => {});
+        await supa
+          .from("scan_jobs")
+          .update({
+            status: isFinal ? "failed" : "queued",
+            error_message: out.error,
+            next_run_at: new Date(Date.now() + 60_000 * Math.pow(2, job.attempts)).toISOString(),
+            completed_at: isFinal ? new Date().toISOString() : null,
+          })
+          .eq("id", job.id);
+        await supa
+          .from("scan_logs")
+          .insert({
+            target_id: job.target_id,
+            log_type: "error",
+            message: `❌ ${job.job_type} failed: ${String(out.error).slice(0, 200)}`,
+            metadata: { kind: "job_failure", job_id: job.id, attempts: job.attempts + 1, final: isFinal },
+          })
+          .catch(() => {});
       }
       results.push({ id: job.id, type: job.job_type, ok: out.ok, error: out.error });
     }
@@ -360,11 +632,13 @@ Deno.serve(async (req) => {
       }).catch(() => {});
     }
 
-    return new Response(JSON.stringify({ picked: jobs.length, results }),
-      { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    return new Response(JSON.stringify({ picked: jobs.length, results }), {
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   } catch (e) {
-    return new Response(JSON.stringify({ ok: false, error: e instanceof Error ? e.message : "err" }),
-      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    return new Response(JSON.stringify({ ok: false, error: e instanceof Error ? e.message : "err" }), {
+      status: 200,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   }
 });
-
