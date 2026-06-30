@@ -104,7 +104,7 @@ const ACK_TIMEOUT_MS: Record<string, number> = {
   phase_arbiter: 8000,
 };
 
-const DEFAULT_TIMEOUT_MS = 45000;
+const DEFAULT_TIMEOUT_MS = 90000;
 
 async function runJob(job: any): Promise<{ ok: boolean; result?: any; error?: string }> {
   const route = JOB_ROUTES[job.job_type];
@@ -277,12 +277,12 @@ Deno.serve(async (req) => {
       });
     }
 
-    // Targets recently flagged as AI-exhausted → skip AI-heavy job types for 10min.
+    // Targets recently flagged as AI-exhausted → skip AI-heavy job types for 5min.
     const aiHeavy = new Set(["mythos_step", "debate", "variant_test", "ollama_mutate", "patch_validate"]);
     const recentExhausted = new Set<string>();
     const targetIds = [...new Set(jobs.map((j: any) => j.target_id).filter(Boolean))];
     if (targetIds.length) {
-      const since = new Date(Date.now() - 10 * 60_000).toISOString();
+      const since = new Date(Date.now() - 5 * 60_000).toISOString();
       const { data: sentinels } = await supa
         .from("scan_logs")
         .select("target_id, metadata")
@@ -302,7 +302,7 @@ Deno.serve(async (req) => {
           .update({
             status: "queued",
             error_message: "deferred: AI credits exhausted",
-            next_run_at: new Date(Date.now() + 10 * 60_000).toISOString(),
+            next_run_at: new Date(Date.now() + 5 * 60_000).toISOString(),
           })
           .eq("id", job.id);
         results.push({ id: job.id, type: job.job_type, deferred: true });
@@ -330,7 +330,7 @@ Deno.serve(async (req) => {
             kind: "ai_credits_exhausted",
             phase: job.job_type,
             job_id: job.id,
-            until: new Date(Date.now() + 10 * 60_000).toISOString(),
+            until: new Date(Date.now() + 5 * 60_000).toISOString(),
           },
         });
       }
