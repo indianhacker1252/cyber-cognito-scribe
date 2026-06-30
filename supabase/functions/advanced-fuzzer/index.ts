@@ -383,66 +383,67 @@ async function testCveTemplates(
     for (const ep of endpoints.slice(0, 8)) {
       if (timeLeft() < 4000) break;
       const payload = payloads[0];
-      const sep = ep.url.includes("?") ? "&" : "?";
       const { data: epParams } = await db.from("discovered_endpoints").select("parameters").eq("url", ep.url).single();
       const params = Object.keys((epParams?.parameters as Record<string, string>) || {});
       const testParams = params.length > 0 ? params.slice(0, 3) : ["q", "id", "search"];
 
       for (const paramName of testParams) {
+        if (timeLeft() < 3000) break;
         const u = new URL(ep.url);
         u.searchParams.set(paramName, payload);
         const probeUrl = u.toString();
-        // ... rest of the test
-      }
-      try {
-        const r = await safeFetch(probeUrl, { headers: { "User-Agent": "CyberScope-CVE/1.0" } }, 5000);
-        const body = await r.text().catch(() => "");
-        tested++;
-        const errLeak = /SQL syntax|stack trace|Exception|ORA-\d|MySQL|PostgreSQL/i.test(body);
-        const matched = r.status >= 500 || errLeak;
-        const reason = matched
-          ? errLeak
-            ? "error-leak in body"
-            : `5xx status (${r.status})`
-          : `no-anomaly (${r.status})`;
-        perEndpoint.push({ url: ep.url, status: r.status, matched, reason });
 
-        if (matched) {
-          templatePassed = true;
-          confirmed++;
-          details.push({
-            cveTitle: feed.title,
-            vulnClass: feed.vulnerability_class,
-            endpoint: ep.url,
-            status: r.status,
-            payload,
-            severity: feed.severity,
-            sourceUrl: feed.source_url,
-          });
-          await db.from("vulnerability_findings").insert({
-            target_id: targetId,
-            title: `[CVE Match] ${feed.title}`,
-            severity: (feed.severity as "critical" | "high" | "medium" | "low" | "info") || "medium",
-            payload,
-            description: `Intel-feed CVE template matched on ${ep.url}. Source: ${feed.source_url}`,
-            confidence_score: 65,
-            confidence_level: "medium",
-            validation_status: "cve_template_matched",
-            triage_reasoning: `Advanced fuzzer matched CVE template "${feed.title}" against live endpoint. Reason: ${reason}.`,
-          });
-        } else {
+        try {
+          const r = await safeFetch(probeUrl, { headers: { "User-Agent": "CyberScope-CVE/1.0" } }, 5000);
+          const body = await r.text().catch(() => "");
+          tested++;
+          const errLeak = /SQL syntax|stack trace|Exception|ORA-\d|MySQL|PostgreSQL/i.test(body);
+          const matched = r.status >= 500 || errLeak;
+          const reason = matched
+            ? errLeak
+              ? "error-leak in body"
+              : `5xx status (${r.status})`
+            : `no-anomaly (${r.status})`;
+          perEndpoint.push({ url: probeUrl, status: r.status, matched, reason });
+
+          if (matched) {
+            templatePassed = true;
+            confirmed++;
+            details.push({
+              cveTitle: feed.title,
+              vulnClass: feed.vulnerability_class,
+              endpoint: probeUrl,
+              status: r.status,
+              payload,
+              severity: feed.severity,
+              sourceUrl: feed.source_url,
+            });
+            await db.from("vulnerability_findings").insert({
+              target_id: targetId,
+              title: `[CVE Match] ${feed.title}`,
+              severity: (feed.severity as "critical" | "high" | "medium" | "low" | "info") || "medium",
+              payload,
+              description: `Intel-feed CVE template matched on ${probeUrl}. Source: ${feed.source_url}`,
+              confidence_score: 65,
+              confidence_level: "medium",
+              validation_status: "cve_template_matched",
+              triage_reasoning: `Advanced fuzzer matched CVE template "${feed.title}" against live endpoint. Reason: ${reason}.`,
+            });
+          } else {
+            failed++;
+          }
+        } catch (e) {
           failed++;
+          perEndpoint.push({
+            url: probeUrl,
+            status: 0,
+            matched: false,
+            reason: `network: ${(e as Error).message.slice(0, 40)}`,
+          });
         }
-      } catch (e) {
-        failed++;
-        perEndpoint.push({
-          url: ep.url,
-          status: 0,
-          matched: false,
-          reason: `network: ${(e as Error).message.slice(0, 40)}`,
-        });
       }
     }
+
 
     // Per-template result log line — visible in Neural Log
     const icon = templatePassed ? "✅" : "❌";
