@@ -1476,6 +1476,59 @@ export type Database = {
         }
         Relationships: []
       }
+      finding_evidence: {
+        Row: {
+          affected_url: string | null
+          created_at: string
+          evidence: Json
+          finding_id: string
+          id: string
+          method: string | null
+          param: string | null
+          payload: string | null
+          request_raw: string | null
+          response_raw: string | null
+          status_code: number | null
+          target_id: string
+        }
+        Insert: {
+          affected_url?: string | null
+          created_at?: string
+          evidence?: Json
+          finding_id: string
+          id?: string
+          method?: string | null
+          param?: string | null
+          payload?: string | null
+          request_raw?: string | null
+          response_raw?: string | null
+          status_code?: number | null
+          target_id: string
+        }
+        Update: {
+          affected_url?: string | null
+          created_at?: string
+          evidence?: Json
+          finding_id?: string
+          id?: string
+          method?: string | null
+          param?: string | null
+          payload?: string | null
+          request_raw?: string | null
+          response_raw?: string | null
+          status_code?: number | null
+          target_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "finding_evidence_finding_id_fkey"
+            columns: ["finding_id"]
+            isOneToOne: false
+            referencedRelation: "vulnerability_findings"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       intel_feeds: {
         Row: {
           affected_tech_stack: Json | null
@@ -3052,10 +3105,14 @@ export type Database = {
           description: string | null
           endpoint_id: string | null
           evidence: Json | null
+          evidence_count: number
           evidence_package_id: string | null
           finding_type: string | null
+          first_seen_at: string
+          group_key: string | null
           hard_evidence: Json | null
           id: string
+          last_seen_at: string
           payload: string | null
           poc: string | null
           proof_tier: string
@@ -3084,10 +3141,14 @@ export type Database = {
           description?: string | null
           endpoint_id?: string | null
           evidence?: Json | null
+          evidence_count?: number
           evidence_package_id?: string | null
           finding_type?: string | null
+          first_seen_at?: string
+          group_key?: string | null
           hard_evidence?: Json | null
           id?: string
+          last_seen_at?: string
           payload?: string | null
           poc?: string | null
           proof_tier?: string
@@ -3116,10 +3177,14 @@ export type Database = {
           description?: string | null
           endpoint_id?: string | null
           evidence?: Json | null
+          evidence_count?: number
           evidence_package_id?: string | null
           finding_type?: string | null
+          first_seen_at?: string
+          group_key?: string | null
           hard_evidence?: Json | null
           id?: string
+          last_seen_at?: string
           payload?: string | null
           poc?: string | null
           proof_tier?: string
