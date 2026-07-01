@@ -16,16 +16,26 @@ const COMMON = [
   "pay","billing","checkout","m","mobile","old","new","v1","v2","api-staging","api-dev"
 ];
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+function normalizeHost(h: string): string {
+  return String(h || "").trim().toLowerCase()
+    .replace(/^https?:\/\//, "")
+    .replace(/^\*\./, "")
+    .replace(/\/.*$/, "")
+    .replace(/:\d+$/, "")
+    .replace(/\.$/, "");
+}
+
 async function probe(host: string, ms = 4000): Promise<boolean> {
-  const ctrl = new AbortController(); const t = setTimeout(() => ctrl.abort(), ms);
   for (const scheme of ["https","http"]) {
+    const ctrl = new AbortController(); const t = setTimeout(() => ctrl.abort(), ms);
     try {
       const r = await fetch(`${scheme}://${host}`, { method: "HEAD", redirect: "manual", signal: ctrl.signal });
       clearTimeout(t);
-      return r.status > 0 && r.status < 600;
-    } catch { /* try next */ }
+      if (r.status > 0 && r.status < 600) return true;
+    } catch { clearTimeout(t); /* try next scheme */ }
   }
-  clearTimeout(t);
   return false;
 }
 
