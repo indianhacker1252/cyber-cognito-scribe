@@ -2215,6 +2215,7 @@ export type Database = {
       owasp_checklist: {
         Row: {
           category: string
+          check_module: string | null
           check_name: string
           created_at: string
           evidence_count: number
@@ -2227,6 +2228,7 @@ export type Database = {
         }
         Insert: {
           category: string
+          check_module?: string | null
           check_name: string
           created_at?: string
           evidence_count?: number
@@ -2239,6 +2241,7 @@ export type Database = {
         }
         Update: {
           category?: string
+          check_module?: string | null
           check_name?: string
           created_at?: string
           evidence_count?: number
@@ -3280,6 +3283,7 @@ export type Database = {
         Args: { _scan_type: string; _target_id: string }
         Returns: Json
       }
+      delete_owasp_checklist: { Args: { _target_id: string }; Returns: number }
       fail_stuck_mythos_runs: { Args: never; Returns: number }
       grant_scan_credits: {
         Args: { _amount: number; _user_id: string }
