@@ -212,9 +212,22 @@ ${f.triage_reasoning || "Pending AI deep-signal triage."}
 export default function FindingDetailsDialog({ open, onOpenChange, finding }: Props) {
   const [regenerating, setRegenerating] = useState(false);
   const [livePoc, setLivePoc] = useState<string | null>(null);
+  const [evidenceRows, setEvidenceRows] = useState<any[]>([]);
+  const [evidenceLoading, setEvidenceLoading] = useState(false);
 
   const report = useMemo(() => (finding ? buildHackerOneReport(finding) : ""), [finding]);
   const advancedPoc = useMemo(() => (finding ? (livePoc ?? generateAdvancedPoc(finding)) : ""), [finding, livePoc]);
+
+  useEffect(() => {
+    if (!open || !finding?.id) return;
+    setEvidenceLoading(true);
+    supabase.from("finding_evidence" as any)
+      .select("*")
+      .eq("finding_id", finding.id)
+      .order("created_at", { ascending: false })
+      .limit(50)
+      .then(({ data }) => { setEvidenceRows((data as any) || []); setEvidenceLoading(false); });
+  }, [open, finding?.id]);
 
   if (!finding) return null;
 
