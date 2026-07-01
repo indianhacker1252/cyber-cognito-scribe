@@ -315,6 +315,10 @@ export default function FindingDetailsDialog({ open, onOpenChange, finding }: Pr
         <Tabs defaultValue="overview" className="flex-1 overflow-hidden flex flex-col">
           <TabsList className="bg-muted/30 font-mono text-[10px]">
             <TabsTrigger value="overview"><Shield className="h-3 w-3 mr-1" />Overview</TabsTrigger>
+            <TabsTrigger value="evidence">
+              <Layers className="h-3 w-3 mr-1" />Evidence
+              {evidenceRows.length > 0 && <span className="ml-1 opacity-70">({evidenceRows.length})</span>}
+            </TabsTrigger>
             <TabsTrigger value="payload"><Code2 className="h-3 w-3 mr-1" />Payload</TabsTrigger>
             <TabsTrigger value="request"><Send className="h-3 w-3 mr-1" />Request</TabsTrigger>
             <TabsTrigger value="response">Response</TabsTrigger>
