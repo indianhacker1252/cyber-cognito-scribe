@@ -16,16 +16,26 @@ const COMMON = [
   "pay","billing","checkout","m","mobile","old","new","v1","v2","api-staging","api-dev"
 ];
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+function normalizeHost(h: string): string {
+  return String(h || "").trim().toLowerCase()
+    .replace(/^https?:\/\//, "")
+    .replace(/^\*\./, "")
+    .replace(/\/.*$/, "")
+    .replace(/:\d+$/, "")
+    .replace(/\.$/, "");
+}
+
 async function probe(host: string, ms = 4000): Promise<boolean> {
-  const ctrl = new AbortController(); const t = setTimeout(() => ctrl.abort(), ms);
   for (const scheme of ["https","http"]) {
+    const ctrl = new AbortController(); const t = setTimeout(() => ctrl.abort(), ms);
     try {
       const r = await fetch(`${scheme}://${host}`, { method: "HEAD", redirect: "manual", signal: ctrl.signal });
       clearTimeout(t);
-      return r.status > 0 && r.status < 600;
-    } catch { /* try next */ }
+      if (r.status > 0 && r.status < 600) return true;
+    } catch { clearTimeout(t); /* try next scheme */ }
   }
-  clearTimeout(t);
   return false;
 }
 
@@ -40,7 +50,7 @@ async function crtsh(apex: string): Promise<string[]> {
     for (const row of rows || []) {
       const nv: string = row?.name_value || "";
       for (const n of nv.split(/\s+/)) {
-        const h = n.replace(/^\*\./, "").trim().toLowerCase();
+        const h = normalizeHost(n);
         if (h && (h === apex || h.endsWith("." + apex))) set.add(h);
       }
     }
@@ -57,28 +67,41 @@ Deno.serve(async (req) => {
     if (!targetId) return ok({ ok: false, error: "targetId required" });
     const db = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
     const { data: tgt } = await db.from("target_workspaces").select("domain").eq("id", targetId).maybeSingle();
-    const apex = String(tgt?.domain || "").trim().toLowerCase().replace(/^https?:\/\//,"").replace(/\/.*$/,"").replace(/:\d+$/,"");
+    const apex = normalizeHost(tgt?.domain || "");
     if (!apex) return ok({ ok: false, error: "no apex domain" });
 
     await db.from("scan_logs").insert({
       target_id: targetId, log_type: "action",
-      message: `🌐 Subdomain enum starting for ${apex} (crt.sh + ${COMMON.length}-word DNS)`,
+      message: `🌐 Subdomain enum starting for ${apex} (crt.sh + ${COMMON.length}-word DNS, rate-limited)`,
     });
 
     // 1) Passive: crt.sh
     const passive = await crtsh(apex);
 
-    // 2) Active: small wordlist
-    const candidates = new Set<string>([apex, ...passive, ...COMMON.map(w => `${w}.${apex}`)]);
+    // 2) Dedup aggressively across passive + brute + apex.
+    //    Set is case/whitespace/scheme normalized; already-known hosts in
+    //    scan_assets are also skipped so we don't re-probe on every re-run.
+    const { data: known } = await db.from("scan_assets").select("host").eq("target_id", targetId);
+    const knownSet = new Set((known || []).map((k: any) => normalizeHost(k.host)));
+
+    const bruteHosts = COMMON.map((w) => normalizeHost(`${w}.${apex}`));
+    const passiveHosts = passive.map(normalizeHost);
+    const candidates = new Set<string>([apex, ...passiveHosts, ...bruteHosts].filter(Boolean));
+    const toProbe = [...candidates].filter((h) => !knownSet.has(h));
+
+    // 3) Rate-limited probing: 4 in-flight max, 250ms gap between batches
+    //    (per-target ≈ 16 req/s ceiling, keeps target unflooded).
+    const CONCURRENCY = 4;
+    const BATCH_DELAY_MS = 250;
     const alive: string[] = [];
-    const queue = [...candidates];
-    const CONCURRENCY = 8;
-    await Promise.all(Array.from({ length: CONCURRENCY }, async () => {
-      while (queue.length) {
-        const h = queue.shift()!;
-        if (await probe(h)) alive.push(h);
-      }
-    }));
+    for (let i = 0; i < toProbe.length; i += CONCURRENCY) {
+      const batch = toProbe.slice(i, i + CONCURRENCY);
+      const results = await Promise.all(batch.map((h) => probe(h)));
+      results.forEach((up, idx) => { if (up) alive.push(batch[idx]); });
+      if (i + CONCURRENCY < toProbe.length) await sleep(BATCH_DELAY_MS);
+    }
+    // Include already-known live hosts in downstream fan-out
+    const finalAlive = Array.from(new Set([...alive, ...knownSet].filter(Boolean)));
 
     if (alive.length) {
       await db.from("scan_assets").upsert(
