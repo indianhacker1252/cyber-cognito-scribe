@@ -347,6 +347,60 @@ export default function FindingDetailsDialog({ open, onOpenChange, finding }: Pr
               )}
             </TabsContent>
 
+            <TabsContent value="evidence" className="space-y-2">
+              <p className="text-[10px] font-mono text-muted-foreground">
+                All deduplicated evidence entries collected under this master finding
+                ({evidenceRows.length} recorded, most recent first).
+              </p>
+              {evidenceLoading && <p className="text-xs font-mono text-muted-foreground">Loading…</p>}
+              {!evidenceLoading && evidenceRows.length === 0 && (
+                <p className="text-xs font-mono text-muted-foreground">
+                  No additional evidence rows yet — this master finding was recorded only once.
+                </p>
+              )}
+              {evidenceRows.map((ev, i) => (
+                <details key={ev.id || i} className="border border-border rounded bg-muted/10">
+                  <summary className="cursor-pointer px-3 py-2 text-[11px] font-mono flex flex-wrap items-center gap-2">
+                    <Badge variant="outline" className="text-[10px]">#{i + 1}</Badge>
+                    {ev.status_code && <Badge variant="outline" className="text-[10px]">{ev.status_code}</Badge>}
+                    {ev.method && <Badge variant="outline" className="text-[10px]">{ev.method}</Badge>}
+                    {ev.param && <span className="text-cyber-cyan">{ev.param}</span>}
+                    <span className="truncate max-w-[400px] text-muted-foreground">{ev.affected_url}</span>
+                    <span className="ml-auto text-[10px] text-muted-foreground">
+                      {ev.created_at ? new Date(ev.created_at).toLocaleString() : ""}
+                    </span>
+                  </summary>
+                  <div className="p-3 space-y-2 border-t border-border">
+                    {ev.payload && (
+                      <div>
+                        <div className="text-[10px] text-muted-foreground mb-1">Payload</div>
+                        <pre className="text-[10px] font-mono text-cyber-green bg-black/40 p-2 rounded overflow-auto whitespace-pre-wrap max-h-32">{ev.payload}</pre>
+                      </div>
+                    )}
+                    {ev.request_raw && (
+                      <div>
+                        <div className="text-[10px] text-muted-foreground mb-1">Request</div>
+                        <pre className="text-[10px] font-mono text-cyber-cyan bg-black/40 p-2 rounded overflow-auto whitespace-pre-wrap max-h-40">{ev.request_raw}</pre>
+                      </div>
+                    )}
+                    {ev.response_raw && (
+                      <div>
+                        <div className="text-[10px] text-muted-foreground mb-1">Response</div>
+                        <pre className="text-[10px] font-mono text-cyber-amber bg-black/40 p-2 rounded overflow-auto whitespace-pre-wrap max-h-40">{ev.response_raw}</pre>
+                      </div>
+                    )}
+                    {ev.evidence && Object.keys(ev.evidence || {}).length > 0 && (
+                      <div>
+                        <div className="text-[10px] text-muted-foreground mb-1">Metadata</div>
+                        <pre className="text-[10px] font-mono bg-muted/20 p-2 rounded overflow-auto max-h-32">{stringifyMaybe(ev.evidence)}</pre>
+                      </div>
+                    )}
+                  </div>
+                </details>
+              ))}
+            </TabsContent>
+
+
             <TabsContent value="payload" className="space-y-2">
               <div className="flex justify-end">
                 <Button size="sm" variant="outline" className="font-mono text-[10px] gap-1" onClick={() => copy("Payload", payload)}>
