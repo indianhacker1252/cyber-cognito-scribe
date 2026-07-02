@@ -262,3 +262,66 @@ export class WafFeedback {
     );
   }
 }
+
+// ── WAF Profile Loader ────────────────────────────────────────────────────
+// Reads the bypass profile written by waf-evasion-engine into waf_profiles.
+// Called by advanced-fuzzer, template-runner, and mythos-variant-gen BEFORE
+// choosing payloads so they use proven bypass encodings instead of raw text
+// that the WAF will silently block.
+//
+// Before this function existed, waf-evasion-engine correctly identified
+// working bypass techniques and stored them in waf_profiles, but nothing
+// ever read that table — every subsequent fuzzer still sent raw payloads
+// into the same WAF that was blocking them.
+export async function loadWafBypassProfile(
+  supa: any,
+  targetId: string,
+): Promise<{ wafType: string; workingTechniques: string[]; hasProfile: boolean }> {
+  try {
+    const { data } = await supa
+      .from("waf_profiles")
+      .select("waf_type, working_techniques")
+      .eq("target_id", targetId)
+      .maybeSingle();
+    if (!data) return { wafType: "none", workingTechniques: [], hasProfile: false };
+    const working = (data.working_techniques || [])
+      .map((t: any) => (typeof t === "string" ? t : t.technique || ""))
+      .filter(Boolean);
+    return { wafType: data.waf_type || "none", workingTechniques: working, hasProfile: working.length > 0 };
+  } catch {
+    return { wafType: "none", workingTechniques: [], hasProfile: false };
+  }
+}
+
+// Apply a WAF bypass technique to a raw payload string.
+// Returns the encoded variant, or the original if the technique is unknown.
+export function applyWafBypass(payload: string, technique: string): string {
+  switch (technique) {
+    case "url_double_encode":
+      return encodeURIComponent(encodeURIComponent(payload));
+    case "url_single_encode":
+      return encodeURIComponent(payload);
+    case "mixed_case":
+      return payload
+        .split("")
+        .map((c, i) => (i % 2 ? c.toUpperCase() : c.toLowerCase()))
+        .join("");
+    case "comment_break":
+      return payload
+        .replace(/select/gi, "sel/**/ect")
+        .replace(/union/gi, "un/**/ion")
+        .replace(/script/gi, "scr/**/ipt");
+    case "tab_sep":
+      return payload.replace(/ /g, "\t");
+    case "newline_sep":
+      return payload.replace(/ /g, "%0a");
+    case "unicode_quote":
+      return payload.replace(/'/g, "\u2018").replace(/"/g, "\u201c");
+    case "null_byte":
+      return payload + "%00";
+    case "trailing_dot":
+      return payload + ".";
+    default:
+      return payload;
+  }
+}
