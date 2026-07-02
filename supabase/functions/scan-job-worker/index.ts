@@ -106,6 +106,11 @@ const ACK_TIMEOUT_MS: Record<string, number> = {
 
 const DEFAULT_TIMEOUT_MS = 90000;
 
+async function getScanAiProvider(supa: any, targetId: string): Promise<string> {
+  const { data } = await supa.from("target_workspaces").select("scan_ai_provider").eq("id", targetId).maybeSingle();
+  return data?.scan_ai_provider || "auto";
+}
+
 async function runJob(job: any): Promise<{ ok: boolean; result?: any; error?: string }> {
   const route = JOB_ROUTES[job.job_type];
   if (!route) return { ok: false, error: `unknown job_type: ${job.job_type}` };
@@ -132,12 +137,14 @@ async function runJob(job: any): Promise<{ ok: boolean; result?: any; error?: st
   }
   const timeoutMs = ACK_TIMEOUT_MS[job.job_type] ?? DEFAULT_TIMEOUT_MS;
   try {
+    const supa = db();
+    const scanAiProvider = job.payload?.scanAiProvider || await getScanAiProvider(supa, job.target_id);
     const modePayload =
       job.job_type === "ollama_mutate" ? { mode: "ai" } : job.job_type === "local_tool" ? { mode: "tool" } : {};
     const r = await fetch(`${FN_BASE}/${route}`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${SERVICE_KEY}` },
-      body: JSON.stringify({ targetId: job.target_id, ...modePayload, ...job.payload }),
+      body: JSON.stringify({ targetId: job.target_id, scanAiProvider, ...modePayload, ...job.payload }),
       signal: AbortSignal.timeout(timeoutMs),
     });
     // For known long-running types, ANY 2xx is success — don't drain body.
@@ -624,6 +631,14 @@ Deno.serve(async (req) => {
     // Ping the phase arbiter for active targets so the pipeline keeps moving.
     const activeTargets = [...new Set(jobs.map((j: any) => j.target_id).filter(Boolean))];
     for (const t of activeTargets) {
+      const { count: activeCount } = await supa
+        .from("scan_jobs")
+        .select("id", { count: "exact", head: true })
+        .eq("target_id", t)
+        .in("status", ["queued", "running"]);
+      if ((activeCount ?? 0) === 0) {
+        await supa.rpc("enqueue_missing_owasp_modules", { _target_id: t, _force: false }).then(() => {}, () => {});
+      }
       fetch(`${FN_BASE}/phase-arbiter`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${SERVICE_KEY}` },

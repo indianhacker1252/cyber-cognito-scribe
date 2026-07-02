@@ -27,16 +27,24 @@ function normalizeHost(h: string): string {
     .replace(/\.$/, "");
 }
 
-async function probe(host: string, ms = 4000): Promise<boolean> {
+type ProbeResult = { alive: boolean; throttled: boolean; timedOut: boolean; status?: number; scheme?: string };
+
+async function probe(host: string, ms = 4000): Promise<ProbeResult> {
   for (const scheme of ["https","http"]) {
     const ctrl = new AbortController(); const t = setTimeout(() => ctrl.abort(), ms);
     try {
       const r = await fetch(`${scheme}://${host}`, { method: "HEAD", redirect: "manual", signal: ctrl.signal });
       clearTimeout(t);
-      if (r.status > 0 && r.status < 600) return true;
-    } catch { clearTimeout(t); /* try next scheme */ }
+      if (r.status === 429 || r.status === 408 || r.status === 503) return { alive: true, throttled: true, timedOut: false, status: r.status, scheme };
+      if (r.status > 0 && r.status < 600) return { alive: true, throttled: false, timedOut: false, status: r.status, scheme };
+    } catch (e) {
+      clearTimeout(t);
+      const msg = e instanceof Error ? e.name + " " + e.message : String(e);
+      if (/abort|timeout/i.test(msg)) return { alive: false, throttled: false, timedOut: true };
+      /* try next scheme */
+    }
   }
-  return false;
+  return { alive: false, throttled: false, timedOut: false };
 }
 
 async function crtsh(apex: string): Promise<string[]> {
@@ -91,14 +99,37 @@ Deno.serve(async (req) => {
 
     // 3) Rate-limited probing: 4 in-flight max, 250ms gap between batches
     //    (per-target ≈ 16 req/s ceiling, keeps target unflooded).
-    const CONCURRENCY = 4;
-    const BATCH_DELAY_MS = 250;
+    let concurrency = 4;
+    let batchDelayMs = 250;
+    let timeoutMs = 3500;
     const alive: string[] = [];
-    for (let i = 0; i < toProbe.length; i += CONCURRENCY) {
-      const batch = toProbe.slice(i, i + CONCURRENCY);
-      const results = await Promise.all(batch.map((h) => probe(h)));
-      results.forEach((up, idx) => { if (up) alive.push(batch[idx]); });
-      if (i + CONCURRENCY < toProbe.length) await sleep(BATCH_DELAY_MS);
+    let throttles = 0;
+    let timeouts = 0;
+    for (let i = 0; i < toProbe.length; i += concurrency) {
+      const batch = toProbe.slice(i, i + concurrency);
+      const results = await Promise.all(batch.map((h) => probe(h, timeoutMs)));
+      results.forEach((res, idx) => {
+        if (res.alive) alive.push(batch[idx]);
+        if (res.throttled) throttles++;
+        if (res.timedOut) timeouts++;
+      });
+
+      const pressure = results.filter((r) => r.throttled || r.timedOut).length;
+      if (pressure > 0) {
+        concurrency = Math.max(1, concurrency - 1);
+        batchDelayMs = Math.min(2500, Math.round(batchDelayMs * 1.8));
+        timeoutMs = Math.min(9000, timeoutMs + 1000);
+        await db.from("scan_logs").insert({
+          target_id: targetId, log_type: "info",
+          message: `🌐 Subdomain enum backoff: ${pressure}/${batch.length} throttled or timed out; concurrency ${concurrency}, delay ${batchDelayMs}ms`,
+          metadata: { kind: "subdomain_enum_backoff", pressure, concurrency, batchDelayMs, timeoutMs },
+        }).then(() => {}, () => {});
+      } else if (concurrency < 4 && batchDelayMs > 250) {
+        concurrency = Math.min(4, concurrency + 1);
+        batchDelayMs = Math.max(250, Math.round(batchDelayMs * 0.75));
+      }
+
+      if (i + concurrency < toProbe.length) await sleep(batchDelayMs);
     }
     // Include already-known live hosts in downstream fan-out
     const finalAlive = Array.from(new Set([...alive, ...knownSet].filter(Boolean)));
@@ -117,13 +148,13 @@ Deno.serve(async (req) => {
     await db.from("scan_logs").insert({
       target_id: targetId, log_type: "info",
       message: `🌐 Subdomain enum done: ${alive.length} live host(s) (passive ${passive.length}, brute ${COMMON.length})`,
-      metadata: { alive, passive_count: passive.length, brute_count: COMMON.length },
+      metadata: { alive, passive_count: passive.length, brute_count: COMMON.length, throttles, timeouts },
     });
 
     // Fan out: queue recon-juicy + matrix-fuzz for each new host
     if (alive.length) {
       const jobs = alive.flatMap((h) => ([
-        { target_id: targetId, job_type: "recon_juicy", priority: 6, status: "queued",
+        { target_id: targetId, job_type: "juicy", priority: 6, status: "queued",
           payload: { host: h, base_url: `https://${h}` }, next_run_at: new Date().toISOString() },
         { target_id: targetId, job_type: "matrix_fuzz", priority: 5, status: "queued",
           payload: { host: h, base_url: `https://${h}` }, next_run_at: new Date(Date.now() + 5_000).toISOString() },
