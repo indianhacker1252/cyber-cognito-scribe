@@ -16,8 +16,11 @@ const SVC = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 async function safeFetch(url: string, init: RequestInit, ms = 8000) {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), ms);
-  try { return await fetch(url, { ...init, signal: ctrl.signal }); }
-  finally { clearTimeout(t); }
+  try {
+    return await fetch(url, { ...init, signal: ctrl.signal });
+  } finally {
+    clearTimeout(t);
+  }
 }
 
 async function runOne(db: any, hypothesisId: string) {
@@ -27,38 +30,108 @@ async function runOne(db: any, hypothesisId: string) {
 
   const url = h.endpoint_url;
   if (!url) {
-    await db.from("attack_hypotheses").update({ status: "skipped", result: { reason: "no endpoint_url" } }).eq("id", hypothesisId);
+    await db
+      .from("attack_hypotheses")
+      .update({ status: "skipped", result: { reason: "no endpoint_url" } })
+      .eq("id", hypothesisId);
     return { ok: false, error: "no endpoint" };
   }
 
   const jar = await loadJar(db, h.target_id);
-  const mutation = (h.mutation || {}) as { param?: string; payload?: string; header?: Record<string, string>; body?: string };
-  let targetUrl = url, init: RequestInit = { method: h.method || "GET" };
+  const mutation = (h.mutation || {}) as {
+    param?: string;
+    payload?: string;
+    header?: Record<string, string>;
+    body?: string;
+  };
+  let targetUrl = url,
+    init: RequestInit = { method: h.method || "GET" };
   try {
     const u = new URL(url);
     if (mutation.param && mutation.payload !== undefined) {
       u.searchParams.set(mutation.param, mutation.payload);
     }
     targetUrl = u.toString();
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
   const headers: Record<string, string> = { "User-Agent": "CyberScope/strategist", ...(mutation.header || {}) };
   init.headers = applyJar(jar, headers);
   if (h.method && /^(POST|PUT|PATCH|DELETE)$/i.test(h.method) && mutation.body) {
     init.body = mutation.body;
-    (init.headers as any)["Content-Type"] = (init.headers as any)["Content-Type"] || "application/x-www-form-urlencoded";
+    (init.headers as any)["Content-Type"] =
+      (init.headers as any)["Content-Type"] || "application/x-www-form-urlencoded";
   }
 
-  let status = 0, body = "", err = "";
+  let status = 0,
+    body = "",
+    err = "",
+    baselineBody = "";
+  try {
+    // Fetch baseline (unmodified) response first so we can diff against it.
+    // Without this, body.includes(expected_proof) triggers on any page that
+    // happens to contain the AI-chosen proof string in its static content —
+    // common words like "admin", "200", "true", "success" appear on most pages
+    // and generated false "[AI-Strategist] vuln proven via hypothesis" findings
+    // marked proofTier="exploited" with no real evidence.
+    const baseResp = await safeFetch(
+      url,
+      { method: h.method || "GET", headers: applyJar(jar, { "User-Agent": "CyberScope/strategist" }) },
+      10_000,
+    );
+    baselineBody = (await baseResp.text().catch(() => "")).slice(0, 8000);
+  } catch {
+    /* ignore — if baseline fails, still run the probe */
+  }
+
   try {
     const r = await safeFetch(targetUrl, init, 10_000);
     status = r.status;
     body = (await r.text().catch(() => "")).slice(0, 8000);
-  } catch (e) { err = e instanceof Error ? e.message : "err"; }
+  } catch (e) {
+    err = e instanceof Error ? e.message : "err";
+  }
 
   const expected = (h.expected_proof || "").trim();
-  const proofHit = expected ? body.includes(expected) || /CYBERSCOPE_PROVEN/.test(body) : false;
 
-  const result = { status, length: body.length, proofHit, snippet: body.slice(0, 600), err };
+  // Proof requires ALL of:
+  // 1. expected string is present in the probed response
+  // 2. expected string was NOT in the baseline (proves it's a result of the mutation)
+  // 3. expected string is specific enough (>= 6 chars, not a generic word like "ok","true")
+  // 4. OR the standard CYBERSCOPE_PROVEN marker is found (always unique)
+  const GENERIC_WORDS = new Set([
+    "true",
+    "false",
+    "ok",
+    "yes",
+    "no",
+    "200",
+    "null",
+    "none",
+    "admin",
+    "user",
+    "error",
+    "success",
+    "found",
+    "data",
+  ]);
+  const proofIsSpecific = expected.length >= 6 && !GENERIC_WORDS.has(expected.toLowerCase());
+  const proofAbsentInBaseline = !baselineBody.includes(expected);
+  const proofPresentInMutated = body.includes(expected);
+  const cyberScopeMarker = /CYBERSCOPE_PROVEN/.test(body);
+
+  const proofHit =
+    cyberScopeMarker || (expected !== "" && proofIsSpecific && proofAbsentInBaseline && proofPresentInMutated);
+
+  const result = {
+    status,
+    length: body.length,
+    proofHit,
+    snippet: body.slice(0, 600),
+    err,
+    baselineDiff: proofAbsentInBaseline,
+    proofSpecific: proofIsSpecific,
+  };
   let findingId: string | undefined;
 
   if (proofHit) {
@@ -73,17 +146,33 @@ async function runOne(db: any, hypothesisId: string) {
       payload: mutation.payload || "",
       proofTier: "exploited",
       autoEnqueueExploit: true,
-      evidence: { hypothesisId, expected_proof: expected, asset: h.asset_host, vuln_class: h.vuln_class, affected_url: targetUrl, snippet: body.slice(0, 800) },
-      request: { method: h.method || "GET", url: targetUrl, headers: headers, body: typeof init.body === "string" ? init.body : undefined },
+      evidence: {
+        hypothesisId,
+        expected_proof: expected,
+        asset: h.asset_host,
+        vuln_class: h.vuln_class,
+        affected_url: targetUrl,
+        snippet: body.slice(0, 800),
+      },
+      request: {
+        method: h.method || "GET",
+        url: targetUrl,
+        headers: headers,
+        body: typeof init.body === "string" ? init.body : undefined,
+      },
       response: { status, body: body.slice(0, 4000) },
     });
     findingId = rec.findingId;
   }
 
-  await db.from("attack_hypotheses").update({
-    status: proofHit ? "confirmed" : "tested",
-    result, finding_id: findingId || null,
-  }).eq("id", hypothesisId);
+  await db
+    .from("attack_hypotheses")
+    .update({
+      status: proofHit ? "confirmed" : "tested",
+      result,
+      finding_id: findingId || null,
+    })
+    .eq("id", hypothesisId);
 
   return { ok: true, proofHit, findingId };
 }
@@ -95,13 +184,20 @@ Deno.serve(async (req) => {
     const body = await req.json().catch(() => ({}));
     const { hypothesisId } = body;
     if (!hypothesisId) {
-      return new Response(JSON.stringify({ ok: false, error: "hypothesisId required" }),
-        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      return new Response(JSON.stringify({ ok: false, error: "hypothesisId required" }), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
     const out = await runOne(db, hypothesisId);
-    return new Response(JSON.stringify(out), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    return new Response(JSON.stringify(out), {
+      status: 200,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   } catch (e) {
-    return new Response(JSON.stringify({ ok: false, error: e instanceof Error ? e.message : "err" }),
-      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    return new Response(JSON.stringify({ ok: false, error: e instanceof Error ? e.message : "err" }), {
+      status: 200,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   }
 });
