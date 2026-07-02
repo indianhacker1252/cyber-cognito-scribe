@@ -4,6 +4,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { CheckCircle2, Circle, AlertTriangle, ListChecks, Trash2, RefreshCw, Play } from "lucide-react";
 import { toast } from "sonner";
 
@@ -15,6 +17,30 @@ type Row = {
   status: string | null;
   evidence_count: number | null;
   last_run_at: string | null;
+  metadata?: any;
+};
+
+type JobRow = {
+  target_id: string;
+  job_type: string;
+  status: string;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  error_message: string | null;
+  attempts: number | null;
+  result?: any;
+  payload?: any;
+};
+
+type AuditRow = {
+  id: string;
+  target_id: string;
+  target_label: string;
+  action: string;
+  deleted_count: number;
+  actor_id: string | null;
+  created_at: string;
 };
 
 const CATEGORY_LABEL: Record<string, string> = {
@@ -33,16 +59,24 @@ const CATEGORY_LABEL: Record<string, string> = {
 export default function OwaspChecklist() {
   const [rows, setRows] = useState<Row[]>([]);
   const [targets, setTargets] = useState<Record<string, { name: string; domain: string }>>({});
+  const [jobs, setJobs] = useState<JobRow[]>([]);
+  const [audits, setAudits] = useState<AuditRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; label: string } | null>(null);
+  const [deleteConfirm, setDeleteConfirm] = useState("");
 
   const load = async () => {
     setLoading(true);
-    const [{ data: checks }, { data: tgts }] = await Promise.all([
+    const [{ data: checks }, { data: tgts }, { data: jobRows }, { data: auditRows }] = await Promise.all([
       supabase.from("owasp_checklist" as any).select("*").order("category").order("check_name"),
       supabase.from("target_workspaces").select("id,name,domain"),
+      supabase.from("scan_jobs" as any).select("target_id,job_type,status,created_at,started_at,completed_at,error_message,attempts,result,payload").order("created_at", { ascending: false }).limit(2000),
+      supabase.from("owasp_checklist_audit" as any).select("id,target_id,target_label,action,deleted_count,actor_id,created_at").order("created_at", { ascending: false }).limit(50),
     ]);
     setRows((checks as any) || []);
+    setJobs((jobRows as any) || []);
+    setAudits((auditRows as any) || []);
     const m: Record<string, { name: string; domain: string }> = {};
     (tgts || []).forEach((t: any) => (m[t.id] = { name: t.name || t.domain, domain: t.domain || "" }));
     setTargets(m);
@@ -70,42 +104,64 @@ export default function OwaspChecklist() {
     } catch (e: any) { toast.error(e.message || "Failed"); } finally { setBusy(null); }
   };
 
-  const del = async (id: string, name: string) => {
-    if (!confirm(`Delete OWASP checklist for ${name}?`)) return;
+  const del = async () => {
+    if (!deleteTarget) return;
+    const expected = `DELETE ${deleteTarget.label}`;
+    if (deleteConfirm !== expected) return;
     setBusy(id);
     try {
-      const { error } = await supabase.rpc("delete_owasp_checklist" as any, { _target_id: id });
+      const { error } = await supabase.rpc("delete_owasp_checklist" as any, { _target_id: deleteTarget.id, _confirmation: expected });
       if (error) throw error;
-      toast.success("Checklist deleted"); await load();
+      toast.success("Checklist deleted and audited");
+      setDeleteTarget(null);
+      setDeleteConfirm("");
+      await load();
     } catch (e: any) { toast.error(e.message || "Failed"); } finally { setBusy(null); }
   };
 
-  const runMissing = async (id: string, missing: Row[]) => {
+  const moduleToJobType = (mod: string | null) => {
+    const jobMap: Record<string, string> = {
+      "advanced-fuzzer": "fuzz", "matrix-fuzzer": "matrix_fuzz", "form-attacker": "form_attack",
+      "recon-juicy": "juicy", "recon-engine": "recon", "recon-deep": "recon",
+      "ssrf-deep": "ssrf_deep", "js-deep-expand": "js_deep", "cve-to-exploit": "cve_exploit",
+      "cve-version-matcher": "cve", "nvd-intel-sync": "nvd_sync", "subdomain-enum": "subdomain_enum",
+      "auth-confusion-suite": "jwt_attack", "auth-deep": "advanced_detect", "auth-replay": "auth_replay",
+      "graphql-attack": "graphql", "prototype-pollution-gadgets": "advanced_detect",
+      "business-logic-fuzzer": "advanced_detect", "race-runner": "advanced_detect",
+      "bac-tester": "advanced_detect", "differential-oracle": "differential",
+      "dom-fuzz": "advanced_detect", "cache-attack": "advanced_detect",
+      "desync-smuggling-v2": "advanced_detect", "vuln-scanner": "vuln_scan",
+    };
+    return mod ? (jobMap[mod] || "advanced_detect") : "unmapped";
+  };
+
+  const latestJob = (targetId: string, mod: string | null) => jobs.find((j) => j.target_id === targetId && j.job_type === moduleToJobType(mod));
+
+  const dependencyReason = (row: Row) => {
+    const job = latestJob(row.target_id, row.check_module);
+    if (!row.check_module) return "Blocked: no scanner module mapped to this checklist item.";
+    if (!job) return "Blocked: prerequisite scanner job was never queued or ran.";
+    if (job.status === "failed") return `Blocked: ${job.job_type} failed${job.error_message ? ` — ${job.error_message}` : ""}.`;
+    if (job.status === "queued") return `Waiting: ${job.job_type} is queued but has not run yet.`;
+    if (job.status === "running") return `Waiting: ${job.job_type} is currently running.`;
+    return `Blocked: ${job.job_type} completed but did not produce evidence for this check.`;
+  };
+
+  const lastRunLabel = (row: Row) => {
+    const job = latestJob(row.target_id, row.check_module);
+    const ts = row.last_run_at || job?.completed_at || job?.started_at || job?.created_at;
+    return ts ? new Date(ts).toLocaleString() : "never";
+  };
+
+  const runMissing = async (id: string, force = false) => {
     setBusy(id);
     try {
-      // De-dup modules and enqueue one job per unique scanner
-      const uniqModules = Array.from(new Set(missing.map((m) => m.check_module).filter(Boolean))) as string[];
-      const jobMap: Record<string, string> = {
-        "advanced-fuzzer": "fuzz", "matrix-fuzzer": "matrix_fuzz", "form-attacker": "form_attack",
-        "recon-juicy": "juicy", "recon-engine": "recon", "recon-deep": "recon",
-        "ssrf-deep": "ssrf_deep", "js-deep-expand": "js_deep", "cve-to-exploit": "cve_exploit",
-        "cve-version-matcher": "cve", "nvd-intel-sync": "nvd_sync", "subdomain-enum": "subdomain_enum",
-        "auth-confusion-suite": "jwt_attack", "auth-deep": "advanced_detect", "auth-replay": "auth_replay",
-        "graphql-attack": "graphql", "prototype-pollution-gadgets": "advanced_detect",
-        "business-logic-fuzzer": "advanced_detect", "race-runner": "advanced_detect",
-        "bac-tester": "advanced_detect", "differential-oracle": "differential",
-        "dom-fuzz": "advanced_detect", "cache-attack": "advanced_detect",
-        "desync-smuggling-v2": "advanced_detect", "vuln-scanner": "vuln_scan",
-      };
-      const jobs = uniqModules.map((mod) => ({
-        target_id: id, job_type: jobMap[mod] || "advanced_detect", priority: 5, status: "queued",
-        payload: { checklist_seed: mod }, next_run_at: new Date().toISOString(),
-      }));
-      if (jobs.length) {
-        const { error } = await supabase.from("scan_jobs").insert(jobs);
-        if (error) throw error;
-      }
-      toast.success(`Queued ${jobs.length} scanner${jobs.length === 1 ? "" : "s"}`);
+      const { data, error } = await supabase.rpc("enqueue_missing_owasp_modules" as any, { _target_id: id, _force: force });
+      if (error) throw error;
+      const r = data as any;
+      if (r?.active_jobs && !force) toast.info(`Scan still active — missing modules will queue when it ends (${r.active_jobs} active jobs).`);
+      else toast.success(`Queued ${r?.queued ?? 0} missing scanner module${(r?.queued ?? 0) === 1 ? "" : "s"}`);
+      await load();
     } catch (e: any) { toast.error(e.message || "Failed"); } finally { setBusy(null); }
   };
 
@@ -127,6 +183,22 @@ export default function OwaspChecklist() {
         </CardContent></Card>
       )}
 
+      {audits.length > 0 && (
+        <Card>
+          <CardHeader><CardTitle className="text-sm">OWASP deletion audit trail</CardTitle></CardHeader>
+          <CardContent className="space-y-1 text-[11px] font-mono text-muted-foreground">
+            {audits.slice(0, 8).map((a) => (
+              <div key={a.id} className="flex flex-wrap items-center gap-2">
+                <Badge variant="outline" className="text-[10px]">{a.deleted_count} rows</Badge>
+                <span>{a.target_label}</span>
+                <span>•</span>
+                <span>{new Date(a.created_at).toLocaleString()}</span>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
+
       {Array.from(byTarget.entries()).map(([targetId, cats]) => {
         const all = Array.from(cats.values()).flat();
         const done = all.filter((r) => isDone(r.status)).length;
@@ -145,14 +217,18 @@ export default function OwaspChecklist() {
                     {done}/{all.length} ({pct}%)
                   </Badge>
                   <Button size="sm" variant="outline" disabled={busy === targetId || missing.length === 0}
-                          onClick={() => runMissing(targetId, missing)}>
-                    <Play className="h-3 w-3 mr-1" /> Run missing
+                          onClick={() => runMissing(targetId, false)}>
+                    <Play className="h-3 w-3 mr-1" /> Auto-rerun missing
+                  </Button>
+                  <Button size="sm" variant="outline" disabled={busy === targetId || missing.length === 0}
+                          onClick={() => runMissing(targetId, true)}>
+                    <Play className="h-3 w-3 mr-1" /> Run now
                   </Button>
                   <Button size="sm" variant="outline" disabled={busy === targetId} onClick={() => reseed(targetId)}>
                     <RefreshCw className="h-3 w-3 mr-1" /> Re-seed
                   </Button>
-                  <Button size="sm" variant="destructive" disabled={busy === targetId}
-                          onClick={() => del(targetId, t?.name || "this target")}>
+                  <Button size="sm" variant="destructive" disabled={busy === targetId || !t}
+                          onClick={() => { setDeleteTarget({ id: targetId, label: label }); setDeleteConfirm(""); }}>
                     <Trash2 className="h-3 w-3 mr-1" /> Delete
                   </Button>
                 </div>
@@ -166,17 +242,23 @@ export default function OwaspChecklist() {
                     <AlertTriangle className="h-4 w-4" /> Blocking modules ({missing.length} checks pending)
                   </div>
                   <div className="text-[11px] text-muted-foreground">
-                    Each check is blocked because its scanner module hasn't produced evidence yet:
+                    Full dependency chain for every missing check: checklist → scanner module → queue job → evidence result.
                   </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-1 text-[11px] font-mono">
+                  <div className="grid grid-cols-1 gap-2 text-[11px] font-mono">
                     {missing.slice(0, 40).map((m) => (
-                      <div key={m.category + m.check_name} className="flex items-center gap-2 truncate">
+                      <div key={m.category + m.check_name} className="rounded border border-border bg-background/50 p-2 space-y-1">
+                        <div className="flex items-center gap-2 min-w-0">
                         <Circle className="h-3 w-3 text-destructive shrink-0" />
                         <span className="truncate">{m.check_name}</span>
                         <span className="text-muted-foreground">→</span>
                         <Badge variant="outline" className="h-4 text-[10px] shrink-0">
                           {m.check_module || "unmapped"}
                         </Badge>
+                          <span className="text-muted-foreground">→</span>
+                          <Badge variant="outline" className="h-4 text-[10px] shrink-0">{moduleToJobType(m.check_module)}</Badge>
+                        </div>
+                        <div className="text-[10px] text-muted-foreground pl-5">{dependencyReason(m)}</div>
+                        <div className="text-[10px] text-muted-foreground pl-5">last run: {lastRunLabel(m)}</div>
                       </div>
                     ))}
                     {missing.length > 40 && (
@@ -206,7 +288,8 @@ export default function OwaspChecklist() {
                               [{r.check_module}]
                             </span>
                           )}
-                          {r.evidence_count ? <Badge variant="secondary" className="ml-auto h-4 text-[10px]">{r.evidence_count}</Badge> : null}
+                          <span className="text-[10px] text-muted-foreground ml-auto shrink-0">{lastRunLabel(r)}</span>
+                          {r.evidence_count ? <Badge variant="secondary" className="h-4 text-[10px]">{r.evidence_count}</Badge> : null}
                         </div>
                       ))}
                     </div>
@@ -217,6 +300,28 @@ export default function OwaspChecklist() {
           </Card>
         );
       })}
+
+      <Dialog open={!!deleteTarget} onOpenChange={(open) => { if (!open) { setDeleteTarget(null); setDeleteConfirm(""); } }}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Confirm OWASP checklist deletion</DialogTitle></DialogHeader>
+          {deleteTarget && (
+            <div className="space-y-3">
+              <p className="text-sm text-muted-foreground">
+                This deletes the checklist rows for <span className="font-mono text-foreground">{deleteTarget.label}</span> and writes an audit entry.
+              </p>
+              <div className="text-xs font-mono text-muted-foreground">Type exactly:</div>
+              <code className="block rounded border border-border bg-muted p-2 text-xs">DELETE {deleteTarget.label}</code>
+              <Input value={deleteConfirm} onChange={(e) => setDeleteConfirm(e.target.value)} className="font-mono text-xs" />
+              <div className="flex justify-end gap-2">
+                <Button variant="outline" onClick={() => { setDeleteTarget(null); setDeleteConfirm(""); }}>Cancel</Button>
+                <Button variant="destructive" disabled={busy === deleteTarget.id || deleteConfirm !== `DELETE ${deleteTarget.label}`} onClick={del}>
+                  <Trash2 className="h-3 w-3 mr-1" /> Delete checklist
+                </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
