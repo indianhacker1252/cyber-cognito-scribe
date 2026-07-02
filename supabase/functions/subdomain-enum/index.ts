@@ -154,7 +154,7 @@ Deno.serve(async (req) => {
     // Fan out: queue recon-juicy + matrix-fuzz for each new host
     if (alive.length) {
       const jobs = alive.flatMap((h) => ([
-        { target_id: targetId, job_type: "recon_juicy", priority: 6, status: "queued",
+        { target_id: targetId, job_type: "juicy", priority: 6, status: "queued",
           payload: { host: h, base_url: `https://${h}` }, next_run_at: new Date().toISOString() },
         { target_id: targetId, job_type: "matrix_fuzz", priority: 5, status: "queued",
           payload: { host: h, base_url: `https://${h}` }, next_run_at: new Date(Date.now() + 5_000).toISOString() },
