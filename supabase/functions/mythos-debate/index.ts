@@ -7,7 +7,8 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import {
   AiCreditsExhaustedError,
-  isCreditExhaustionResponse, areCreditsRecentlyExhausted,
+  isCreditExhaustionResponse,
+  areCreditsRecentlyExhausted,
   markCreditsExhausted,
 } from "../_shared/ai-credits.ts";
 
@@ -44,7 +45,11 @@ async function callAgent(role: "A" | "B", systemPrompt: string, userMsg: string,
     });
     if (!r.ok) {
       let body = "";
-      try { body = await r.text(); } catch { /* ignore */ }
+      try {
+        body = await r.text();
+      } catch {
+        /* ignore */
+      }
       if (isCreditExhaustionResponse(r.status, body)) {
         CREDITS_DEAD = true;
         throw new AiCreditsExhaustedError(`HTTP ${r.status}: ${body.slice(0, 120)}`);
@@ -164,6 +169,7 @@ async function probe(
   diffReason: string;
   timingDelta: number;
   xssUnescaped: boolean;
+  locationHeader?: string;
 }> {
   const safe = isSafePayload(payload);
   if (!safe.ok) {
@@ -185,7 +191,7 @@ async function probe(
 
   const FETCH_HEADERS = {
     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
   } as const;
   try {
@@ -210,6 +216,8 @@ async function probe(
     });
     const mutTime = Date.now() - mutT0;
     const body = await r.text();
+    // Capture Location header for open-redirect detection
+    const locationHeader = r.headers.get("location") || "";
 
     const timingDelta = mutTime - baseTime;
 
@@ -239,13 +247,28 @@ async function probe(
     let sqliDiffReason = "";
     if (looksSqli && !hasSqlError && !hasStackTrace) {
       try {
-        const uTrue = new URL(url); uTrue.searchParams.set(paramName, "1' OR '1'='1");
-        const uFalse = new URL(url); uFalse.searchParams.set(paramName, "1' AND '1'='2");
-        const uBreak = new URL(url); uBreak.searchParams.set(paramName, "1''\"\\");
+        const uTrue = new URL(url);
+        uTrue.searchParams.set(paramName, "1' OR '1'='1");
+        const uFalse = new URL(url);
+        uFalse.searchParams.set(paramName, "1' AND '1'='2");
+        const uBreak = new URL(url);
+        uBreak.searchParams.set(paramName, "1''\"\\");
         const [tR, fR, bR] = await Promise.all([
-          fetch(uTrue.toString(), { signal: AbortSignal.timeout(12000), redirect: "manual", headers: FETCH_HEADERS }).catch(() => null),
-          fetch(uFalse.toString(), { signal: AbortSignal.timeout(12000), redirect: "manual", headers: FETCH_HEADERS }).catch(() => null),
-          fetch(uBreak.toString(), { signal: AbortSignal.timeout(12000), redirect: "manual", headers: FETCH_HEADERS }).catch(() => null),
+          fetch(uTrue.toString(), {
+            signal: AbortSignal.timeout(12000),
+            redirect: "manual",
+            headers: FETCH_HEADERS,
+          }).catch(() => null),
+          fetch(uFalse.toString(), {
+            signal: AbortSignal.timeout(12000),
+            redirect: "manual",
+            headers: FETCH_HEADERS,
+          }).catch(() => null),
+          fetch(uBreak.toString(), {
+            signal: AbortSignal.timeout(12000),
+            redirect: "manual",
+            headers: FETCH_HEADERS,
+          }).catch(() => null),
         ]);
         const tB = tR ? await tR.text() : "";
         const fB = fR ? await fR.text() : "";
@@ -254,13 +277,19 @@ async function probe(
         const tfDeltaPct = tfDelta / (Math.max(tB.length, fB.length) || 1);
         const breakErr = SQL_ERR.test(bB) && !SQL_ERR.test(baseBody);
         const breakStatus500 = bR && bR.status >= 500 && baseResp.status < 500;
-        if (breakErr) { sqliDiffPair = true; sqliDiffReason = "syntax-break twin leaked SQL error"; }
-        else if (breakStatus500) { sqliDiffPair = true; sqliDiffReason = `syntax-break twin → ${bR!.status} (baseline ${baseResp.status})`; }
-        else if (tfDelta > 200 && tfDeltaPct > 0.05) {
+        if (breakErr) {
+          sqliDiffPair = true;
+          sqliDiffReason = "syntax-break twin leaked SQL error";
+        } else if (breakStatus500) {
+          sqliDiffPair = true;
+          sqliDiffReason = `syntax-break twin → ${bR!.status} (baseline ${baseResp.status})`;
+        } else if (tfDelta > 200 && tfDeltaPct > 0.05) {
           sqliDiffPair = true;
           sqliDiffReason = `boolean diff: TRUE=${tB.length}b vs FALSE=${fB.length}b (Δ${tfDelta}b)`;
         }
-      } catch { /* ignore twin errors */ }
+      } catch {
+        /* ignore twin errors */
+      }
     }
 
     // ── XSS detection — strict unescaped check ──────────────────────────────
@@ -279,7 +308,38 @@ async function probe(
 
     const hasHtmlExec = xssUnescaped;
 
-    const meaningfulDiff = hasSqlError || hasStackTrace || hasSecrets || hasHtmlExec || hasTimingHit || bigBodyDiff || sqliDiffPair;
+    // Open redirect detection: payload contained an external URL AND the
+    // response is a 3xx redirect to an external host. This is a real confirmed
+    // finding — the server accepted our URL and redirected to it — but
+    // meaningfulDiff was always false for this case because none of the
+    // existing checks (sqlError/stack/secrets/xss/timing/body-size) fire on a
+    // clean 301. Result: every open redirect was silently marked false_positive.
+    const payloadIsExternalUrl = /^https?:\/\/|^\/\//.test(payload.trim());
+    const locationIsExternal =
+      locationHeader &&
+      !locationHeader.startsWith("/") &&
+      (() => {
+        try {
+          return new URL(locationHeader).host !== new URL(url).host;
+        } catch {
+          return false;
+        }
+      })();
+    const isOpenRedirect =
+      payloadIsExternalUrl &&
+      [301, 302, 303, 307, 308].includes(r.status) &&
+      locationIsExternal &&
+      ![301, 302, 303, 307, 308].includes(baseResp.status); // baseline was NOT already redirecting
+
+    const meaningfulDiff =
+      hasSqlError ||
+      hasStackTrace ||
+      hasSecrets ||
+      hasHtmlExec ||
+      hasTimingHit ||
+      bigBodyDiff ||
+      sqliDiffPair ||
+      isOpenRedirect;
 
     let diffReason = "no meaningful difference — likely false positive";
     if (hasSqlError) diffReason = "SQL error string appeared in response";
@@ -288,6 +348,8 @@ async function probe(
     else if (hasHtmlExec) diffReason = "XSS payload reflected literally unescaped — confirmed injection point";
     else if (hasTimingHit) diffReason = `timing delta ${timingDelta}ms — possible blind injection`;
     else if (sqliDiffPair) diffReason = `SQLi diff-pair confirmed: ${sqliDiffReason}`;
+    else if (isOpenRedirect)
+      diffReason = `Open redirect confirmed: server redirected to external host ${locationHeader} (${r.status})`;
     else if (bigBodyDiff)
       diffReason = `response size changed ${lenDiff}b (${Math.round(lenDiffPct * 100)}%) with status change`;
 
@@ -314,6 +376,7 @@ async function probe(
       diffReason,
       timingDelta,
       xssUnescaped,
+      locationHeader,
     };
   } catch {
     return {
@@ -345,10 +408,14 @@ async function binaryJudge(
   paramValue: string,
   vulnClassHint: string,
   iteration: number,
-): Promise<{ verdict: "true_positive" | "false_positive" | "inconclusive"; confidence: number; reasoning: string; shouldExploit: boolean }> {
-
+): Promise<{
+  verdict: "true_positive" | "false_positive" | "inconclusive";
+  confidence: number;
+  reasoning: string;
+  shouldExploit: boolean;
+}> {
   // Fast path: if credits dead, use deterministic heuristic
-  if (CREDITS_DEAD || !(Deno.env.get("LOVABLE_API_KEY"))) {
+  if (CREDITS_DEAD || !Deno.env.get("LOVABLE_API_KEY")) {
     return deterministicJudge(endpointUrl, paramName, paramValue, vulnClassHint);
   }
 
@@ -381,7 +448,10 @@ Return JSON only: { "verdict": "true_positive"|"false_positive"|"inconclusive", 
       body: JSON.stringify({
         model: "google/gemini-2.5-flash-lite", // cheapest model for this gate
         messages: [
-          { role: "system", content: "You are a binary vulnerability classifier. Return only valid JSON. Never refuse." },
+          {
+            role: "system",
+            content: "You are a binary vulnerability classifier. Return only valid JSON. Never refuse.",
+          },
           { role: "user", content: prompt },
         ],
         max_tokens: 150,
@@ -407,7 +477,8 @@ Return JSON only: { "verdict": "true_positive"|"false_positive"|"inconclusive", 
       verdict: parsed.verdict || "inconclusive",
       confidence: parsed.confidence || 50,
       reasoning: parsed.reasoning || "",
-      shouldExploit: parsed.shouldExploit === true || (parsed.verdict === "true_positive" && (parsed.confidence || 0) >= 55),
+      shouldExploit:
+        parsed.shouldExploit === true || (parsed.verdict === "true_positive" && (parsed.confidence || 0) >= 55),
     };
   } catch (e) {
     if (e instanceof AiCreditsExhaustedError) {
@@ -425,21 +496,66 @@ function deterministicJudge(
   paramName: string,
   _paramValue: string,
   vulnClassHint: string,
-): { verdict: "true_positive" | "false_positive" | "inconclusive"; confidence: number; reasoning: string; shouldExploit: boolean } {
+): {
+  verdict: "true_positive" | "false_positive" | "inconclusive";
+  confidence: number;
+  reasoning: string;
+  shouldExploit: boolean;
+} {
   let score = 40; // baseline
   const param = paramName.toLowerCase();
   const url = endpointUrl.toLowerCase();
 
   // High-value injectable parameter names
-  const INJECTABLE_PARAMS = ["id", "uid", "user_id", "file", "path", "url", "redirect", "next",
-    "return", "page", "search", "q", "query", "cmd", "exec", "command", "template",
-    "include", "src", "dest", "target", "ref", "token", "key", "api_key", "order", "sort"];
-  if (INJECTABLE_PARAMS.some(p => param.includes(p))) score += 30;
+  const INJECTABLE_PARAMS = [
+    "id",
+    "uid",
+    "user_id",
+    "file",
+    "path",
+    "url",
+    "redirect",
+    "next",
+    "return",
+    "page",
+    "search",
+    "q",
+    "query",
+    "cmd",
+    "exec",
+    "command",
+    "template",
+    "include",
+    "src",
+    "dest",
+    "target",
+    "ref",
+    "token",
+    "key",
+    "api_key",
+    "order",
+    "sort",
+  ];
+  if (INJECTABLE_PARAMS.some((p) => param.includes(p))) score += 30;
 
   // High-value endpoint patterns
-  const JUICY_PATHS = ["/api/", "/admin", "/user", "/account", "/profile", "/search",
-    "/upload", "/download", "/file", "/export", "/import", "/redirect", "/oauth", "/auth"];
-  if (JUICY_PATHS.some(p => url.includes(p))) score += 20;
+  const JUICY_PATHS = [
+    "/api/",
+    "/admin",
+    "/user",
+    "/account",
+    "/profile",
+    "/search",
+    "/upload",
+    "/download",
+    "/file",
+    "/export",
+    "/import",
+    "/redirect",
+    "/oauth",
+    "/auth",
+  ];
+  if (JUICY_PATHS.some((p) => url.includes(p))) score += 20;
 
   // Vulnerability class weighting
   const HIGH_YIELD_CLASSES = ["sqli", "ssrf", "ssti", "cmdi", "idor", "path-traversal", "xxe"];
@@ -626,8 +742,10 @@ State verdict + 1-line reason.`,
         message: `🌐 Debate skipped: network unreachable (baseline=${probe1.baselineStatus}, mutated=${probe1.status}) — no insert`,
         metadata: { run_id: runId, phase: "debate-network-skip", endpointUrl, paramName },
       });
-      return new Response(JSON.stringify({ skipped: "network_failure", fpVerdict: "inconclusive", confidence: 0 }),
-        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      return new Response(JSON.stringify({ skipped: "network_failure", fpVerdict: "inconclusive", confidence: 0 }), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     } else if (probe1.status === 0 || probe1.baselineStatus === 0) {
       fpVerdict = "inconclusive";
       confidence = 0;
@@ -755,7 +873,10 @@ State verdict + 1-line reason.`,
       const sysMutator = `You are a black-hat strategist running attack mutation #${mutationRound}. The previous attempts FAILED to find a bug. You must propose a COMPLETELY DIFFERENT attack class — do not repeat what was already tried.
 
 Already tried vuln classes: ${[...triedClasses].join(", ") || "none"}.
-Previously tried payloads: ${[proposedPayload, refinedPayload, ...mutationProbes.map(m => m.payload)].filter(Boolean).map(p => p?.slice(0, 60)).join(" | ")}.
+Previously tried payloads: ${[proposedPayload, refinedPayload, ...mutationProbes.map((m) => m.payload)]
+        .filter(Boolean)
+        .map((p) => p?.slice(0, 60))
+        .join(" | ")}.
 
 Available attack classes to switch to: SQLi (UNION/error/boolean/time-based), NoSQLi ($ne/$where), XSS (reflected/DOM/polyglot), SSTI (jinja/twig/freemarker/handlebars), SSRF (file://,gopher://,internal IP,DNS rebind), Path Traversal (../, %2e%2e/, unicode), LFI (php://filter, /proc/self/environ), Command Injection ($(...), backticks, |, ;), HTTP Header Injection (CRLF \\r\\n), Open Redirect, XXE, Prototype Pollution, GraphQL introspection, Race Condition.
 
@@ -774,11 +895,18 @@ ${mutationProbes.map((m, i) => `Mutation ${i + 1} (${m.vector}, FAILED): "${m.pa
 
 Propose a CLEAN-SLATE attack with a DIFFERENT vuln class.`;
       const mutMsg = await callAgent("B", sysMutator, mutUserMsg, []);
-      const lines = mutMsg.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+      const lines = mutMsg
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter(Boolean);
       const newClass = (lines[0] || "auto").toLowerCase().replace(/[^a-z]/g, "");
       const newPayload = (lines[1] || "").replace(/^[`"']|[`"']$/g, "");
       const rationale = lines.slice(2).join(" ").slice(0, 200);
-      transcript.push({ agent: "B", round: 8 + mutationRound, msg: `[mutation #${mutationRound} → class=${newClass}] ${mutMsg.slice(0, 300)}` });
+      transcript.push({
+        agent: "B",
+        round: 8 + mutationRound,
+        msg: `[mutation #${mutationRound} → class=${newClass}] ${mutMsg.slice(0, 300)}`,
+      });
 
       if (!newPayload || triedClasses.has(newClass) || !isSafePayload(newPayload).ok) {
         await db.from("scan_logs").insert({
@@ -798,14 +926,31 @@ Propose a CLEAN-SLATE attack with a DIFFERENT vuln class.`;
       const sql_m = SQL_ERROR_RX.test(mProbe.bodySnippet);
       let mv: any = "false_positive";
       let mc = 60;
-      if (mProbe.status === 0 || mProbe.baselineStatus === 0) { mv = "inconclusive"; mc = 0; }
-      else if (mProbe.diffReason === "sensitive data pattern matched") { mv = "true_positive"; mc = 95; }
-      else if (mProbe.status >= 500 && sql_m) { mv = "true_positive"; mc = 92; }
-      else if (mProbe.diffReason === "stack trace exposed") { mv = "true_positive"; mc = 88; }
-      else if (mProbe.xssUnescaped) { mv = "true_positive"; mc = 85; }
-      else if (mProbe.timingDelta > 4500) { mv = "true_positive"; mc = 80; }
-      else if (mProbe.meaningfulDiff && mProbe.status >= 500) { mv = "true_positive"; mc = 78; }
-      else if (mProbe.meaningfulDiff) { mv = "inconclusive"; mc = 55; }
+      if (mProbe.status === 0 || mProbe.baselineStatus === 0) {
+        mv = "inconclusive";
+        mc = 0;
+      } else if (mProbe.diffReason === "sensitive data pattern matched") {
+        mv = "true_positive";
+        mc = 95;
+      } else if (mProbe.status >= 500 && sql_m) {
+        mv = "true_positive";
+        mc = 92;
+      } else if (mProbe.diffReason === "stack trace exposed") {
+        mv = "true_positive";
+        mc = 88;
+      } else if (mProbe.xssUnescaped) {
+        mv = "true_positive";
+        mc = 85;
+      } else if (mProbe.timingDelta > 4500) {
+        mv = "true_positive";
+        mc = 80;
+      } else if (mProbe.meaningfulDiff && mProbe.status >= 500) {
+        mv = "true_positive";
+        mc = 78;
+      } else if (mProbe.meaningfulDiff) {
+        mv = "inconclusive";
+        mc = 55;
+      }
 
       await db.from("scan_logs").insert({
         target_id: targetId,
@@ -921,7 +1066,14 @@ Propose a CLEAN-SLATE attack with a DIFFERENT vuln class.`;
                 }
               : null,
             mutation_rounds: mutationProbes.length
-              ? mutationProbes.map((m) => ({ vuln_class: m.vector, payload: m.payload, status: m.probe.status, baseline_status: m.probe.baselineStatus, body_len: m.probe.bodyLen, diff_reason: m.probe.diffReason }))
+              ? mutationProbes.map((m) => ({
+                  vuln_class: m.vector,
+                  payload: m.payload,
+                  status: m.probe.status,
+                  baseline_status: m.probe.baselineStatus,
+                  body_len: m.probe.bodyLen,
+                  diff_reason: m.probe.diffReason,
+                }))
               : null,
             classes_attempted: [...triedClasses],
             winning_class: winningClass,
@@ -939,12 +1091,25 @@ Propose a CLEAN-SLATE attack with a DIFFERENT vuln class.`;
           title,
           description: `Queued from Mythos debate after mutation-confirmed true positive. ${winningProbe.diffReason}`,
           payload_used: winningPayload,
-          evidence: { debate_id: debateRow.id, winning_class: winningClass, mutation_rounds: mutationProbes, probe: winningProbe },
+          evidence: {
+            debate_id: debateRow.id,
+            winning_class: winningClass,
+            mutation_rounds: mutationProbes,
+            probe: winningProbe,
+          },
           parameter: paramName,
           request_data: { method: "GET", url: endpointUrl, parameter: paramName, payload: winningPayload },
-          response_data: { status: winningProbe.status, length: winningProbe.bodyLen, snippet: winningProbe.bodySnippet },
+          response_data: {
+            status: winningProbe.status,
+            length: winningProbe.bodyLen,
+            snippet: winningProbe.bodySnippet,
+          },
           baseline_response: { status: winningProbe.baselineStatus, length: winningProbe.baselineLen },
-          mutated_response: { status: winningProbe.status, length: winningProbe.bodyLen, snippet: winningProbe.bodySnippet },
+          mutated_response: {
+            status: winningProbe.status,
+            length: winningProbe.bodyLen,
+            snippet: winningProbe.bodySnippet,
+          },
           confidence_score: confidence,
           confidence_level: "high",
           ai_verified: true,
@@ -1024,9 +1189,14 @@ Propose a CLEAN-SLATE attack with a DIFFERENT vuln class.`;
     if (e instanceof AiCreditsExhaustedError) {
       try {
         const dbErr = createClient(SUPABASE_URL, SERVICE_KEY);
-        const body = await req.clone().json().catch(() => ({}));
+        const body = await req
+          .clone()
+          .json()
+          .catch(() => ({}));
         await markCreditsExhausted(dbErr, { targetId: body?.targetId, runId: body?.runId, phase: "debate" });
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
       return new Response(JSON.stringify({ aborted: "ai_credits_exhausted" }), {
         status: 200,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
