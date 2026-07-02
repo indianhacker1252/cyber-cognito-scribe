@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   Plus, Crosshair, Trash2, Radar, Loader2, ShieldAlert,
   Copy, CheckCircle2, XCircle, AlertTriangle, Activity, Bug, GitCompare, Scan,
@@ -95,6 +96,7 @@ export default function Targets() {
   const [domain, setDomain] = useState("");
   const [ipRange, setIpRange] = useState("");
   const [apiSchema, setApiSchema] = useState("");
+  const [scanAiProvider, setScanAiProvider] = useState("auto");
   const [scanningTargets, setScanningTargets] = useState<Set<string>>(new Set());
   const [vulnScanTargets, setVulnScanTargets] = useState<Set<string>>(new Set());
   const [deepAuditTargets, setDeepAuditTargets] = useState<Set<string>>(new Set());
@@ -116,6 +118,7 @@ export default function Targets() {
         domain: domain || null,
         ip_range: ipRange || null,
         api_schema_url: apiSchema || null,
+        scan_ai_provider: scanAiProvider,
       }).select().single();
       if (error) throw error;
       if (!data) throw new Error("Insert blocked — admin role required to add targets");
@@ -135,6 +138,7 @@ export default function Targets() {
       setDomain("");
       setIpRange("");
       setApiSchema("");
+      setScanAiProvider("auto");
     },
     onError: (e) => toast.error(e.message),
   });
@@ -334,6 +338,23 @@ export default function Targets() {
               <Input placeholder="Domain (e.g. example.com)" value={domain} onChange={(e) => setDomain(e.target.value)} className="font-mono text-xs bg-muted border-border" />
               <Input placeholder="IP Range (e.g. 192.168.1.0/24)" value={ipRange} onChange={(e) => setIpRange(e.target.value)} className="font-mono text-xs bg-muted border-border" />
               <Input placeholder="API Schema URL" value={apiSchema} onChange={(e) => setApiSchema(e.target.value)} className="font-mono text-xs bg-muted border-border" />
+              <div className="space-y-1">
+                <p className="text-[10px] font-mono text-muted-foreground">AI to use during scan</p>
+                <Select value={scanAiProvider} onValueChange={setScanAiProvider}>
+                  <SelectTrigger className="font-mono text-xs bg-muted border-border">
+                    <SelectValue placeholder="AI provider" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="auto">Auto fallback</SelectItem>
+                    <SelectItem value="ollama">Local Ollama</SelectItem>
+                    <SelectItem value="lovable">Lovable Cloud</SelectItem>
+                    <SelectItem value="openai">OpenAI</SelectItem>
+                    <SelectItem value="gemini">Gemini</SelectItem>
+                    <SelectItem value="anthropic">Anthropic</SelectItem>
+                    <SelectItem value="none">No AI</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
               <Button onClick={() => addTarget.mutate()} disabled={!name || addTarget.isPending} className="w-full font-mono text-xs">
                 {addTarget.isPending ? "Adding..." : "Add Target"}
               </Button>
@@ -366,6 +387,7 @@ export default function Targets() {
                       <p className="text-[10px] font-mono text-muted-foreground">
                         {target.domain || target.ip_range || target.api_schema_url || "No target specified"}
                       </p>
+                      <p className="text-[9px] font-mono text-muted-foreground">AI: {(target as any).scan_ai_provider || "auto"}</p>
                     </div>
                   </div>
                   <div className="flex items-center gap-2 flex-wrap justify-end">

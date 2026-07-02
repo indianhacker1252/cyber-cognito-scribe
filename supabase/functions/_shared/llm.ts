@@ -247,7 +247,7 @@ export async function llmCall(opts: LlmCallOptions): Promise<LlmResult> {
     if (isGlobalCreditExhausted()) {
       return { ok: false, text: "", provider: "none", error: "AI credits exhausted (in-memory sentinel)" };
     }
-    if (await areCreditsRecentlyExhausted(db, targetId, 10)) {
+    if (await areCreditsRecentlyExhausted(opts.db, opts.targetId, 10)) {
       setGlobalCreditExhausted(); // sync in-memory too
       return { ok: false, text: "", provider: "none", error: "AI credits exhausted (cached sentinel)" };
     }
