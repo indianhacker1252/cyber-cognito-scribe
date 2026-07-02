@@ -96,7 +96,7 @@ export default function OwaspChecklist() {
   const isDone = (s: string | null) => s === "evidence" || s === "passed" || s === "complete";
 
   const reseed = async (id: string) => {
-    setBusy(deleteTarget.id);
+    setBusy(id);
     try {
       const { error } = await supabase.rpc("seed_owasp_checklist" as any, { _target_id: id });
       if (error) throw error;
@@ -108,7 +108,7 @@ export default function OwaspChecklist() {
     if (!deleteTarget) return;
     const expected = `DELETE ${deleteTarget.label}`;
     if (deleteConfirm !== expected) return;
-    setBusy(id);
+    setBusy(deleteTarget.id);
     try {
       const { error } = await supabase.rpc("delete_owasp_checklist" as any, { _target_id: deleteTarget.id, _confirmation: expected });
       if (error) throw error;
