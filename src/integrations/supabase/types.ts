@@ -2254,6 +2254,42 @@ export type Database = {
         }
         Relationships: []
       }
+      owasp_checklist_audit: {
+        Row: {
+          action: string
+          actor_id: string | null
+          confirmation: string | null
+          created_at: string
+          deleted_count: number
+          id: string
+          metadata: Json
+          target_id: string
+          target_label: string
+        }
+        Insert: {
+          action: string
+          actor_id?: string | null
+          confirmation?: string | null
+          created_at?: string
+          deleted_count?: number
+          id?: string
+          metadata?: Json
+          target_id: string
+          target_label: string
+        }
+        Update: {
+          action?: string
+          actor_id?: string | null
+          confirmation?: string | null
+          created_at?: string
+          deleted_count?: number
+          id?: string
+          metadata?: Json
+          target_id?: string
+          target_label?: string
+        }
+        Relationships: []
+      }
       owasp_coverage: {
         Row: {
           checks_run: number
@@ -3027,6 +3063,7 @@ export type Database = {
           ip_range: string | null
           name: string
           resolved_protocol: string | null
+          scan_ai_provider: string
           status: Database["public"]["Enums"]["target_status"]
           updated_at: string
           waf_profile: Json
@@ -3048,6 +3085,7 @@ export type Database = {
           ip_range?: string | null
           name: string
           resolved_protocol?: string | null
+          scan_ai_provider?: string
           status?: Database["public"]["Enums"]["target_status"]
           updated_at?: string
           waf_profile?: Json
@@ -3069,6 +3107,7 @@ export type Database = {
           ip_range?: string | null
           name?: string
           resolved_protocol?: string | null
+          scan_ai_provider?: string
           status?: Database["public"]["Enums"]["target_status"]
           updated_at?: string
           waf_profile?: Json
@@ -3283,7 +3322,14 @@ export type Database = {
         Args: { _scan_type: string; _target_id: string }
         Returns: Json
       }
-      delete_owasp_checklist: { Args: { _target_id: string }; Returns: number }
+      delete_owasp_checklist: {
+        Args: { _confirmation?: string; _target_id: string }
+        Returns: number
+      }
+      enqueue_missing_owasp_modules: {
+        Args: { _force?: boolean; _target_id: string }
+        Returns: Json
+      }
       fail_stuck_mythos_runs: { Args: never; Returns: number }
       grant_scan_credits: {
         Args: { _amount: number; _user_id: string }
