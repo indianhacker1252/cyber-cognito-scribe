@@ -33,15 +33,33 @@ async function safeFetch(url: string, init: RequestInit & { timeout?: number } =
     return { ok: true, status: r.status, body, headers: Object.fromEntries(r.headers) };
   } catch (e) {
     return { ok: false, status: 0, body: "", headers: {}, error: e instanceof Error ? e.message : "err" };
-  } finally { clearTimeout(id); }
+  } finally {
+    clearTimeout(id);
+  }
 }
 
 async function log(supa: any, target_id: string | null, t: string, m: string, meta: any = {}) {
-  try { await supa.from("scan_logs").insert({ target_id, log_type: t, message: m, metadata: meta }); } catch { /* ignore */ }
+  try {
+    await supa.from("scan_logs").insert({ target_id, log_type: t, message: m, metadata: meta });
+  } catch {
+    /* ignore */
+  }
 }
 
-function hostOf(u: string) { try { return new URL(u).host; } catch { return ""; } }
-function originOf(u: string) { try { return new URL(u).origin; } catch { return ""; } }
+function hostOf(u: string) {
+  try {
+    return new URL(u).host;
+  } catch {
+    return "";
+  }
+}
+function originOf(u: string) {
+  try {
+    return new URL(u).origin;
+  } catch {
+    return "";
+  }
+}
 
 // ============================================================
 // 1) BOLA / IDOR + session-state chaining
@@ -49,9 +67,34 @@ function originOf(u: string) { try { return new URL(u).origin; } catch { return 
 //    - Re-request with id±1 (numeric) or a fresh uuid using the same session.
 //    - Compare body length, status, and key tokens.
 // ============================================================
+// Ensure the url always has a scheme so new URL() doesn't throw.
+// When no endpointId is passed, callers fall back to target.domain which is
+// a bare hostname ("easyshareservice.in") — new URL() throws "Invalid URL"
+// on that, crashing every detector. This fired 20+ times per scan, killing
+// all BOLA/IDOR/OOB detection silently.
+function normalizeUrl(raw: string | undefined | null): string {
+  if (!raw) return "";
+  if (/^https?:\/\//i.test(raw)) return raw;
+  return `https://${raw}`;
+}
+
+async function resolveEndpointUrl(supa: any, target: any, endpoint: any): Promise<string> {
+  if (endpoint?.url) return normalizeUrl(endpoint.url);
+  if (target?.id) {
+    const { data: ep } = await supa
+      .from("discovered_endpoints")
+      .select("url")
+      .eq("target_id", target.id)
+      .limit(1)
+      .maybeSingle();
+    if (ep?.url) return normalizeUrl(ep.url);
+  }
+  return normalizeUrl(target?.domain || "");
+}
+
 async function runBolaChain(supa: any, target: any, endpoint: any) {
   const steps: any[] = [];
-  const url: string = endpoint?.url || target.domain;
+  const url: string = await resolveEndpointUrl(supa, target, endpoint);
   if (!url) return { proven: false, steps, reason: "no url" };
 
   const u = new URL(url);
@@ -65,7 +108,10 @@ async function runBolaChain(supa: any, target: any, endpoint: any) {
   }
   if (!idLoc) {
     for (const [k, v] of u.searchParams.entries()) {
-      if (/^\d+$/.test(v) || /^[0-9a-f-]{8,}$/i.test(v)) { idLoc = { where: "query", key: k, value: v }; break; }
+      if (/^\d+$/.test(v) || /^[0-9a-f-]{8,}$/i.test(v)) {
+        idLoc = { where: "query", key: k, value: v };
+        break;
+      }
     }
   }
   if (!idLoc) return { proven: false, steps, reason: "no_id_in_url" };
@@ -94,9 +140,17 @@ async function runBolaChain(supa: any, target: any, endpoint: any) {
     const delta = Math.abs(r.body.length - baseline.body.length);
     const distinctOk = r.status === 200 && baseline.status === 200 && delta > 80 && r.body.length > 200;
     steps.push({ step: "mutate", url: mutated.toString(), status: r.status, len: r.body.length, delta, distinctOk });
-    if (distinctOk) { proven = true; break; }
+    if (distinctOk) {
+      proven = true;
+      break;
+    }
   }
-  return { proven, steps, reason: proven ? "distinct_object_returned" : "no_distinct_response", primitive: "BOLA→cross-tenant read" };
+  return {
+    proven,
+    steps,
+    reason: proven ? "distinct_object_returned" : "no_distinct_response",
+    primitive: "BOLA→cross-tenant read",
+  };
 }
 
 // ============================================================
@@ -107,13 +161,13 @@ async function runBolaChain(supa: any, target: any, endpoint: any) {
 // ============================================================
 async function runProtoPollution(supa: any, target: any, endpoint: any) {
   const steps: any[] = [];
-  const url: string = endpoint?.url || target.domain;
+  const url: string = await resolveEndpointUrl(supa, target, endpoint);
   if (!url) return { proven: false, steps, reason: "no url" };
   const origin = originOf(url);
 
   const payloads = [
-    { "__proto__": { "polluted_xyz": "CYBERSCOPE_PROVEN_PP" } },
-    { "constructor": { "prototype": { "polluted_xyz": "CYBERSCOPE_PROVEN_PP" } } },
+    { __proto__: { polluted_xyz: "CYBERSCOPE_PROVEN_PP" } },
+    { constructor: { prototype: { polluted_xyz: "CYBERSCOPE_PROVEN_PP" } } },
   ];
   let pollutedHeaderSeen = false;
   let pollutedBodySeen = false;
@@ -122,7 +176,8 @@ async function runProtoPollution(supa: any, target: any, endpoint: any) {
     const r = await safeFetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(p), timeout: 6000,
+      body: JSON.stringify(p),
+      timeout: 6000,
     });
     steps.push({ step: "pollute", payload: p, status: r.status });
     // Re-fetch a benign endpoint to look for the polluted gadget surfacing.
@@ -130,11 +185,22 @@ async function runProtoPollution(supa: any, target: any, endpoint: any) {
     if (probe.body.includes("CYBERSCOPE_PROVEN_PP") || probe.body.includes("polluted_xyz")) pollutedBodySeen = true;
     const hdrJoin = Object.values(probe.headers).join("|");
     if (hdrJoin.includes("CYBERSCOPE_PROVEN_PP") || hdrJoin.includes("polluted_xyz")) pollutedHeaderSeen = true;
-    steps.push({ step: "probe", status: probe.status, len: probe.body.length, headerHit: pollutedHeaderSeen, bodyHit: pollutedBodySeen });
+    steps.push({
+      step: "probe",
+      status: probe.status,
+      len: probe.body.length,
+      headerHit: pollutedHeaderSeen,
+      bodyHit: pollutedBodySeen,
+    });
     if (pollutedHeaderSeen || pollutedBodySeen) break;
   }
   const proven = pollutedHeaderSeen || pollutedBodySeen;
-  return { proven, steps, reason: proven ? "gadget_observed" : "no_gadget", primitive: "Prototype-pollution → server gadget" };
+  return {
+    proven,
+    steps,
+    reason: proven ? "gadget_observed" : "no_gadget",
+    primitive: "Prototype-pollution → server gadget",
+  };
 }
 
 // ============================================================
@@ -146,7 +212,7 @@ async function runProtoPollution(supa: any, target: any, endpoint: any) {
 // ============================================================
 async function runDomClobbering(supa: any, target: any, endpoint: any) {
   const steps: any[] = [];
-  const url: string = endpoint?.url || target.domain;
+  const url: string = await resolveEndpointUrl(supa, target, endpoint);
   if (!url) return { proven: false, steps, reason: "no url" };
 
   const page = await safeFetch(url, { method: "GET", timeout: 6000 });
@@ -164,7 +230,10 @@ async function runDomClobbering(supa: any, target: any, endpoint: any) {
   if (!hasSink) return { proven: false, steps, reason: "no_dom_sink", primitive: "DOM-clobbering candidate" };
 
   // Look for an injection surface: search/q params reflected verbatim in body.
-  const probe = await safeFetch(url + (url.includes("?") ? "&" : "?") + "q=CYBERSCOPE_DCREF", { method: "GET", timeout: 6000 });
+  const probe = await safeFetch(url + (url.includes("?") ? "&" : "?") + "q=CYBERSCOPE_DCREF", {
+    method: "GET",
+    timeout: 6000,
+  });
   const reflected = probe.body.includes("CYBERSCOPE_DCREF");
   steps.push({ step: "reflect_probe", reflected, status: probe.status });
   const proven = reflected;
@@ -185,37 +254,48 @@ async function mintOob(targetId: string) {
   try {
     const r = await fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/oob-collector/issue`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}` },
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}`,
+      },
       body: JSON.stringify({ targetId, vulnClass: "oob_chain", payloadContext: "advanced-detectors" }),
       signal: AbortSignal.timeout(8000),
     });
     if (!r.ok) return null;
     return await r.json();
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 async function pollOob(token: string) {
   try {
     const r = await fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/oob-collector/poll`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}` },
-      body: JSON.stringify({ tokens: [token] }), signal: AbortSignal.timeout(10000),
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}`,
+      },
+      body: JSON.stringify({ tokens: [token] }),
+      signal: AbortSignal.timeout(10000),
     });
     if (!r.ok) return { hit: false, hits: [] };
     const j = await r.json();
     return { hit: (j?.hits || []).length > 0, hits: j?.hits || [] };
-  } catch { return { hit: false, hits: [] }; }
+  } catch {
+    return { hit: false, hits: [] };
+  }
 }
 async function runOobChain(supa: any, target: any, endpoint: any) {
   const steps: any[] = [];
-  const url: string = endpoint?.url || target.domain;
+  const url: string = await resolveEndpointUrl(supa, target, endpoint);
   if (!url) return { proven: false, steps, reason: "no url" };
   const oob = await mintOob(target.id);
   if (!oob?.token) return { proven: false, steps, reason: "oob_unavailable" };
   steps.push({ step: "oob_minted", host: oob.host });
 
   const probes = [
-    { where: "query",  key: "url",  val: oob.callbackUrl },
-    { where: "query",  key: "next", val: oob.callbackUrl },
+    { where: "query", key: "url", val: oob.callbackUrl },
+    { where: "query", key: "next", val: oob.callbackUrl },
     { where: "header", key: "X-Forwarded-Host", val: oob.host },
     { where: "header", key: "Referer", val: oob.callbackUrl },
   ];
@@ -223,7 +303,9 @@ async function runOobChain(supa: any, target: any, endpoint: any) {
     let target_url = url;
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (p.where === "query") {
-      const uu = new URL(url); uu.searchParams.set(p.key, p.val); target_url = uu.toString();
+      const uu = new URL(url);
+      uu.searchParams.set(p.key, p.val);
+      target_url = uu.toString();
     } else {
       headers[p.key] = p.val;
     }
@@ -233,15 +315,28 @@ async function runOobChain(supa: any, target: any, endpoint: any) {
   // Wait briefly then poll.
   await new Promise((r) => setTimeout(r, 2500));
   let poll = await pollOob(oob.token);
-  if (!poll.hit) { await new Promise((r) => setTimeout(r, 2500)); poll = await pollOob(oob.token); }
+  if (!poll.hit) {
+    await new Promise((r) => setTimeout(r, 2500));
+    poll = await pollOob(oob.token);
+  }
   steps.push({ step: "poll", hit: poll.hit, hits: poll.hits.slice(0, 3) });
-  return { proven: poll.hit, steps, reason: poll.hit ? "oob_callback_received" : "no_callback", primitive: "OOB-confirmed SSRF/blind-RCE" };
+  return {
+    proven: poll.hit,
+    steps,
+    reason: poll.hit ? "oob_callback_received" : "no_callback",
+    primitive: "OOB-confirmed SSRF/blind-RCE",
+  };
 }
 
 // ============================================================
 async function persistRun(
-  supa: any, targetId: string, endpointId: string | null,
-  detector: DetectorName, result: any, durationMs: number, severity: string,
+  supa: any,
+  targetId: string,
+  endpointId: string | null,
+  detector: DetectorName,
+  result: any,
+  durationMs: number,
+  severity: string,
   userId: string | null,
 ) {
   let findingId: string | null = null;
@@ -253,21 +348,25 @@ async function persistRun(
       dom_clobbering: "DOM clobbering candidate with reflected sink (universal XSS path)",
       oob_chain: "OOB-confirmed blind SSRF / RCE via injected callback",
     };
-    const { data: vf } = await supa.from("vulnerability_findings").insert({
-      target_id: targetId,
-      endpoint_id: endpointId,
-      title: titleMap[detector],
-      severity,
-      validation_status: "validated",
-      ai_verified: true,
-      confidence_level: "high",
-      confidence_score: 92,
-      proof_tier: "exploited",
-      sensitive: true,
-      hard_evidence: { detector, primitive: result.primitive, chain_steps: result.steps },
-      reachability_status: "reachable",
-      triage_reasoning: `advanced-detectors[${detector}]: ${result.reason}`,
-    }).select("id").single();
+    const { data: vf } = await supa
+      .from("vulnerability_findings")
+      .insert({
+        target_id: targetId,
+        endpoint_id: endpointId,
+        title: titleMap[detector],
+        severity,
+        validation_status: "validated",
+        ai_verified: true,
+        confidence_level: "high",
+        confidence_score: 92,
+        proof_tier: "exploited",
+        sensitive: true,
+        hard_evidence: { detector, primitive: result.primitive, chain_steps: result.steps },
+        reachability_status: "reachable",
+        triage_reasoning: `advanced-detectors[${detector}]: ${result.reason}`,
+      })
+      .select("id")
+      .single();
     findingId = vf?.id || null;
 
     // Queue HITL approval with correct schema.
@@ -293,25 +392,30 @@ async function persistRun(
     }
   }
 
-  const { data: run } = await supa.from("advanced_detector_runs").insert({
-    target_id: targetId,
-    endpoint_id: endpointId,
-    detector,
-    status: result.proven ? "proven" : "no_proof",
-    primitive: result.primitive || null,
-    chain_steps: result.steps || [],
-    evidence: { reason: result.reason },
-    proven: !!result.proven,
-    finding_id: findingId,
-    duration_ms: durationMs,
-  }).select("id").single();
+  const { data: run } = await supa
+    .from("advanced_detector_runs")
+    .insert({
+      target_id: targetId,
+      endpoint_id: endpointId,
+      detector,
+      status: result.proven ? "proven" : "no_proof",
+      primitive: result.primitive || null,
+      chain_steps: result.steps || [],
+      evidence: { reason: result.reason },
+      proven: !!result.proven,
+      finding_id: findingId,
+      duration_ms: durationMs,
+    })
+    .select("id")
+    .single();
 
   return { runId: run?.id, findingId };
 }
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
-  const respond = (b: any) => new Response(JSON.stringify(b), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+  const respond = (b: any) =>
+    new Response(JSON.stringify(b), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
   const supa = db();
   const started = Date.now();
 
@@ -326,49 +430,74 @@ Deno.serve(async (req) => {
     const body = await req.json().catch(() => ({}));
     const targetId: string = body.targetId;
     const endpointId: string | null = body.endpointId || null;
-    const detectors: DetectorName[] = Array.isArray(body.detectors) && body.detectors.length
-      ? body.detectors.filter((d: string) => DETECTORS.includes(d as DetectorName))
-      : DETECTORS;
+    const detectors: DetectorName[] =
+      Array.isArray(body.detectors) && body.detectors.length
+        ? body.detectors.filter((d: string) => DETECTORS.includes(d as DetectorName))
+        : DETECTORS;
     if (!targetId) return respond({ ok: false, error: "targetId required" });
 
     // Scope gate
     const { data: authz } = await supa.rpc("target_is_exploit_authorized", { _target_id: targetId });
     if (!authz) {
-      await log(supa, targetId, "warning", `🛂 advanced-detectors blocked: target not authorized for exploit-tier (need attestation or bug-bounty program scope)`);
+      await log(
+        supa,
+        targetId,
+        "warning",
+        `🛂 advanced-detectors blocked: target not authorized for exploit-tier (need attestation or bug-bounty program scope)`,
+      );
       return respond({ ok: false, scope_blocked: true, error: "target_not_authorized_for_exploit_tier" });
     }
 
-    const { data: target } = await supa.from("target_workspaces").select("id,name,domain,ip_range").eq("id", targetId).maybeSingle();
+    const { data: target } = await supa
+      .from("target_workspaces")
+      .select("id,name,domain,ip_range")
+      .eq("id", targetId)
+      .maybeSingle();
     if (!target) return respond({ ok: false, error: "target not found" });
     let endpoint: any = null;
     if (endpointId) {
-      const { data: ep } = await supa.from("discovered_endpoints").select("id,url,method").eq("id", endpointId).maybeSingle();
+      const { data: ep } = await supa
+        .from("discovered_endpoints")
+        .select("id,url,method")
+        .eq("id", endpointId)
+        .maybeSingle();
       endpoint = ep || null;
     }
 
-    await log(supa, targetId, "thought",
-      `🧪 Advanced detectors engaging on ${target.name || target.domain}: [${detectors.join(", ")}] — scope-authorized=yes`);
+    await log(
+      supa,
+      targetId,
+      "thought",
+      `🧪 Advanced detectors engaging on ${target.name || target.domain}: [${detectors.join(", ")}] — scope-authorized=yes`,
+    );
 
     const results: any[] = [];
     for (const det of detectors) {
-      if (Date.now() - started > 42000) { results.push({ detector: det, skipped: "budget" }); continue; }
+      if (Date.now() - started > 42000) {
+        results.push({ detector: det, skipped: "budget" });
+        continue;
+      }
       await log(supa, targetId, "action", `🔬 Detector ${det}: starting`);
       let r: any;
       const t0 = Date.now();
       try {
-        if (det === "bola_chain")        r = await runBolaChain(supa, target, endpoint);
+        if (det === "bola_chain") r = await runBolaChain(supa, target, endpoint);
         else if (det === "proto_pollution") r = await runProtoPollution(supa, target, endpoint);
-        else if (det === "dom_clobbering")  r = await runDomClobbering(supa, target, endpoint);
-        else                                r = await runOobChain(supa, target, endpoint);
+        else if (det === "dom_clobbering") r = await runDomClobbering(supa, target, endpoint);
+        else r = await runOobChain(supa, target, endpoint);
       } catch (e) {
         r = { proven: false, steps: [], reason: "detector_exception:" + (e instanceof Error ? e.message : "err") };
       }
       const dur = Date.now() - t0;
       const severity = r.proven ? (det === "oob_chain" || det === "proto_pollution" ? "critical" : "high") : "medium";
       const persist = await persistRun(supa, targetId, endpointId, det, r, dur, severity, userId);
-      await log(supa, targetId, r.proven ? "result" : "info",
+      await log(
+        supa,
+        targetId,
+        r.proven ? "result" : "info",
         `${r.proven ? "✅" : "🔄"} Detector ${det} → ${r.proven ? `PROVEN (${r.primitive})` : `no proof (${r.reason})`} | ${dur}ms`,
-        { runId: persist.runId, findingId: persist.findingId });
+        { runId: persist.runId, findingId: persist.findingId },
+      );
       results.push({ detector: det, ...r, runId: persist.runId, findingId: persist.findingId, duration_ms: dur });
     }
 
