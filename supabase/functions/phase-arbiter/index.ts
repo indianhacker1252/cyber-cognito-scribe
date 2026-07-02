@@ -125,6 +125,7 @@ async function arbitrateTarget(db: any, targetId: string) {
 
     // If complete → continue to next phase
   }
+  await db.rpc("enqueue_missing_owasp_modules", { _target_id: targetId, _force: false }).then(() => {}, () => {});
   return advanced;
 }
 

@@ -26,6 +26,7 @@ export interface LlmCallOptions {
   targetId?: string;
   runId?: string;
   phase?: string;
+  scanAiProvider?: string;
 }
 export interface LlmResult {
   ok: boolean;
@@ -38,6 +39,7 @@ const LOVABLE_KEY = Deno.env.get("LOVABLE_API_KEY");
 const OPENAI_KEY = Deno.env.get("OPENAI_API_KEY");
 const GEMINI_KEY = Deno.env.get("GEMINI_API_KEY");
 const ANTHROPIC_KEY = Deno.env.get("ANTHROPIC_API_KEY");
+const OLLAMA_BASE_URL = Deno.env.get("OLLAMA_BASE_URL");
 
 // ───── Concurrency limiter (Part B) ─────
 const MAX_CONCURRENT = 5;
@@ -196,6 +198,44 @@ async function callAnthropic(opts: LlmCallOptions): Promise<LlmResult> {
   }
 }
 
+async function loadScanAiPreference(opts: LlmCallOptions): Promise<{ provider: string; ollamaUrl?: string }> {
+  const explicit = opts.scanAiProvider;
+  if (explicit && explicit !== "auto") return { provider: explicit };
+  if (!opts.db || !opts.targetId) return { provider: "auto" };
+  try {
+    const [{ data: target }, { data: ollama }] = await Promise.all([
+      opts.db.from("target_workspaces").select("scan_ai_provider").eq("id", opts.targetId).maybeSingle(),
+      opts.db.from("ai_provider_config").select("api_key,is_active").eq("provider", "ollama").eq("is_active", true).maybeSingle(),
+    ]);
+    return { provider: target?.scan_ai_provider || "auto", ollamaUrl: ollama?.api_key || OLLAMA_BASE_URL || undefined };
+  } catch {
+    return { provider: explicit || "auto", ollamaUrl: OLLAMA_BASE_URL || undefined };
+  }
+}
+
+async function callOllama(opts: LlmCallOptions & { ollamaUrl?: string }): Promise<LlmResult> {
+  const base = (opts.ollamaUrl || OLLAMA_BASE_URL || "").replace(/\/+$/, "");
+  if (!base) return { ok: false, text: "", provider: "ollama", error: "no local url" };
+  try {
+    const r = await fetch(`${base}/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: opts.model || "llama3.1:8b",
+        messages: opts.messages,
+        temperature: opts.temperature ?? 0.4,
+        max_tokens: opts.maxTokens ?? 2048,
+      }),
+      signal: AbortSignal.timeout(45000),
+    });
+    if (!r.ok) return { ok: false, text: await r.text().catch(() => ""), provider: "ollama", error: `HTTP ${r.status}` };
+    const j = await r.json();
+    return { ok: true, text: j.choices?.[0]?.message?.content || "", provider: "ollama" };
+  } catch (e) {
+    return { ok: false, text: "", provider: "ollama", error: e instanceof Error ? e.message : "err" };
+  }
+}
+
 /**
  * Run the fallback chain under a global semaphore.
  * On throttle (429 / 503) backs off 1s,2s,4s before next provider.
@@ -218,11 +258,27 @@ export async function llmCall(opts: LlmCallOptions): Promise<LlmResult> {
     ? [{ role: "system" as const, content: opts.wafHint }, ...opts.messages]
     : opts.messages;
   const reqOpts: LlmCallOptions = { ...opts, messages };
+  const pref = await loadScanAiPreference(reqOpts);
+  if (pref.provider === "none" || pref.provider === "disabled") {
+    return { ok: false, text: "", provider: "none", error: "AI disabled for this scan" };
+  }
 
   await acquire();
   try {
     const errors: string[] = [];
-    const providers = [callLovable, callOpenAI, callGeminiDirect, callAnthropic];
+    const providerMap: Record<string, (o: LlmCallOptions) => Promise<LlmResult>> = {
+      auto: callLovable,
+      cloud: callLovable,
+      lovable: callLovable,
+      openai: callOpenAI,
+      gemini: callGeminiDirect,
+      anthropic: callAnthropic,
+      ollama: (o) => callOllama({ ...o, ollamaUrl: pref.ollamaUrl }),
+      local: (o) => callOllama({ ...o, ollamaUrl: pref.ollamaUrl }),
+    };
+    const providers = pref.provider === "auto"
+      ? [callLovable, callOpenAI, callGeminiDirect, callAnthropic, (o: LlmCallOptions) => callOllama({ ...o, ollamaUrl: pref.ollamaUrl })]
+      : [providerMap[pref.provider] || callLovable];
     for (let i = 0; i < providers.length; i++) {
       let backoff = 1000;
       for (let attempt = 0; attempt < 3; attempt++) {

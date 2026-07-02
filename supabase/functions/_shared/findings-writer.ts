@@ -63,6 +63,11 @@ function serializeResponse(r?: RecordFindingInput["response"]): string | null {
   return clip(lines.join("\r\n"));
 }
 
+function isUniqueViolation(error: unknown): boolean {
+  const msg = JSON.stringify(error || {}).toLowerCase();
+  return msg.includes("duplicate key") || msg.includes("23505") || msg.includes("unique");
+}
+
 function computeDiff(
   req?: RecordFindingInput["request"],
   resp?: RecordFindingInput["response"],
@@ -237,7 +242,7 @@ export async function recordFinding(input: RecordFindingInput): Promise<RecordFi
       .maybeSingle();
 
     if (master?.id) {
-      await supa
+      const { error: evidenceError } = await supa
         .from("finding_evidence")
         .insert({
           finding_id: master.id,
@@ -250,18 +255,18 @@ export async function recordFinding(input: RecordFindingInput): Promise<RecordFi
           request_raw: requestRaw,
           response_raw: responseRaw,
           evidence: input.evidence ?? {},
-        })
-        .then(
-          () => {},
-          () => {},
-        );
-      await supa
-        .from("vulnerability_findings")
-        .update({
-          evidence_count: (master.evidence_count || 1) + 1,
-          last_seen_at: new Date().toISOString(),
-        })
-        .eq("id", master.id);
+        });
+      if (!evidenceError) {
+        await supa
+          .from("vulnerability_findings")
+          .update({
+            evidence_count: (master.evidence_count || 1) + 1,
+            last_seen_at: new Date().toISOString(),
+          })
+          .eq("id", master.id);
+      } else if (!isUniqueViolation(evidenceError)) {
+        console.warn("finding_evidence insert failed", evidenceError.message || evidenceError);
+      }
       return { ok: true, findingId: master.id, duplicate: true };
     }
 
@@ -302,6 +307,25 @@ export async function recordFinding(input: RecordFindingInput): Promise<RecordFi
       }
       return { ok: false, error: error.message };
     }
+
+    await supa
+      .from("finding_evidence")
+      .insert({
+        finding_id: inserted.id,
+        target_id: input.targetId,
+        affected_url: input.request?.url ?? null,
+        method: input.request?.method ?? null,
+        param: param || null,
+        payload: input.payload ?? null,
+        status_code: status ?? null,
+        request_raw: requestRaw,
+        response_raw: responseRaw,
+        evidence: input.evidence ?? {},
+      })
+      .then(
+        () => {},
+        (e) => { if (!isUniqueViolation(e)) console.warn("initial finding_evidence insert failed", e?.message || e); },
+      );
 
     // replay row (best-effort)
     if (input.request) {
