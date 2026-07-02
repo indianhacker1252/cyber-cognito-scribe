@@ -2,6 +2,7 @@ import { corsHeaders } from "https://esm.sh/@supabase/supabase-js@2.95.0/cors";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.95.0";
 import { recordFinding } from "../_shared/findings-writer.ts";
 import { mintOobToken } from "../_shared/oob.ts";
+import { loadWafBypassProfile, applyWafBypass } from "../_shared/waf-detect.ts";
 
 // Per-request budget (edge functions are capped at 150s idle timeout).
 // We keep a hard ceiling well under that so we always return a 200 with partial results.
@@ -289,7 +290,22 @@ async function testCveTemplates(
 ): Promise<{ tested: number; confirmed: number; failed: number; details: Array<Record<string, unknown>> }> {
   // Pull target tech-stack for filtering (gap 2).
   const { data: tgt } = await db.from("target_workspaces").select("tech_stack, detected_tech, domain").eq("id", targetId).maybeSingle();
-  const stackBlob = JSON.stringify(((tgt as any)?.tech_stack || {})).toLowerCase() + " " + JSON.stringify(((tgt as any)?.detected_tech || [])).toLowerCase();
+  const tsObj = (tgt as any)?.tech_stack || {};
+  const dtArr = (tgt as any)?.detected_tech || [];
+  // Build a comprehensive keyword blob that includes CMS/server/framework fields
+  // explicitly, because JSON.stringify of nested objects may omit values from
+  // nested fields. When WordPress is in tsObj.cms but Framework is "unknown",
+  // the filter was still seeing "unknown" as the Framework value and skipping
+  // WordPress-specific CVEs. Now we flatten all known field values explicitly.
+  const stackKeywords = [
+    tsObj.server, tsObj.framework, tsObj.cms, tsObj.language,
+    tsObj.os, tsObj.cdn, ...dtArr,
+  ].filter(Boolean).map((v: any) => String(v).toLowerCase());
+  // Add WooCommerce as implied keyword when WordPress is detected
+  if (stackKeywords.some(k => k.includes("wordpress") || k.includes("wp"))) {
+    stackKeywords.push("wordpress", "woocommerce", "wp", "php");
+  }
+  const stackBlob = stackKeywords.join(" ") + " " + JSON.stringify(tsObj).toLowerCase();
   const techMatches = (affected: string[] | null): boolean => {
     if (!affected || affected.length === 0) return true; // unknown affected → keep
     return affected.some((t) => t && stackBlob.includes(String(t).toLowerCase()));
@@ -573,6 +589,32 @@ const allEndpoints = [...(endpoints || []), ...subdomainEndpoints];
 
     const allResults: FuzzResult[] = [];
     const summary: Record<string, { total: number; anomalies: number }> = {};
+
+    // Load WAF bypass profile written by waf-evasion-engine.
+    // Without this, payloads hit WAF-protected targets (Akamai, Cloudflare,
+    // AWS WAF, F5 BigIP) in their raw form and get silently blocked — the
+    // evasion engine correctly identified working bypass techniques and
+    // stored them, but nothing ever read that table before applying payloads.
+    const wafProfile = await loadWafBypassProfile(db, targetId);
+    if (wafProfile.hasProfile) {
+      await db.from("scan_logs").insert({
+        target_id: targetId, log_type: "info",
+        message: `🛡️ WAF bypass profile loaded: ${wafProfile.wafType} — applying ${wafProfile.workingTechniques.length} bypass technique(s): ${wafProfile.workingTechniques.slice(0, 5).join(", ")}`,
+      });
+    }
+
+    // Wrap grammar payload lists with WAF bypass encodings when a profile exists.
+    function wafWrap(rawPayloads: string[]): string[] {
+      if (!wafProfile.hasProfile || wafProfile.workingTechniques.length === 0) return rawPayloads;
+      const result = new Set<string>(rawPayloads);
+      for (const payload of rawPayloads) {
+        for (const tech of wafProfile.workingTechniques.slice(0, 4)) {
+          result.add(applyWafBypass(payload, tech));
+        }
+      }
+      return [...result];
+    }
+
     // Round 1: CVE template execution from intel_feeds
     const cveReport = await testCveTemplates(db, targetId, endpoints);
     // Round 2: grammar-based payloads on first 40 endpoints
@@ -581,7 +623,7 @@ const allEndpoints = [...(endpoints || []), ...subdomainEndpoints];
       for (const [vc, payloads] of Object.entries(FUZZ_GRAMMARS)) {
         if (timeLeft() < 5000) break;
         const epParams = Object.keys((ep as any).parameters || {});
-const r = await fuzzEndpoint(ep.url, vc, payloads.slice(0, 12), "grammar", epParams);
+const r = await fuzzEndpoint(ep.url, vc, wafWrap(payloads).slice(0, 12), "grammar", epParams);
         allResults.push(...r);
         summary[vc] = summary[vc] || { total: 0, anomalies: 0 };
         summary[vc].total += r.length;
