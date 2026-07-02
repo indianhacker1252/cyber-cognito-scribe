@@ -24,6 +24,7 @@ interface Hypothesis {
 
 async function generateHypotheses(context: any): Promise<Hypothesis[]> {
   if (!LOVABLE_AI_KEY) return [];
+  const proofNonce = Math.random().toString(36).slice(2, 10).toUpperCase(); // e.g. "X4K9P2QR"
   const prompt = `You are a senior offensive security engineer reviewing a target's recon + findings.
 
 Asset graph (subdomains): ${JSON.stringify((context.assets || []).slice(0, 20))}
@@ -34,7 +35,17 @@ OOB callbacks observed: ${context.oobCount || 0}
 
 Generate up to 12 high-value attack hypotheses we have NOT tested yet.
 For each, output strict JSON in this schema:
-{ "asset_host": "...", "endpoint_url": "...", "method": "GET|POST|...", "vuln_class": "xss|sqli|ssrf|ssti|idor|...", "hypothesis": "one-sentence reasoning", "mutation": { "param": "...", "payload": "..." }, "expected_proof": "what string in response proves it" }
+{ "asset_host": "...", "endpoint_url": "...", "method": "GET|POST|...", "vuln_class": "xss|sqli|ssrf|ssti|idor|...", "hypothesis": "one-sentence reasoning", "mutation": { "param": "...", "payload": "..." }, "expected_proof": "PROOF_STRING" }
+
+CRITICAL — expected_proof rules (violation = useless finding):
+- Must be a STRING that will appear in the HTTP response IF AND ONLY IF the vulnerability exists.
+- Must be UNIQUE: use the nonce "${proofNonce}" embedded in your payload so only your specific test produces it.
+  Example for XSS: payload="<img src=x onerror=alert('${proofNonce}')>", expected_proof="${proofNonce}"
+  Example for SSTI: payload="{{${proofNonce.charCodeAt(0)}*${proofNonce.charCodeAt(1)}}}", expected_proof=(product of the two char codes)
+  Example for SQLi: payload="' AND '${proofNonce}'='${proofNonce}", expected_proof="${proofNonce}"
+  Example for SSRF: payload="http://oob-host/?t=${proofNonce}", expected_proof="${proofNonce}" (requires OOB callback)
+- NEVER use generic words: "admin", "true", "200", "success", "error", "found", "ok", "user", "null".
+- If you cannot construct a unique detectable proof for a vuln class, omit expected_proof entirely.
 
 Focus on:
 - Combining findings (e.g. open-redirect on subA + SSRF param on subB → chained ATO).
