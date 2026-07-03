@@ -116,18 +116,27 @@ async function spaFallbackExtraction(url: string): Promise<{ endpoints: string[]
 
   return { endpoints: [...endpoints].slice(0, 50), forms };
 }
-async function browserlessScrape(cfg: BrowserConfig, url: string): Promise<{ html: string; xhr: string[] } | null> {
+async function browserlessScrape(
+  cfg: BrowserConfig,
+  url: string,
+): Promise<{ html: string; xhr: string[]; spaEndpoints?: string[]; spaForms?: any[] } | null> {
   if (cfg.mode === "disabled") {
-    // Don't give up — use SPA fallback extraction
+    // Don't give up — use SPA fallback extraction (parses JS bundles for
+    // API routes) AND fetch the raw HTML so the caller's extractEndpoints()
+    // regex pass still has something to work with. Previously this branch
+    // returned a Response object where {html, xhr} was expected — bl.html
+    // and bl.xhr were always undefined, so extractEndpoints ran on an empty
+    // string and every SPA scan logged "0 URLs, 0 forms" regardless of how
+    // good spaFallbackExtraction's own logic was.
     const fallback = await spaFallbackExtraction(url);
-    return new Response(
-      JSON.stringify({
-        endpoints: fallback.endpoints,
-        forms: fallback.forms,
-        source: "spa-fallback",
-      }),
-      { headers: { ...corsHeaders, "Content-Type": "application/json" } },
-    );
+    let rawHtml = "";
+    try {
+      const r = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(8000) });
+      rawHtml = await r.text();
+    } catch {
+      /* keep going with empty html — spaEndpoints still has value */
+    }
+    return { html: rawHtml, xhr: [], spaEndpoints: fallback.endpoints, spaForms: fallback.forms };
   }
   const base = (cfg.endpoint_url || "https://chrome.browserless.io").replace(/\/$/, "");
   const tokenQS = cfg.auth_token ? `?token=${encodeURIComponent(cfg.auth_token)}` : "";
@@ -204,9 +213,13 @@ Deno.serve(async (req) => {
     let html = "",
       mode = "fallback-fetch";
     const bl = await browserlessScrape(cfg, url);
+    let spaEndpoints: string[] = [];
+    let spaForms: any[] = [];
     if (bl) {
       html = bl.html;
       mode = `browserless:${cfg.mode}`;
+      spaEndpoints = bl.spaEndpoints || [];
+      spaForms = bl.spaForms || [];
     } else {
       const r = await fetch(url, {
         headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 CyberScope-SPA/2.0" },
@@ -215,7 +228,12 @@ Deno.serve(async (req) => {
       html = await r.text();
     }
 
-    const endpoints = extractEndpoints(html, url);
+    // Merge regex-extracted endpoints with JS-bundle-parsed SPA endpoints —
+    // the two methods catch different things (regex catches static hrefs,
+    // JS-bundle parsing catches React Router / axios / fetch() calls that
+    // never appear as literal HTML).
+    const regexEndpoints = extractEndpoints(html, url);
+    const endpoints = [...new Set([...regexEndpoints, ...spaEndpoints])];
 
     if (targetId && endpoints.length > 0) {
       const rows = endpoints.map((u) => ({
@@ -234,9 +252,26 @@ Deno.serve(async (req) => {
         .insert({
           target_id: targetId,
           log_type: "info",
-          message: `🌐 Headless browser (${mode}) found ${endpoints.length} SPA endpoints`,
+          message: `🌐 Headless browser (${mode}) found ${endpoints.length} SPA endpoints (${regexEndpoints.length} regex + ${spaEndpoints.length} JS-bundle-parsed)`,
           metadata: { mode, sample: endpoints.slice(0, 5) },
         } as any);
+    }
+
+    // Store SPA-discovered forms (login, checkout, register, etc.) so
+    // form-attacker actually has data — these were previously found but
+    // never persisted to discovered_forms.
+    if (targetId && spaForms.length > 0) {
+      const formRows = spaForms.map((f: any) => ({
+        target_id: targetId,
+        action_url: f.action,
+        method: f.method || "POST",
+        fields: (f.inputs || []).map((name: string) => ({ name, type: "text" })),
+        source: "spa-fallback",
+      }));
+      await db()
+        .from("discovered_forms")
+        .upsert(formRows as any)
+        .select();
     }
 
     return new Response(JSON.stringify({ mode, endpoints, htmlLength: html.length }), {
