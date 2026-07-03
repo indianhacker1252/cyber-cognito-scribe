@@ -275,6 +275,90 @@ export default function SystemHealth() {
         </div>
       </div>
 
+      {/* Per-Target Scan Progress */}
+      {jobCounts && Object.keys(jobCounts).length > 0 && (
+        <div className="rounded-lg border border-border bg-card p-4 space-y-3">
+          <div className="flex items-center gap-2">
+            <ListChecks className="h-4 w-4 text-cyber-cyan" />
+            <p className="text-xs font-mono uppercase text-cyber-cyan">Scan Progress by Target</p>
+          </div>
+          <div className="space-y-2">
+            {Object.entries(jobCounts).map(([tid, c]) => {
+              const pending = c.queued + c.running;
+              const finished = c.done + c.failed;
+              const pct = c.total ? Math.round((finished / c.total) * 100) : 0;
+              const state = c.running > 0 ? "running" : c.queued > 0 ? "queued" : "idle";
+              return (
+                <div key={tid} className="border border-border rounded p-2 space-y-1">
+                  <div className="flex items-center justify-between text-[11px] font-mono">
+                    <span className="truncate">{c.name}</span>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <Badge variant="outline" className={`text-[9px] ${state === "running" ? "text-cyber-cyan border-cyber-cyan/40" : state === "queued" ? "text-cyber-amber border-cyber-amber/40" : "text-muted-foreground"}`}>
+                        {state}
+                      </Badge>
+                      <span className="text-muted-foreground">{finished}/{c.total} ({pct}%)</span>
+                      {pending > 0 && (
+                        <Button
+                          size="sm" variant="ghost"
+                          className="h-6 px-2 text-[10px] text-destructive hover:bg-destructive/10"
+                          onClick={() => { if (confirm(`Cancel ${pending} pending job(s) for ${c.name}? Frees AI credits.`)) cancelTargetJobs.mutate(tid); }}
+                        >
+                          <StopCircle className="h-3 w-3 mr-1" /> Cancel {pending}
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                  <Progress value={pct} className="h-1.5" />
+                  <div className="flex gap-3 text-[10px] font-mono text-muted-foreground">
+                    <span className="text-cyber-cyan">▶ {c.running} running</span>
+                    <span className="text-cyber-amber">⏳ {c.queued} queued</span>
+                    <span className="text-cyber-green">✓ {c.done} done</span>
+                    <span className="text-destructive">✗ {c.failed} failed</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Live Job Queue */}
+      {scanJobs && scanJobs.length > 0 && (
+        <div className="rounded-lg border border-border bg-card p-4 space-y-2">
+          <div className="flex items-center justify-between">
+            <p className="text-xs font-mono uppercase text-cyber-cyan">Live Job Queue ({scanJobs.length})</p>
+            <p className="text-[10px] font-mono text-muted-foreground">Delete unwanted jobs to save AI credits</p>
+          </div>
+          <div className="space-y-1 max-h-96 overflow-y-auto">
+            {scanJobs.map((j) => (
+              <div key={j.id} className="flex items-center justify-between gap-2 border border-border rounded px-2 py-1 text-[11px] font-mono">
+                <div className="flex items-center gap-2 min-w-0">
+                  <Badge variant="outline" className={`text-[9px] ${j.status === "running" ? "text-cyber-cyan border-cyber-cyan/40 animate-pulse" : "text-cyber-amber border-cyber-amber/40"}`}>
+                    {j.status}
+                  </Badge>
+                  <span className="text-cyber-green">{j.job_type}</span>
+                  <span className="text-muted-foreground truncate">· {j.target_name || j.target_id.slice(0, 8)}</span>
+                  {j.attempts > 0 && <span className="text-[10px] text-cyber-amber">×{j.attempts}</span>}
+                </div>
+                <div className="flex items-center gap-1 shrink-0">
+                  <span className="text-[10px] text-muted-foreground">{new Date(j.created_at).toLocaleTimeString()}</span>
+                  {j.status === "running" && (
+                    <Button size="icon" variant="ghost" className="h-6 w-6 text-cyber-amber hover:bg-cyber-amber/10"
+                            onClick={() => cancelJob.mutate(j.id)} title="Cancel (mark failed)">
+                      <StopCircle className="h-3 w-3" />
+                    </Button>
+                  )}
+                  <Button size="icon" variant="ghost" className="h-6 w-6 text-destructive hover:bg-destructive/10"
+                          onClick={() => deleteJob.mutate(j.id)} title="Delete job">
+                    <Trash2 className="h-3 w-3" />
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Agent List */}
       {isLoading ? (
         <p className="text-xs font-mono text-muted-foreground">Loading agents...</p>
