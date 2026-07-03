@@ -79,6 +79,75 @@ export default function SystemHealth() {
     },
   });
 
+  const { data: scanJobs, refetch: refetchJobs } = useQuery({
+    queryKey: ["scan-jobs-active"],
+    queryFn: async () => {
+      const { data } = await supabase
+        .from("scan_jobs" as any)
+        .select("id,target_id,job_type,status,priority,attempts,created_at,started_at,completed_at,error_message, target_workspaces(name,domain)")
+        .in("status", ["queued", "running"])
+        .order("priority", { ascending: false })
+        .order("created_at", { ascending: true })
+        .limit(500);
+      return ((data as any[]) || []).map((j) => ({
+        ...j,
+        target_name: j.target_workspaces?.name || j.target_workspaces?.domain,
+      })) as ScanJob[];
+    },
+    refetchInterval: 5000,
+  });
+
+  const { data: jobCounts } = useQuery({
+    queryKey: ["scan-job-counts"],
+    queryFn: async () => {
+      const { data } = await supabase
+        .from("scan_jobs" as any)
+        .select("target_id,status,target_workspaces(name,domain)")
+        .limit(20000);
+      const map: Record<string, { name: string; queued: number; running: number; done: number; failed: number; total: number }> = {};
+      for (const row of (data as any[]) || []) {
+        const id = row.target_id;
+        if (!map[id]) map[id] = { name: row.target_workspaces?.name || row.target_workspaces?.domain || id.slice(0, 8), queued: 0, running: 0, done: 0, failed: 0, total: 0 };
+        map[id].total++;
+        if (row.status === "queued") map[id].queued++;
+        else if (row.status === "running") map[id].running++;
+        else if (row.status === "completed") map[id].done++;
+        else if (row.status === "failed") map[id].failed++;
+      }
+      return map;
+    },
+    refetchInterval: 8000,
+  });
+
+  const cancelJob = useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase.from("scan_jobs" as any).update({ status: "failed", completed_at: new Date().toISOString(), error_message: "cancelled by user" }).eq("id", id);
+      if (error) throw error;
+    },
+    onSuccess: () => { toast.success("Job cancelled"); refetchJobs(); queryClient.invalidateQueries({ queryKey: ["scan-job-counts"] }); },
+    onError: (e: any) => toast.error(`Cancel failed: ${e.message}`),
+  });
+
+  const deleteJob = useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase.from("scan_jobs" as any).delete().eq("id", id);
+      if (error) throw error;
+    },
+    onSuccess: () => { toast.success("Job deleted — AI credits saved"); refetchJobs(); queryClient.invalidateQueries({ queryKey: ["scan-job-counts"] }); },
+    onError: (e: any) => toast.error(`Delete failed: ${e.message}`),
+  });
+
+  const cancelTargetJobs = useMutation({
+    mutationFn: async (targetId: string) => {
+      const { error } = await supabase.from("scan_jobs" as any)
+        .update({ status: "failed", completed_at: new Date().toISOString(), error_message: "cancelled by user (bulk)" })
+        .eq("target_id", targetId).in("status", ["queued", "running"]);
+      if (error) throw error;
+    },
+    onSuccess: () => { toast.success("Cancelled all pending jobs for target"); refetchJobs(); queryClient.invalidateQueries({ queryKey: ["scan-job-counts"] }); },
+    onError: (e: any) => toast.error(`Bulk cancel failed: ${e.message}`),
+  });
+
   const purgeAll = useMutation({
     mutationFn: async () => {
       const { data, error } = await supabase.rpc("purge_history" as any, { _target_id: null, _scope: "all" });
@@ -87,8 +156,8 @@ export default function SystemHealth() {
     },
     onSuccess: (data: any) => {
       queryClient.invalidateQueries();
-      const totals = data?.deleted ? Object.entries(data.deleted).map(([k, v]) => `${k}:${v}`).join(", ") : "";
-      toast.success(`🧹 Purged everything from database. ${totals}`);
+      const totals = data?.deleted ? Object.entries(data.deleted).slice(0, 6).map(([k, v]) => `${k}:${v}`).join(", ") : "";
+      toast.success(`🧹 Purged. ${totals}`);
     },
     onError: (e: any) => toast.error(`Purge failed: ${e.message}`),
   });
