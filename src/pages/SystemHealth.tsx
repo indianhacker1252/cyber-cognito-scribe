@@ -2,9 +2,24 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Activity, Wifi, WifiOff, RefreshCw, Trash2, TestTube2 } from "lucide-react";
+import { Progress } from "@/components/ui/progress";
+import { Activity, Wifi, WifiOff, RefreshCw, Trash2, TestTube2, StopCircle, ListChecks } from "lucide-react";
 import { toast } from "sonner";
 import { useState } from "react";
+
+interface ScanJob {
+  id: string;
+  target_id: string;
+  job_type: string;
+  status: string;
+  priority: number;
+  attempts: number;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  error_message: string | null;
+  target_name?: string;
+}
 
 interface AgentStatus {
   id: string;
