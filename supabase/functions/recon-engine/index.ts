@@ -1412,6 +1412,34 @@ serve(async (req) => {
       if (!allUrls.has(form.action)) allUrls.set(form.action, { method: form.method, params, source: "spider-form" });
     }
 
+    // Persist form STRUCTURE to discovered_forms so form-attacker has real
+    // data to POST-fuzz. Without this, only the form's action URL survived
+    // (as a generic fuzzable endpoint) — the field names, method, and
+    // file-upload detection were discarded, so form-attacker always found
+    // "0 forms" unless dom-fuzz happened to run separately and repopulate
+    // the same table on its own initiative.
+    if (allForms.length > 0) {
+      const formRows = allForms.map((form) => ({
+        target_id: targetId,
+        page_url: domain,
+        action_url: form.action,
+        method: (form.method || "POST").toUpperCase(),
+        enctype: form.inputs.some((i) => /file|upload|attachment/i.test(i))
+          ? "multipart/form-data"
+          : "application/x-www-form-urlencoded",
+        fields: form.inputs.map((name) => ({ name, type: /file|upload/i.test(name) ? "file" : "text" })),
+        has_file_upload: form.inputs.some((i) => /file|upload|attachment/i.test(i)),
+      }));
+      try {
+        await db.from("discovered_forms").upsert(formRows as any, {
+          onConflict: "target_id,action_url,method",
+          ignoreDuplicates: true,
+        });
+      } catch {
+        /* best-effort — dom-fuzz can still backfill later */
+      }
+    }
+
     // Collapse http/https and www. duplicates — use SCHEME so HTTP targets stay HTTP
     const normalizedMap = new Map<string, { method: string; params: Record<string, unknown>; source: string }>();
     for (const [url, info] of allUrls.entries()) {
