@@ -17,21 +17,29 @@ const STALL_MS = 5 * 60_000;
 
 // Map phase → job types that fulfill it
 const PHASE_JOBS: Record<string, { type: string; priority: number; payload?: any }[]> = {
-  discovery:    [{ type: "juicy", priority: 8 }, { type: "js_deep", priority: 7 }],
+  discovery:    [
+    { type: "subdomain_enum", priority: 9 },
+    { type: "juicy", priority: 8 },
+    { type: "js_deep", priority: 7 },
+    { type: "vuln_scan", priority: 6 },
+  ],
   owasp_matrix: [
     { type: "fuzz", priority: 7 }, { type: "matrix_fuzz", priority: 7 },
     { type: "advanced_detect", priority: 7 }, { type: "form_attack", priority: 6 },
     { type: "graphql", priority: 6 }, { type: "jwt_attack", priority: 6 },
     { type: "ssrf_deep", priority: 6 }, { type: "differential", priority: 6 },
+    { type: "auth_replay", priority: 6 }, { type: "cve", priority: 5 },
   ],
   deep_modules: [
     { type: "llm_attack", priority: 6 }, { type: "waf_evasion", priority: 8 },
     { type: "cve_exploit", priority: 7 }, { type: "ai_strategist", priority: 7 },
+    { type: "nvd_sync", priority: 4 },
   ],
   exploit:      [{ type: "exploit_watchdog", priority: 8 }],
   chain:        [{ type: "chain", priority: 5 }, { type: "chain_exploit", priority: 5 }],
   report:       [{ type: "report_rewrite", priority: 2 }],
 };
+
 
 async function callFn(name: string, body: any) {
   try {
