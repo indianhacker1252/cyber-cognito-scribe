@@ -352,6 +352,49 @@ Deno.serve(async (req) => {
           })
           .eq("id", job.id);
 
+        // 🔖 Universal OWASP checklist progress: every completed job marks the
+        // checks belonging to its scanner module as "attempted" (unless already
+        // upgraded to "evidence" by findings-writer). Fixes the "only 1-2 checks
+        // ever move off pending" bug.
+        try {
+          const JOB_TO_MODULES: Record<string, string[]> = {
+            fuzz: ["advanced-fuzzer"],
+            matrix_fuzz: ["matrix-fuzzer"],
+            form_attack: ["form-attacker"],
+            juicy: ["recon-juicy"],
+            recon: ["recon-engine", "recon-deep"],
+            ssrf_deep: ["ssrf-deep"],
+            js_deep: ["js-deep-expand"],
+            cve_exploit: ["cve-to-exploit"],
+            cve: ["cve-version-matcher"],
+            nvd_sync: ["nvd-intel-sync"],
+            subdomain_enum: ["subdomain-enum"],
+            jwt_attack: ["auth-confusion-suite"],
+            advanced_detect: ["auth-deep", "bac-tester", "advanced-fuzzer", "differential-oracle"],
+            auth_replay: ["auth-replay"],
+            graphql: ["graphql-attack"],
+            differential: ["differential-oracle"],
+            vuln_scan: ["vuln-scanner"],
+            waf_evasion: ["waf-evasion-engine"],
+            llm_attack: ["llm-attack-suite"],
+          };
+          const mods = JOB_TO_MODULES[job.job_type];
+          if (mods && mods.length) {
+            const { data: rows } = await supa
+              .from("owasp_checklist")
+              .select("id,status")
+              .eq("target_id", job.target_id)
+              .in("check_module", mods);
+            const toBump = (rows || []).filter((r: any) => !["evidence", "passed", "complete"].includes(r.status));
+            if (toBump.length) {
+              await supa
+                .from("owasp_checklist")
+                .update({ status: "attempted", last_run_at: new Date().toISOString() })
+                .in("id", toBump.map((r: any) => r.id));
+            }
+          }
+        } catch { /* ignore */ }
+
         // Mark recon phase complete so the arbiter can advance the pipeline.
         if (job.job_type === "recon") {
           await supa
@@ -375,6 +418,7 @@ Deno.serve(async (req) => {
             () => {},
           );
         }
+
 
         // ── Post-phase fan-out: ensure the chain keeps moving even if a
         // module forgets to enqueue the next stage. Idempotent: scan_jobs
