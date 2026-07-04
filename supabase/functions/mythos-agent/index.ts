@@ -43,10 +43,6 @@ serve(async (req) => {
     };
 
     let totalFindings = 0, totalChains = 0, totalVariants = 0;
-    const successSteps = chainEvidence.filter(e => e.interesting).length;
-if (successSteps > 0 && chainEvidence.length > 0) {
-  await log(...`Chain confirmed`...);
-  
 
     // Phase 1: SAST (if repo provided)
     if (repoUrl) {
@@ -59,24 +55,28 @@ if (successSteps > 0 && chainEvidence.length > 0) {
         await append("sast", `SAST failed: ${JSON.stringify(r.data).slice(0, 200)}`);
       }
     }
-const debatePhaseKey = `debate-${i}-${runId}`;
-const { data: alreadyRunning } = await db.from("scan_logs")
-  .select("id").eq("target_id", targetId)
-  .like("message", `%${debatePhaseKey}%`).limit(1);
 
-if (alreadyRunning && alreadyRunning.length > 0) {
-  await append(`iter-${i}-debate`, "⚠️ Debate phase already running — skipping duplicate");
-  continue;
-}
-await db.from("scan_logs").insert({
-  target_id: targetId, log_type: "info",
-  message: `debate-lock:${debatePhaseKey}`,
-  metadata: { run_id: runId },
-});
     // Phase 2: iterative chain + variant + debate loop
     for (let i = 1; i <= maxIterations; i++) {
       await db.from("mythos_runs").update({ iteration: i }).eq("id", runId);
       await append(`iter-${i}`, `Iteration ${i}/${maxIterations} starting`);
+
+      // Idempotency lock: skip if this iteration's debate phase already started
+      const debatePhaseKey = `debate-${i}-${runId}`;
+      const { data: alreadyRunning } = await db.from("scan_logs")
+        .select("id").eq("target_id", targetId)
+        .like("message", `%${debatePhaseKey}%`).limit(1);
+      if (alreadyRunning && alreadyRunning.length > 0) {
+        await append(`iter-${i}-debate`, "⚠️ Debate phase already running — skipping duplicate");
+        continue;
+      }
+      await db.from("scan_logs").insert({
+        target_id: targetId, log_type: "info",
+        message: `debate-lock:${debatePhaseKey}`,
+        metadata: { run_id: runId },
+      });
+
+
 
       // Chainer
       await append(`iter-${i}-chain`, `🔗 Asking LLM to propose kill-chains from current findings`);
