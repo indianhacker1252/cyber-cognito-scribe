@@ -206,6 +206,9 @@ export async function tripleVerify(opts: VerifyOptions): Promise<VerifyResult> {
       statusChanged: false,
       rebaselineDrift: false,
       replayDeterministic: false,
+      timingSignal: false,
+      timingDeltaMs: 0,
+      openRedirectHit: false,
     },
     summary: "",
     errors: [],
@@ -220,13 +223,16 @@ export async function tripleVerify(opts: VerifyOptions): Promise<VerifyResult> {
 
     // Stage 2: mutated
     const mutReq = buildRequest(opts, opts.payload);
-    const mutResp = await safeFetch(mutReq.url, mutReq.init, 8000);
+    const mutT0 = Date.now();
+    const mutResp = await safeFetch(mutReq.url, mutReq.init, 15000);
     const mutBody = await readBodySafe(mutResp);
     const mutSnap: StageSnapshot = {
       status: mutResp.status,
       length: mutBody.length,
       hash: await sha256Hex(mutBody),
       blocked: looksBlocked(mutResp.status, mutBody),
+      elapsedMs: Date.now() - mutT0,
+      location: mutResp.headers.get("location"),
     };
     result.stages.mutated = mutSnap;
 
