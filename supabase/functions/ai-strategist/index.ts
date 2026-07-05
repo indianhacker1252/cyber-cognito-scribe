@@ -25,17 +25,35 @@ interface Hypothesis {
 async function generateHypotheses(context: any): Promise<Hypothesis[]> {
   if (!LOVABLE_AI_KEY) return [];
   const proofNonce = Math.random().toString(36).slice(2, 10).toUpperCase(); // e.g. "X4K9P2QR"
-  const prompt = `You are a senior offensive security engineer reviewing a target's recon + findings.
+  const prompt = `You are XBOW-tier offensive AI — reviewing a target's full recon + evidence trail. Compete with Mythos + XBOW on chain-depth.
 
-Asset graph (subdomains): ${JSON.stringify((context.assets || []).slice(0, 20))}
-Existing findings (summary): ${JSON.stringify((context.findings || []).slice(0, 30))}
-Tech stack: ${JSON.stringify(context.techStack || {})}
-WAF profile: ${JSON.stringify(context.wafProfile || {})}
-OOB callbacks observed: ${context.oobCount || 0}
+═══ ASSET GRAPH (subdomains + tech) ═══
+${JSON.stringify((context.assets || []).slice(0, 30))}
+
+═══ PROVEN FINDINGS (exploited tier — reuse these primitives) ═══
+${JSON.stringify((context.provenFindings || []).slice(0, 15))}
+
+═══ ALL FINDINGS (signal + suspected) ═══
+${JSON.stringify((context.findings || []).slice(0, 40))}
+
+═══ DISCOVERED ENDPOINTS (unfuzzed candidates) ═══
+${JSON.stringify((context.endpoints || []).slice(0, 30))}
+
+═══ TECH STACK ═══
+${JSON.stringify(context.techStack || {})}
+
+═══ WAF PROFILE ═══
+${JSON.stringify(context.wafProfile || {})}
+
+═══ OOB CALLBACKS OBSERVED ═══
+${context.oobCount || 0}
+
+═══ RECENT AGENT DECISIONS (last 10 log lines) ═══
+${(context.recentDecisions || []).slice(0, 10).map((l: any) => `- [${l.log_type}] ${l.message}`).join("\n")}
 
 Generate up to 12 high-value attack hypotheses we have NOT tested yet.
 For each, output strict JSON in this schema:
-{ "asset_host": "...", "endpoint_url": "...", "method": "GET|POST|...", "vuln_class": "xss|sqli|ssrf|ssti|idor|...", "hypothesis": "one-sentence reasoning", "mutation": { "param": "...", "payload": "..." }, "expected_proof": "PROOF_STRING" }
+{ "asset_host": "...", "endpoint_url": "...", "method": "GET|POST|...", "vuln_class": "xss|sqli|ssrf|ssti|idor|auth_bypass|open-redirect|...", "hypothesis": "one-sentence reasoning", "mutation": { "param": "...", "payload": "..." }, "expected_proof": "PROOF_STRING" }
 
 CRITICAL — expected_proof rules (violation = useless finding):
 - Must be a STRING that will appear in the HTTP response IF AND ONLY IF the vulnerability exists.
@@ -44,14 +62,16 @@ CRITICAL — expected_proof rules (violation = useless finding):
   Example for SSTI: payload="{{${proofNonce.charCodeAt(0)}*${proofNonce.charCodeAt(1)}}}", expected_proof=(product of the two char codes)
   Example for SQLi: payload="' AND '${proofNonce}'='${proofNonce}", expected_proof="${proofNonce}"
   Example for SSRF: payload="http://oob-host/?t=${proofNonce}", expected_proof="${proofNonce}" (requires OOB callback)
+  Example for blind-SQLi: payload="' AND SLEEP(5)--", expected_proof="TIMING:>4000ms"
 - NEVER use generic words: "admin", "true", "200", "success", "error", "found", "ok", "user", "null".
 - If you cannot construct a unique detectable proof for a vuln class, omit expected_proof entirely.
 
 Focus on:
-- Combining findings (e.g. open-redirect on subA + SSRF param on subB → chained ATO).
-- Forgotten admin/dev subdomains.
+- CHAINING proven primitives (e.g. exploited XSS on subA → cookie steal → IDOR on subB).
+- Forgotten admin/dev subdomains with default creds.
 - Tech-specific CVE plays based on detected stack.
 - Parameter names typical for the framework that we haven't fuzzed yet.
+- Auth-adjacent endpoints (JWT, oauth, /admin, /api/v*/users).
 
 Output ONLY a JSON array of hypothesis objects. No prose.`;
 
@@ -79,15 +99,23 @@ Output ONLY a JSON array of hypothesis objects. No prose.`;
 }
 
 async function strategize(db: any, targetId: string, round: number) {
-  const [{ data: assets }, { data: findings }, { data: tgt }, { data: oob }] = await Promise.all([
+  const [{ data: assets }, { data: findings }, { data: proven }, { data: endpoints }, { data: tgt }, { data: oob }, { data: recentDecisions }] = await Promise.all([
     db.from("scan_assets").select("host,base_url,source").eq("target_id", targetId).limit(50),
     db
       .from("vulnerability_findings")
       .select("vuln_class,finding_type,severity,affected_url,proof_tier")
       .eq("target_id", targetId)
       .limit(80),
+    db
+      .from("vulnerability_findings")
+      .select("title,vuln_class,severity,affected_url,payload,hard_evidence")
+      .eq("target_id", targetId)
+      .eq("proof_tier", "exploited")
+      .limit(20),
+    db.from("discovered_endpoints").select("url,method,parameters").eq("target_id", targetId).limit(60),
     db.from("target_workspaces").select("domain,waf_profile").eq("id", targetId).maybeSingle(),
     db.from("oob_callbacks").select("id", { count: "exact", head: true }).eq("target_id", targetId),
+    db.from("scan_logs").select("log_type,message").eq("target_id", targetId).in("log_type", ["action","warning","result","thought"]).order("created_at", { ascending: false }).limit(20),
   ]);
 
   const techStack: Record<string, string> = {};
@@ -111,9 +139,12 @@ async function strategize(db: any, targetId: string, round: number) {
   const ctx = {
     assets: assets || [],
     findings: findings || [],
+    provenFindings: proven || [],
+    endpoints: endpoints || [],
     techStack,
     wafProfile: tgt?.waf_profile || {},
     oobCount: oob ?? 0,
+    recentDecisions: recentDecisions || [],
   };
 
   const hyps = await generateHypotheses(ctx);

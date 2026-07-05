@@ -20,6 +20,8 @@ export interface StageSnapshot {
   length: number;
   hash: string;
   blocked: boolean;
+  elapsedMs: number;
+  location?: string | null;
 }
 
 export interface VerifyOptions {
@@ -51,6 +53,9 @@ export interface VerifyResult {
     statusChanged: boolean;
     rebaselineDrift: boolean;
     replayDeterministic: boolean;
+    timingSignal: boolean;      // NEW: >2s spike on payload vs baseline (blind SQLi/SSRF)
+    timingDeltaMs: number;      // NEW
+    openRedirectHit: boolean;   // NEW: 3xx Location leaking to attacker-controlled host
   };
   summary: string;
   errors: string[];
@@ -114,8 +119,23 @@ export const EXEC_DETECTORS: Record<
     if (/root:.*:0:0/.test(body) && !baseline.includes("root:")) return { found: true, evidence: "XXE: /etc/passwd via entity" };
     return { found: false, evidence: "" };
   },
-  "open-redirect": (_p, body, baseline) => {
+  "open-redirect": (_p, _body, _baseline) => {
     // Open redirects detected via Location header, not body — handled in stage diff
+    return { found: false, evidence: "" };
+  },
+  idor: (_p, body, baseline) => {
+    // IDOR proof: mutated request exposes a distinct record body (different user/id keys)
+    const emailMatch = body.match(/[\w.+-]+@[\w-]+\.[\w.-]+/g) || [];
+    const baseEmails = baseline.match(/[\w.+-]+@[\w-]+\.[\w.-]+/g) || [];
+    const newEmails = emailMatch.filter(e => !baseEmails.includes(e));
+    if (newEmails.length >= 1 && body.length > 100)
+      return { found: true, evidence: `IDOR leaked ${newEmails.length} new email(s): ${newEmails[0]}` };
+    return { found: false, evidence: "" };
+  },
+  auth_bypass: (_p, body, baseline) => {
+    // Auth bypass proof: mutated body contains admin/session markers baseline lacks
+    const markers = [/"role"\s*:\s*"admin"/i, /is_admin\s*[:=]\s*true/i, /"authenticated"\s*:\s*true/i, /sessionid|SESSIONID|jwt_token/i];
+    for (const m of markers) if (m.test(body) && !m.test(baseline)) return { found: true, evidence: `auth marker: ${m.source}` };
     return { found: false, evidence: "" };
   },
 };
@@ -133,6 +153,7 @@ function looksBlocked(status: number, body: string): boolean {
 }
 
 async function snapshot(url: string, init: RequestInit, timeoutMs = 12000): Promise<StageSnapshot> {
+  const t0 = Date.now();
   const r = await safeFetch(url, init, timeoutMs);
   const body = await readBodySafe(r);
   return {
@@ -140,6 +161,8 @@ async function snapshot(url: string, init: RequestInit, timeoutMs = 12000): Prom
     length: body.length,
     hash: await sha256Hex(body),
     blocked: looksBlocked(r.status, body),
+    elapsedMs: Date.now() - t0,
+    location: r.headers.get("location"),
   };
 }
 
@@ -183,6 +206,9 @@ export async function tripleVerify(opts: VerifyOptions): Promise<VerifyResult> {
       statusChanged: false,
       rebaselineDrift: false,
       replayDeterministic: false,
+      timingSignal: false,
+      timingDeltaMs: 0,
+      openRedirectHit: false,
     },
     summary: "",
     errors: [],
@@ -197,13 +223,16 @@ export async function tripleVerify(opts: VerifyOptions): Promise<VerifyResult> {
 
     // Stage 2: mutated
     const mutReq = buildRequest(opts, opts.payload);
-    const mutResp = await safeFetch(mutReq.url, mutReq.init, 8000);
+    const mutT0 = Date.now();
+    const mutResp = await safeFetch(mutReq.url, mutReq.init, 15000);
     const mutBody = await readBodySafe(mutResp);
     const mutSnap: StageSnapshot = {
       status: mutResp.status,
       length: mutBody.length,
       hash: await sha256Hex(mutBody),
       blocked: looksBlocked(mutResp.status, mutBody),
+      elapsedMs: Date.now() - mutT0,
+      location: mutResp.headers.get("location"),
     };
     result.stages.mutated = mutSnap;
 
@@ -227,6 +256,26 @@ export async function tripleVerify(opts: VerifyOptions): Promise<VerifyResult> {
     result.signals.deltaRatio = result.signals.deltaBytes / Math.max(baseLen, 1);
     result.signals.statusChanged = mutSnap.status !== result.stages.baseline.status;
 
+    // Timing signal — blind SQLi/SSRF proof (payload contains SLEEP/BENCHMARK/delay hint AND response is >2s slower than baseline)
+    result.signals.timingDeltaMs = mutSnap.elapsedMs - result.stages.baseline.elapsedMs;
+    const wantsDelay = /\b(sleep|benchmark|pg_sleep|waitfor|delay)\b/i.test(opts.payload);
+    if (wantsDelay && result.signals.timingDeltaMs > 2500) {
+      result.signals.timingSignal = true;
+      result.reasons.push(`timing_signal: mutated ${result.signals.timingDeltaMs}ms slower than baseline`);
+    }
+
+    // Open-redirect proof — 3xx with Location leaking payload host
+    if (opts.vulnClass === "open-redirect" && mutSnap.status >= 300 && mutSnap.status < 400 && mutSnap.location) {
+      const payloadHost = (() => { try { return new URL(opts.payload.startsWith("http") ? opts.payload : `http://${opts.payload}`).host; } catch { return null; } })();
+      if (payloadHost && mutSnap.location.includes(payloadHost)) {
+        result.signals.openRedirectHit = true;
+        result.signals.executionEvidence = true;
+        result.signals.evidenceDetail = `Location: ${mutSnap.location}`;
+        result.reasons.push(`open_redirect_confirmed → ${mutSnap.location}`);
+      }
+    }
+
+
     // Stage 3: rebaseline
     await new Promise(r => setTimeout(r, 120));
     result.stages.rebaseline = await snapshot(cleanReq.url, cleanReq.init, 6000);
@@ -249,6 +298,8 @@ export async function tripleVerify(opts: VerifyOptions): Promise<VerifyResult> {
     // ─── Confidence math ──────────────────────────────────────
     let conf = 0;
     if (result.signals.executionEvidence) conf += 70;          // hard proof dominates
+    if (result.signals.timingSignal) conf += 40;               // blind SQLi/SSRF timing proof
+    if (result.signals.openRedirectHit) conf += 25;
     if (result.signals.statusChanged) conf += 10;
     if (result.signals.deltaRatio > 0.25) conf += 15;
     else if (result.signals.deltaRatio > 0.10) conf += 8;
@@ -257,6 +308,7 @@ export async function tripleVerify(opts: VerifyOptions): Promise<VerifyResult> {
       conf += 5;
       result.reasons.push("waf_engaged_on_payload");
     }
+
 
     // Penalties
     if (result.signals.rebaselineDrift) conf = Math.min(conf, 60);
