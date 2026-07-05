@@ -99,15 +99,23 @@ Output ONLY a JSON array of hypothesis objects. No prose.`;
 }
 
 async function strategize(db: any, targetId: string, round: number) {
-  const [{ data: assets }, { data: findings }, { data: tgt }, { data: oob }] = await Promise.all([
+  const [{ data: assets }, { data: findings }, { data: proven }, { data: endpoints }, { data: tgt }, { data: oob }, { data: recentDecisions }] = await Promise.all([
     db.from("scan_assets").select("host,base_url,source").eq("target_id", targetId).limit(50),
     db
       .from("vulnerability_findings")
       .select("vuln_class,finding_type,severity,affected_url,proof_tier")
       .eq("target_id", targetId)
       .limit(80),
+    db
+      .from("vulnerability_findings")
+      .select("title,vuln_class,severity,affected_url,payload,hard_evidence")
+      .eq("target_id", targetId)
+      .eq("proof_tier", "exploited")
+      .limit(20),
+    db.from("discovered_endpoints").select("url,method,parameters").eq("target_id", targetId).limit(60),
     db.from("target_workspaces").select("domain,waf_profile").eq("id", targetId).maybeSingle(),
     db.from("oob_callbacks").select("id", { count: "exact", head: true }).eq("target_id", targetId),
+    db.from("scan_logs").select("log_type,message").eq("target_id", targetId).in("log_type", ["action","warning","result","thought"]).order("created_at", { ascending: false }).limit(20),
   ]);
 
   const techStack: Record<string, string> = {};
@@ -131,9 +139,12 @@ async function strategize(db: any, targetId: string, round: number) {
   const ctx = {
     assets: assets || [],
     findings: findings || [],
+    provenFindings: proven || [],
+    endpoints: endpoints || [],
     techStack,
     wafProfile: tgt?.waf_profile || {},
     oobCount: oob ?? 0,
+    recentDecisions: recentDecisions || [],
   };
 
   const hyps = await generateHypotheses(ctx);
