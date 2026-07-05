@@ -20,6 +20,8 @@ export interface StageSnapshot {
   length: number;
   hash: string;
   blocked: boolean;
+  elapsedMs: number;
+  location?: string | null;
 }
 
 export interface VerifyOptions {
