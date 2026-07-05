@@ -153,6 +153,7 @@ function looksBlocked(status: number, body: string): boolean {
 }
 
 async function snapshot(url: string, init: RequestInit, timeoutMs = 12000): Promise<StageSnapshot> {
+  const t0 = Date.now();
   const r = await safeFetch(url, init, timeoutMs);
   const body = await readBodySafe(r);
   return {
@@ -160,6 +161,8 @@ async function snapshot(url: string, init: RequestInit, timeoutMs = 12000): Prom
     length: body.length,
     hash: await sha256Hex(body),
     blocked: looksBlocked(r.status, body),
+    elapsedMs: Date.now() - t0,
+    location: r.headers.get("location"),
   };
 }
 
