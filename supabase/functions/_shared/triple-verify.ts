@@ -256,6 +256,26 @@ export async function tripleVerify(opts: VerifyOptions): Promise<VerifyResult> {
     result.signals.deltaRatio = result.signals.deltaBytes / Math.max(baseLen, 1);
     result.signals.statusChanged = mutSnap.status !== result.stages.baseline.status;
 
+    // Timing signal — blind SQLi/SSRF proof (payload contains SLEEP/BENCHMARK/delay hint AND response is >2s slower than baseline)
+    result.signals.timingDeltaMs = mutSnap.elapsedMs - result.stages.baseline.elapsedMs;
+    const wantsDelay = /\b(sleep|benchmark|pg_sleep|waitfor|delay)\b/i.test(opts.payload);
+    if (wantsDelay && result.signals.timingDeltaMs > 2500) {
+      result.signals.timingSignal = true;
+      result.reasons.push(`timing_signal: mutated ${result.signals.timingDeltaMs}ms slower than baseline`);
+    }
+
+    // Open-redirect proof — 3xx with Location leaking payload host
+    if (opts.vulnClass === "open-redirect" && mutSnap.status >= 300 && mutSnap.status < 400 && mutSnap.location) {
+      const payloadHost = (() => { try { return new URL(opts.payload.startsWith("http") ? opts.payload : `http://${opts.payload}`).host; } catch { return null; } })();
+      if (payloadHost && mutSnap.location.includes(payloadHost)) {
+        result.signals.openRedirectHit = true;
+        result.signals.executionEvidence = true;
+        result.signals.evidenceDetail = `Location: ${mutSnap.location}`;
+        result.reasons.push(`open_redirect_confirmed → ${mutSnap.location}`);
+      }
+    }
+
+
     // Stage 3: rebaseline
     await new Promise(r => setTimeout(r, 120));
     result.stages.rebaseline = await snapshot(cleanReq.url, cleanReq.init, 6000);
