@@ -298,6 +298,8 @@ export async function tripleVerify(opts: VerifyOptions): Promise<VerifyResult> {
     // ─── Confidence math ──────────────────────────────────────
     let conf = 0;
     if (result.signals.executionEvidence) conf += 70;          // hard proof dominates
+    if (result.signals.timingSignal) conf += 40;               // blind SQLi/SSRF timing proof
+    if (result.signals.openRedirectHit) conf += 25;
     if (result.signals.statusChanged) conf += 10;
     if (result.signals.deltaRatio > 0.25) conf += 15;
     else if (result.signals.deltaRatio > 0.10) conf += 8;
@@ -306,6 +308,7 @@ export async function tripleVerify(opts: VerifyOptions): Promise<VerifyResult> {
       conf += 5;
       result.reasons.push("waf_engaged_on_payload");
     }
+
 
     // Penalties
     if (result.signals.rebaselineDrift) conf = Math.min(conf, 60);
