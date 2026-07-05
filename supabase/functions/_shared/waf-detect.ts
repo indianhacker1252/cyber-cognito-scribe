@@ -70,59 +70,6 @@ export async function detectWaf(url: string): Promise<WafSignal> {
         break;
       }
     }
-    // ADD active WAF detection by sending a known-bad payload:
-    export async function detectWafActive(url: string): Promise<WafSignal> {
-      // First try passive
-      const passive = await detectWaf(url);
-      if (passive.detected) return passive;
-
-      // Send a clearly malicious probe — WAF will block and reveal itself
-      const probeUrl = `${url}${url.includes("?") ? "&" : "?"}waf_probe=<script>alert(1)</script>&id=1' OR '1'='1`;
-      try {
-        const r = await safeFetch(probeUrl, { method: "GET" }, 6000);
-        const body = await readBodySafe(r, 8000);
-        const evidence: string[] = [];
-        let vendor: string | null = null;
-
-        // Check headers on blocked response
-        r.headers.forEach((v, k) => {
-          if (k.toLowerCase() === "x-akamai-transformed") {
-            vendor ??= "Akamai";
-            evidence.push("x-akamai-transformed on block");
-          }
-          if (k.toLowerCase() === "server" && v.toLowerCase().includes("akamai")) {
-            vendor ??= "Akamai";
-            evidence.push(`server:${v}`);
-          }
-        });
-
-        // Check body patterns on 403/406/429 responses
-        if (r.status === 403 || r.status === 406 || r.status === 429) {
-          for (const [pat, name] of WAF_BODY_PATTERNS) {
-            if (pat.test(body)) {
-              vendor ??= name;
-              evidence.push(`body-pattern:${name}`);
-            }
-          }
-          // Generic block page heuristics
-          if (!vendor && /request.{0,20}blocked|access.{0,20}denied|security.{0,20}violation/i.test(body)) {
-            vendor = "Generic WAF";
-            evidence.push(`block-page:${r.status}`);
-          }
-          // Akamai reference number pattern
-          if (/Reference\s+#\d+\.\d+\.\d+/.test(body)) {
-            vendor = "Akamai";
-            evidence.push("Akamai reference number in block page");
-          }
-        }
-
-        if (vendor) return { detected: true, vendor, status: r.status, evidence };
-      } catch {
-        /* ignore */
-      }
-
-      return passive;
-    }
     // Probe with an obviously malicious string and watch for 403/406/429/501
     const probeUrl =
       url + (url.includes("?") ? "&" : "?") + `q=${encodeURIComponent("<script>alert(1)</script>' OR 1=1--")}`;
@@ -136,6 +83,40 @@ export async function detectWaf(url: string): Promise<WafSignal> {
   }
   return { detected: !!vendor, vendor, status, evidence };
 }
+
+// Active WAF detection — send a known-bad payload and inspect the block response.
+export async function detectWafActive(url: string): Promise<WafSignal> {
+  const passive = await detectWaf(url);
+  if (passive.detected) return passive;
+
+  const probeUrl = `${url}${url.includes("?") ? "&" : "?"}waf_probe=<script>alert(1)</script>&id=1' OR '1'='1`;
+  try {
+    const r = await safeFetch(probeUrl, { method: "GET" }, 6000);
+    const body = await readBodySafe(r, 8000);
+    const evidence: string[] = [];
+    let vendor: string | null = null;
+
+    r.headers.forEach((v, k) => {
+      if (k.toLowerCase() === "x-akamai-transformed") { vendor ??= "Akamai"; evidence.push("x-akamai-transformed on block"); }
+      if (k.toLowerCase() === "server" && v.toLowerCase().includes("akamai")) { vendor ??= "Akamai"; evidence.push(`server:${v}`); }
+    });
+
+    if (r.status === 403 || r.status === 406 || r.status === 429) {
+      for (const [pat, name] of WAF_BODY_PATTERNS) {
+        if (pat.test(body)) { vendor ??= name; evidence.push(`body-pattern:${name}`); }
+      }
+      if (!vendor && /request.{0,20}blocked|access.{0,20}denied|security.{0,20}violation/i.test(body)) {
+        vendor = "Generic WAF"; evidence.push(`block-page:${r.status}`);
+      }
+      if (/Reference\s+#\d+\.\d+\.\d+/.test(body)) { vendor = "Akamai"; evidence.push("Akamai reference number in block page"); }
+    }
+
+    if (vendor) return { detected: true, vendor, status: r.status, evidence };
+  } catch { /* ignore */ }
+
+  return passive;
+}
+
 
 // Polite delay generator — once a WAF is detected the scanner should slow down.
 export class AdaptiveThrottle {
