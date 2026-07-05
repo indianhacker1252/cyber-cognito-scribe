@@ -37,13 +37,9 @@ Deno.serve(async (req) => {
   const { data: existing } = await supa.from("target_workspaces").select("id").eq("domain", testUrl).maybeSingle();
   let targetId = existing?.id;
   if (!targetId) {
-    // Pick any existing user to own the sentinel target (schema requires user_id)
-    const { data: anyProfile } = await supa.from("profiles").select("id").limit(1).maybeSingle();
-    if (!anyProfile?.id) return ok({ ok: false, error: "no user in profiles to own sentinel target" });
     const { data: inserted, error } = await supa.from("target_workspaces").insert({
       name: "E2E SelfTest Target",
       domain: testUrl,
-      user_id: anyProfile.id,
       attestation_accepted: true,
       attestation_accepted_at: new Date().toISOString(),
       authorization_mode: "attestation",
