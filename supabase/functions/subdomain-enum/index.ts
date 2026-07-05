@@ -66,6 +66,58 @@ async function crtsh(apex: string): Promise<string[]> {
   } catch { return []; }
 }
 
+async function hackertarget(apex: string): Promise<string[]> {
+  try {
+    const ctrl = new AbortController(); const t = setTimeout(() => ctrl.abort(), 10000);
+    const r = await fetch(`https://api.hackertarget.com/hostsearch/?q=${encodeURIComponent(apex)}`, { signal: ctrl.signal });
+    clearTimeout(t);
+    if (!r.ok) return [];
+    const txt = await r.text();
+    if (/error|api count exceeded/i.test(txt)) return [];
+    const set = new Set<string>();
+    for (const line of txt.split(/\r?\n/)) {
+      const h = normalizeHost((line.split(",")[0] || "").trim());
+      if (h && (h === apex || h.endsWith("." + apex))) set.add(h);
+    }
+    return [...set];
+  } catch { return []; }
+}
+
+async function otx(apex: string): Promise<string[]> {
+  try {
+    const ctrl = new AbortController(); const t = setTimeout(() => ctrl.abort(), 10000);
+    const r = await fetch(`https://otx.alienvault.com/api/v1/indicators/domain/${encodeURIComponent(apex)}/passive_dns`, { signal: ctrl.signal });
+    clearTimeout(t);
+    if (!r.ok) return [];
+    const j = await r.json().catch(() => ({}));
+    const set = new Set<string>();
+    for (const row of j?.passive_dns || []) {
+      const h = normalizeHost(row?.hostname || "");
+      if (h && (h === apex || h.endsWith("." + apex))) set.add(h);
+    }
+    return [...set];
+  } catch { return []; }
+}
+
+async function wayback(apex: string): Promise<string[]> {
+  try {
+    const ctrl = new AbortController(); const t = setTimeout(() => ctrl.abort(), 12000);
+    const r = await fetch(`https://web.archive.org/cdx/search/cdx?url=*.${encodeURIComponent(apex)}/*&output=json&fl=original&collapse=urlkey&limit=5000`, { signal: ctrl.signal });
+    clearTimeout(t);
+    if (!r.ok) return [];
+    const rows = await r.json().catch(() => []);
+    const set = new Set<string>();
+    for (const row of (rows || []).slice(1)) {
+      try {
+        const u = new URL(row[0]);
+        const h = normalizeHost(u.hostname);
+        if (h && (h === apex || h.endsWith("." + apex))) set.add(h);
+      } catch { /* skip */ }
+    }
+    return [...set];
+  } catch { return []; }
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   const ok = (b: unknown) => new Response(JSON.stringify(b), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
@@ -80,11 +132,14 @@ Deno.serve(async (req) => {
 
     await db.from("scan_logs").insert({
       target_id: targetId, log_type: "action",
-      message: `🌐 Subdomain enum starting for ${apex} (crt.sh + ${COMMON.length}-word DNS, rate-limited)`,
+      message: `🌐 Subdomain enum starting for ${apex} (crt.sh + hackertarget + OTX + wayback + ${COMMON.length}-word DNS, rate-limited)`,
     });
 
-    // 1) Passive: crt.sh
-    const passive = await crtsh(apex);
+    // 1) Passive: crt.sh + hackertarget + AlienVault OTX + Wayback (parallel, fail-open)
+    const [crtHosts, htHosts, otxHosts, waybackHosts] = await Promise.all([
+      crtsh(apex), hackertarget(apex), otx(apex), wayback(apex),
+    ]);
+    const passive = Array.from(new Set([...crtHosts, ...htHosts, ...otxHosts, ...waybackHosts]));
 
     // 2) Dedup aggressively across passive + brute + apex.
     //    Set is case/whitespace/scheme normalized; already-known hosts in
