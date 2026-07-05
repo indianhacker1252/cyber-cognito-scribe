@@ -53,6 +53,9 @@ export interface VerifyResult {
     statusChanged: boolean;
     rebaselineDrift: boolean;
     replayDeterministic: boolean;
+    timingSignal: boolean;      // NEW: >2s spike on payload vs baseline (blind SQLi/SSRF)
+    timingDeltaMs: number;      // NEW
+    openRedirectHit: boolean;   // NEW: 3xx Location leaking to attacker-controlled host
   };
   summary: string;
   errors: string[];
