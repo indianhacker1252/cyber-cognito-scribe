@@ -132,11 +132,14 @@ Deno.serve(async (req) => {
 
     await db.from("scan_logs").insert({
       target_id: targetId, log_type: "action",
-      message: `🌐 Subdomain enum starting for ${apex} (crt.sh + ${COMMON.length}-word DNS, rate-limited)`,
+      message: `🌐 Subdomain enum starting for ${apex} (crt.sh + hackertarget + OTX + wayback + ${COMMON.length}-word DNS, rate-limited)`,
     });
 
-    // 1) Passive: crt.sh
-    const passive = await crtsh(apex);
+    // 1) Passive: crt.sh + hackertarget + AlienVault OTX + Wayback (parallel, fail-open)
+    const [crtHosts, htHosts, otxHosts, waybackHosts] = await Promise.all([
+      crtsh(apex), hackertarget(apex), otx(apex), wayback(apex),
+    ]);
+    const passive = Array.from(new Set([...crtHosts, ...htHosts, ...otxHosts, ...waybackHosts]));
 
     // 2) Dedup aggressively across passive + brute + apex.
     //    Set is case/whitespace/scheme normalized; already-known hosts in
