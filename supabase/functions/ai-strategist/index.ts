@@ -168,24 +168,6 @@ async function strategize(db: any, targetId: string, round: number) {
     message: `🧠 AI Strategist queued ${jobs.length} hypothesis tests from round ${round}`,
   });
 
-  // Queue a hypothesis_test job per hypothesis
-  const now = new Date().toISOString();
-  const jobs = (inserted || []).map((row: any) => ({
-    target_id: targetId,
-    job_type: "hypothesis_test",
-    status: "queued",
-    priority: 7,
-    payload: { hypothesisId: row.id },
-    next_run_at: now,
-  }));
-  if (jobs.length)
-    await db
-      .from("scan_jobs")
-      .insert(jobs)
-      .then(
-        () => {},
-        () => {},
-      );
 
   await db
     .from("scan_logs")
