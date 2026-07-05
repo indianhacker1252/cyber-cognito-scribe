@@ -119,8 +119,23 @@ export const EXEC_DETECTORS: Record<
     if (/root:.*:0:0/.test(body) && !baseline.includes("root:")) return { found: true, evidence: "XXE: /etc/passwd via entity" };
     return { found: false, evidence: "" };
   },
-  "open-redirect": (_p, body, baseline) => {
+  "open-redirect": (_p, _body, _baseline) => {
     // Open redirects detected via Location header, not body — handled in stage diff
+    return { found: false, evidence: "" };
+  },
+  idor: (_p, body, baseline) => {
+    // IDOR proof: mutated request exposes a distinct record body (different user/id keys)
+    const emailMatch = body.match(/[\w.+-]+@[\w-]+\.[\w.-]+/g) || [];
+    const baseEmails = baseline.match(/[\w.+-]+@[\w-]+\.[\w.-]+/g) || [];
+    const newEmails = emailMatch.filter(e => !baseEmails.includes(e));
+    if (newEmails.length >= 1 && body.length > 100)
+      return { found: true, evidence: `IDOR leaked ${newEmails.length} new email(s): ${newEmails[0]}` };
+    return { found: false, evidence: "" };
+  },
+  auth_bypass: (_p, body, baseline) => {
+    // Auth bypass proof: mutated body contains admin/session markers baseline lacks
+    const markers = [/"role"\s*:\s*"admin"/i, /is_admin\s*[:=]\s*true/i, /"authenticated"\s*:\s*true/i, /sessionid|SESSIONID|jwt_token/i];
+    for (const m of markers) if (m.test(body) && !m.test(baseline)) return { found: true, evidence: `auth marker: ${m.source}` };
     return { found: false, evidence: "" };
   },
 };
