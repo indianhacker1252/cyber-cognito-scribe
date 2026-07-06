@@ -8,7 +8,9 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-function db() { return createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!); }
+function db() {
+  return createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
+}
 
 const PAYLOADS: Record<string, string[]> = {
   sqli: [`'`, `'--`, `' OR '1'='1`, `'; SELECT pg_sleep(0)--`],
@@ -21,13 +23,19 @@ const PAYLOADS: Record<string, string[]> = {
 
 const ERROR_RX = /SQL syntax|SQLSTATE|ORA-\d|cyberscope_marker|<cyberscope>|root:.*:0:0|jinja2|TypeError.*prototype/i;
 
-function* walkLeaves(obj: any, path: (string | number)[] = []): Generator<{ path: (string|number)[]; value: any }> {
-  if (obj === null || typeof obj !== "object") { yield { path, value: obj }; return; }
-  if (Array.isArray(obj)) { for (let i = 0; i < obj.length; i++) yield* walkLeaves(obj[i], [...path, i]); return; }
+function* walkLeaves(obj: any, path: (string | number)[] = []): Generator<{ path: (string | number)[]; value: any }> {
+  if (obj === null || typeof obj !== "object") {
+    yield { path, value: obj };
+    return;
+  }
+  if (Array.isArray(obj)) {
+    for (let i = 0; i < obj.length; i++) yield* walkLeaves(obj[i], [...path, i]);
+    return;
+  }
   for (const k of Object.keys(obj)) yield* walkLeaves(obj[k], [...path, k]);
 }
 
-function setAtPath(obj: any, path: (string|number)[], val: any): any {
+function setAtPath(obj: any, path: (string | number)[], val: any): any {
   const clone = JSON.parse(JSON.stringify(obj));
   let cur = clone;
   for (let i = 0; i < path.length - 1; i++) cur = cur[path[i]];
@@ -35,9 +43,13 @@ function setAtPath(obj: any, path: (string|number)[], val: any): any {
   return clone;
 }
 
-async function loadAuth(targetId: string): Promise<Record<string,string>> {
-  const { data } = await db().from("auth_profiles").select("auth_type, cookie_header, bearer_token")
-    .eq("target_id", targetId).eq("is_valid", true).maybeSingle();
+async function loadAuth(targetId: string): Promise<Record<string, string>> {
+  const { data } = await db()
+    .from("auth_profiles")
+    .select("auth_type, cookie_header, bearer_token")
+    .eq("target_id", targetId)
+    .eq("is_valid", true)
+    .maybeSingle();
   if (!data) return {};
   if (data.auth_type === "cookie" && data.cookie_header) return { Cookie: data.cookie_header };
   if (data.auth_type === "bearer" && data.bearer_token) return { Authorization: `Bearer ${data.bearer_token}` };
@@ -47,10 +59,39 @@ async function loadAuth(targetId: string): Promise<Record<string,string>> {
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   try {
-    const { targetId, endpoint, method, sampleBody, contentType } = await req.json();
+    const body0 = await req.json().catch(() => ({}));
+    const { targetId, method, contentType } = body0;
+    let { endpoint, sampleBody } = body0;
+
+    // Self-discover a JSON POST endpoint when called from the job queue with
+    // just {targetId} — json-fuzzer had a job route defined but was never
+    // actually queued anywhere, since nothing supplied the required
+    // endpoint+sampleBody pair automatically.
+    if ((!endpoint || !sampleBody) && targetId) {
+      const supaEarly = db();
+      const { data: eps } = await supaEarly
+        .from("discovered_endpoints")
+        .select("url, method, parameters")
+        .eq("target_id", targetId)
+        .limit(200);
+      const candidate = (eps || []).find(
+        (e: any) =>
+          (e.method || "").toUpperCase() === "POST" &&
+          e.parameters &&
+          typeof e.parameters === "object" &&
+          Object.keys(e.parameters).length > 0,
+      );
+      if (candidate) {
+        endpoint = candidate.url;
+        sampleBody = candidate.parameters;
+      }
+    }
+
     if (!endpoint || !sampleBody) {
-      return new Response(JSON.stringify({ error: "endpoint and sampleBody required" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      return new Response(
+        JSON.stringify({ ok: true, skipped: true, reason: "no JSON POST endpoint discovered", findingsCount: 0 }),
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
     }
 
     const supa = db();
@@ -63,12 +104,15 @@ Deno.serve(async (req) => {
     const baselineResp = await fetch(endpoint, {
       method: method || "POST",
       headers: { "Content-Type": contentType || "application/json", ...auth },
-      body: JSON.stringify(sampleBody), signal: AbortSignal.timeout(8000),
+      body: JSON.stringify(sampleBody),
+      signal: AbortSignal.timeout(8000),
     });
     const baselineBody = await baselineResp.text();
     const baselineLen = baselineBody.length;
 
-    const leaves = [...walkLeaves(sampleBody)].filter(l => typeof l.value === "string" || typeof l.value === "number").slice(0, 12);
+    const leaves = [...walkLeaves(sampleBody)]
+      .filter((l) => typeof l.value === "string" || typeof l.value === "number")
+      .slice(0, 12);
 
     for (const leaf of leaves) {
       for (const [vc, payloads] of Object.entries(PAYLOADS)) {
@@ -78,7 +122,8 @@ Deno.serve(async (req) => {
             const r = await fetch(endpoint, {
               method: method || "POST",
               headers: { "Content-Type": contentType || "application/json", ...auth },
-              body: JSON.stringify(mutated), signal: AbortSignal.timeout(12000),
+              body: JSON.stringify(mutated),
+              signal: AbortSignal.timeout(12000),
             });
             const body = await r.text();
             const lenDelta = Math.abs(body.length - baselineLen);
@@ -87,36 +132,56 @@ Deno.serve(async (req) => {
             const interesting = errMatch || (statusFlip && lenDelta > 50);
 
             tested.push({
-              path: leaf.path.join("."), vulnClass: vc, payload: p,
-              status: r.status, lenDelta, errMatch, interesting,
+              path: leaf.path.join("."),
+              vulnClass: vc,
+              payload: p,
+              status: r.status,
+              lenDelta,
+              errMatch,
+              interesting,
             });
 
             if (interesting) {
               findings.push({
-                path: leaf.path.join("."), vulnClass: vc, payload: p,
-                evidence: errMatch ? "error-class leak in body" : `status ${baselineResp.status}→${r.status}, ${lenDelta}B delta`,
+                path: leaf.path.join("."),
+                vulnClass: vc,
+                payload: p,
+                evidence: errMatch
+                  ? "error-class leak in body"
+                  : `status ${baselineResp.status}→${r.status}, ${lenDelta}B delta`,
                 bodyPreview: body.slice(0, 200),
                 isGraphQL,
               });
               await supa.from("scan_logs").insert({
-                target_id: targetId, log_type: "result",
+                target_id: targetId,
+                log_type: "result",
                 message: `🧬 JSON-fuzz hit: ${vc.toUpperCase()} at ${leaf.path.join(".")} (${errMatch ? "error-leak" : `Δ${lenDelta}B`})`,
                 metadata: { endpoint, payload: p, status: r.status },
               });
             }
-            await new Promise(r => setTimeout(r, 60));
-          } catch { /* skip */ }
+            await new Promise((r) => setTimeout(r, 60));
+          } catch {
+            /* skip */
+          }
         }
       }
     }
 
-    return new Response(JSON.stringify({
-      targetId, endpoint, leavesFuzzed: leaves.length, testsRun: tested.length,
-      findings, isGraphQL,
-    }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    return new Response(
+      JSON.stringify({
+        targetId,
+        endpoint,
+        leavesFuzzed: leaves.length,
+        testsRun: tested.length,
+        findings,
+        isGraphQL,
+      }),
+      { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+    );
   } catch (e) {
     return new Response(JSON.stringify({ error: e instanceof Error ? e.message : "err" }), {
-      status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
+      status: 500,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
 });
