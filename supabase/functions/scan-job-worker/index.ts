@@ -628,6 +628,16 @@ Deno.serve(async (req) => {
                 payload: {},
                 next_run_at: new Date(Date.now() + 20_000).toISOString(),
               },
+              // json-fuzzer — JSON-body param mutation for REST/GraphQL POST
+              // endpoints. Had a job route defined but was never queued anywhere.
+              {
+                target_id: job.target_id,
+                job_type: "json_fuzz",
+                status: "queued",
+                priority: 6,
+                payload: {},
+                next_run_at: new Date(Date.now() + 60_000).toISOString(),
+              },
             ];
 
             if (tgt?.api_schema_url) {
