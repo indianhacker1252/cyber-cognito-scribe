@@ -1231,6 +1231,11 @@ serve(async (req) => {
       taskId,
       "result",
       `🕷️ Spider found ${allSpiderUrls.length} links, ${allForms.length} forms, ${allJsFiles.length} JS files across ${spiderTargets.length} targets`,
+      {
+        sampleLinks: allSpiderUrls.slice(0, 20),
+        sampleForms: allForms.slice(0, 10).map((f) => ({ action: f.action, method: f.method, inputs: f.inputs })),
+        sampleJsFiles: allJsFiles.slice(0, 10),
+      },
     );
 
     // ── Step 5: JS File Analysis — Extract secrets, API endpoints, hidden params ──
@@ -1463,7 +1468,11 @@ serve(async (req) => {
       if (!insertErr) insertedCount += batch.length;
     }
 
-    await log(db, targetId, taskId, "result", `Ingested ${insertedCount} unique endpoints into database`);
+    await log(db, targetId, taskId, "result", `Ingested ${insertedCount} unique endpoints into database`, {
+      sampleEndpoints: endpoints
+        .slice(0, 20)
+        .map((e) => ({ url: e.url, method: e.method, source: (e.headers as any)?.source })),
+    });
 
     // Store results
     await db
