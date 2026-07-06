@@ -144,12 +144,13 @@ serve(async (req) => {
       else inserted++;
     }
 
-    // Auto-match against active targets
+    // Auto-match against ALL targets (running, completed, queued) — not just completed.
+    // Users complained NVD was never checked because most targets sit in 'running'.
     const { data: targets } = await supa
       .from("target_workspaces")
-      .select("id, domain, name")
-      .eq("status", "completed")
-      .limit(30);
+      .select("id, domain, name, status")
+      .in("status", ["completed", "running", "queued", "in_progress"])
+      .limit(50);
     for (const target of targets || []) {
       const { data: recon } = await supa
         .from("agent_tasks")

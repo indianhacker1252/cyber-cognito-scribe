@@ -205,13 +205,14 @@ export default function OwaspChecklist() {
         const pct = all.length ? Math.round((done / all.length) * 100) : 0;
         const missing = all.filter((r) => !isDone(r.status));
         const t = targets[targetId];
-        const label = t ? `${t.name}${t.domain && t.domain !== t.name ? ` — ${t.domain}` : ""}` : `(deleted target ${targetId.slice(0, 8)}…)`;
+        const label = t ? (t.name || t.domain || targetId) : `(deleted target ${targetId.slice(0, 8)}…)`;
+        const displayLabel = t ? `${t.name}${t.domain && t.domain !== t.name ? ` — ${t.domain}` : ""}` : label;
 
         return (
           <Card key={targetId}>
             <CardHeader>
               <CardTitle className="flex flex-wrap justify-between items-center gap-3">
-                <span className="text-base">{label}</span>
+                <span className="text-base">{displayLabel}</span>
                 <div className="flex items-center gap-2 flex-wrap">
                   <Badge variant={pct === 100 ? "default" : pct >= 70 ? "secondary" : "destructive"}>
                     {done}/{all.length} ({pct}%)
