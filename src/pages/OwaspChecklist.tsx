@@ -212,7 +212,7 @@ export default function OwaspChecklist() {
           <Card key={targetId}>
             <CardHeader>
               <CardTitle className="flex flex-wrap justify-between items-center gap-3">
-                <span className="text-base">{label}</span>
+                <span className="text-base">{displayLabel}</span>
                 <div className="flex items-center gap-2 flex-wrap">
                   <Badge variant={pct === 100 ? "default" : pct >= 70 ? "secondary" : "destructive"}>
                     {done}/{all.length} ({pct}%)
