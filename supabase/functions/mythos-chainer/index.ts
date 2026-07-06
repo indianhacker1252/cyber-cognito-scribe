@@ -18,6 +18,16 @@ serve(async (req) => {
     const db = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 
     if (await areCreditsRecentlyExhausted(db, targetId, 10)) {
+      // Previously this returned silently with zero scan_logs entry — unlike
+      // the other two skip paths below, which do log. That made the chainer
+      // look completely broken/silent rather than correctly deferring due to
+      // AI credit exhaustion, which is a known, recurring condition in scans.
+      await db.from("scan_logs").insert({
+        target_id: targetId,
+        log_type: "info",
+        message: `🔗 Chainer skipped: AI credits recently exhausted — will retry next iteration`,
+        metadata: { phase: "chainer-skip", run_id: runId, reason: "credits_exhausted" },
+      });
       return new Response(JSON.stringify({ chainsCount: 0, skipped: true, reason: "credits_exhausted" }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
@@ -39,7 +49,7 @@ serve(async (req) => {
     ]);
 
     const totalSignals = (findings.data?.length || 0) + (codeFindings.data?.length || 0) + (pending.data?.length || 0);
-    if (totalSignals < 1) {
+    if (totalSignals < 2) {
       await db.from("scan_logs").insert({
         target_id: targetId,
         log_type: "info",
