@@ -461,11 +461,22 @@ function classifyParameters(
     action: ["rxss", "cmdi"],
   };
 
+  // Universal baseline: reflected-XSS and error/boolean-based SQLi are valid
+  // attack surface on virtually ANY parameter, regardless of its name — a
+  // parameter called "id" can still reflect unescaped into HTML (XSS) even
+  // though its name suggests only a numeric lookup. Previously, matched
+  // params were capped at exactly their name's static list and unmatched
+  // params got zero classes tested at all, which is why this exact bug
+  // (testaspnet.vulnweb.com's "id" param, known-vulnerable to XSS in
+  // addition to SQLi/IDOR) went completely untested for XSS every run.
+  const UNIVERSAL_BASELINE = ["rxss", "sqli"];
+
   for (const ep of endpoints) {
     const params = ep.parameters || {};
     for (const [paramName, paramValue] of Object.entries(params)) {
       const key = paramName.toLowerCase();
-      const vulnClasses = paramClassMap[key] || [];
+      const nameSpecific = paramClassMap[key] || [];
+      const vulnClasses = [...new Set([...UNIVERSAL_BASELINE, ...nameSpecific])];
       if (vulnClasses.length > 0) {
         checks.push({
           paramName,
