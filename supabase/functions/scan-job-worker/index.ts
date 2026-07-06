@@ -25,6 +25,7 @@ const JOB_ROUTES: Record<string, string> = {
   drift_canary: "canary-drift-monitor",
   json_fuzz: "json-fuzzer",
   cve: "cve-version-matcher",
+  triple_verify: "triple-verify",
   variant_test: "mythos-variant-test",
   debate: "mythos-debate",
   template: "template-runner",
@@ -138,7 +139,7 @@ async function runJob(job: any): Promise<{ ok: boolean; result?: any; error?: st
   const timeoutMs = ACK_TIMEOUT_MS[job.job_type] ?? DEFAULT_TIMEOUT_MS;
   try {
     const supa = db();
-    const scanAiProvider = job.payload?.scanAiProvider || await getScanAiProvider(supa, job.target_id);
+    const scanAiProvider = job.payload?.scanAiProvider || (await getScanAiProvider(supa, job.target_id));
     const modePayload =
       job.job_type === "ollama_mutate" ? { mode: "ai" } : job.job_type === "local_tool" ? { mode: "tool" } : {};
     const r = await fetch(`${FN_BASE}/${route}`, {
@@ -374,7 +375,15 @@ Deno.serve(async (req) => {
             auth_replay: ["auth-replay"],
             graphql: ["graphql-attack"],
             differential: ["differential-oracle"],
-            vuln_scan: ["vuln-scanner"],
+            vuln_scan: [
+              "vuln-scanner",
+              "business-logic-fuzzer",
+              "cache-attack",
+              "desync-smuggling-v2",
+              "dom-fuzz",
+              "prototype-pollution-gadgets",
+              "race-runner",
+            ],
             waf_evasion: ["waf-evasion-engine"],
             llm_attack: ["llm-attack-suite"],
           };
@@ -385,15 +394,31 @@ Deno.serve(async (req) => {
               .select("id,status")
               .eq("target_id", job.target_id)
               .in("check_module", mods);
+            // Determine if this job's result indicates real findings, so we can
+            // upgrade straight to 'evidence' instead of only ever 'attempted'.
+            const res = out.result || {};
+            const jobFoundEvidence = !!(
+              (Array.isArray(res.findings) && res.findings.length > 0) ||
+              (typeof res.findingsCount === "number" && res.findingsCount > 0) ||
+              (typeof res.confirmed === "number" && res.confirmed > 0) ||
+              (typeof res.count === "number" && res.count > 0) ||
+              (Array.isArray(res.matches) && res.matches.length > 0) ||
+              (typeof res.issues === "number" && res.issues > 0)
+            );
             const toBump = (rows || []).filter((r: any) => !["evidence", "passed", "complete"].includes(r.status));
             if (toBump.length) {
               await supa
                 .from("owasp_checklist")
-                .update({ status: "attempted", last_run_at: new Date().toISOString() })
-                .in("id", toBump.map((r: any) => r.id));
+                .update({ status: jobFoundEvidence ? "evidence" : "attempted", last_run_at: new Date().toISOString() })
+                .in(
+                  "id",
+                  toBump.map((r: any) => r.id),
+                );
             }
           }
-        } catch { /* ignore */ }
+        } catch {
+          /* ignore */
+        }
 
         // Mark recon phase complete so the arbiter can advance the pipeline.
         if (job.job_type === "recon") {
@@ -418,7 +443,6 @@ Deno.serve(async (req) => {
             () => {},
           );
         }
-
 
         // ── Post-phase fan-out: ensure the chain keeps moving even if a
         // module forgets to enqueue the next stage. Idempotent: scan_jobs
@@ -681,7 +705,10 @@ Deno.serve(async (req) => {
         .eq("target_id", t)
         .in("status", ["queued", "running"]);
       if ((activeCount ?? 0) === 0) {
-        await supa.rpc("enqueue_missing_owasp_modules", { _target_id: t, _force: false }).then(() => {}, () => {});
+        await supa.rpc("enqueue_missing_owasp_modules", { _target_id: t, _force: false }).then(
+          () => {},
+          () => {},
+        );
       }
       fetch(`${FN_BASE}/phase-arbiter`, {
         method: "POST",
