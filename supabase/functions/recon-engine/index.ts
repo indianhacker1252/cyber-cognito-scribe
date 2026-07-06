@@ -1351,7 +1351,13 @@ serve(async (req) => {
     for (const wb of waybackResults) {
       try {
         const u = new URL(wb.url);
-        const key = `${u.origin}${u.pathname}`;
+        // FIX: was `${u.origin}${u.pathname}` — bypassed normalizeUrl entirely,
+        // so Wayback's historically-archived scheme (often https://) overrode
+        // the SCHEME this recon run actually determined was reachable. On
+        // HTTP-only targets this silently stored every wayback-discovered
+        // endpoint (including textbook-vulnerable ones) as https://, dooming
+        // every subsequent probe to fail/timeout against a dead HTTPS port.
+        const key = normalizeUrl(`${u.origin}${u.pathname}`, SCHEME);
         const params: Record<string, string> = {};
         u.searchParams.forEach((v, k) => (params[k] = v));
         if (!allUrls.has(key)) allUrls.set(key, { method: "GET", params, source: "wayback" });
@@ -1364,7 +1370,7 @@ serve(async (req) => {
     for (const otx of otxResults) {
       try {
         const u = new URL(otx.url);
-        const key = `${u.origin}${u.pathname}`;
+        const key = normalizeUrl(`${u.origin}${u.pathname}`, SCHEME);
         const params: Record<string, string> = {};
         u.searchParams.forEach((v, k) => (params[k] = v));
         if (!allUrls.has(key)) allUrls.set(key, { method: "GET", params, source: "otx" });
@@ -1391,7 +1397,9 @@ serve(async (req) => {
 
     // JS-extracted API endpoints
     for (const ep of jsAnalysis.apiEndpoints) {
-      const key = ep.startsWith("http") ? ep : `https://${domain}${ep.startsWith("/") ? ep : "/" + ep}`;
+      const key = ep.startsWith("http")
+        ? normalizeUrl(ep, SCHEME)
+        : normalizeUrl(`${SCHEME}://${domain}${ep.startsWith("/") ? ep : "/" + ep}`, SCHEME);
       if (!allUrls.has(key)) allUrls.set(key, { method: "GET", params: {}, source: "js-analysis" });
     }
 
@@ -1399,7 +1407,7 @@ serve(async (req) => {
     for (const spUrl of allSpiderUrls) {
       try {
         const u = new URL(spUrl);
-        const key = `${u.origin}${u.pathname}`;
+        const key = normalizeUrl(`${u.origin}${u.pathname}`, SCHEME);
         const params: Record<string, string> = {};
         u.searchParams.forEach((v, k) => (params[k] = v));
         if (!allUrls.has(key)) allUrls.set(key, { method: "GET", params, source: "spider" });
