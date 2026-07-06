@@ -205,7 +205,8 @@ export default function OwaspChecklist() {
         const pct = all.length ? Math.round((done / all.length) * 100) : 0;
         const missing = all.filter((r) => !isDone(r.status));
         const t = targets[targetId];
-        const label = t ? `${t.name}${t.domain && t.domain !== t.name ? ` — ${t.domain}` : ""}` : `(deleted target ${targetId.slice(0, 8)}…)`;
+        const label = t ? (t.name || t.domain || targetId) : `(deleted target ${targetId.slice(0, 8)}…)`;
+        const displayLabel = t ? `${t.name}${t.domain && t.domain !== t.name ? ` — ${t.domain}` : ""}` : label;
 
         return (
           <Card key={targetId}>
