@@ -242,20 +242,18 @@ export async function recordFinding(input: RecordFindingInput): Promise<RecordFi
       .maybeSingle();
 
     if (master?.id) {
-      const { error: evidenceError } = await supa
-        .from("finding_evidence")
-        .insert({
-          finding_id: master.id,
-          target_id: input.targetId,
-          affected_url: input.request?.url ?? null,
-          method: input.request?.method ?? null,
-          param: param || null,
-          payload: input.payload ?? null,
-          status_code: status ?? null,
-          request_raw: requestRaw,
-          response_raw: responseRaw,
-          evidence: input.evidence ?? {},
-        });
+      const { error: evidenceError } = await supa.from("finding_evidence").insert({
+        finding_id: master.id,
+        target_id: input.targetId,
+        affected_url: input.request?.url ?? null,
+        method: input.request?.method ?? null,
+        param: param || null,
+        payload: input.payload ?? null,
+        status_code: status ?? null,
+        request_raw: requestRaw,
+        response_raw: responseRaw,
+        evidence: input.evidence ?? {},
+      });
       if (!evidenceError) {
         await supa
           .from("vulnerability_findings")
@@ -324,7 +322,9 @@ export async function recordFinding(input: RecordFindingInput): Promise<RecordFi
       })
       .then(
         () => {},
-        (e) => { if (!isUniqueViolation(e)) console.warn("initial finding_evidence insert failed", e?.message || e); },
+        (e) => {
+          if (!isUniqueViolation(e)) console.warn("initial finding_evidence insert failed", e?.message || e);
+        },
       );
 
     // replay row (best-effort)
@@ -530,6 +530,29 @@ export async function recordFinding(input: RecordFindingInput): Promise<RecordFi
       } catch {
         /* best-effort */
       }
+    }
+
+    // Triple Verify — independent statistical confirmation: baseline → mutated
+    // → rebaseline (target drift check) → replay x2 (determinism check).
+    // This module was fully built (rigorous exec-evidence detectors, timing
+    // signals, open-redirect proof, confidence scoring 0-100) but had ZERO
+    // callers anywhere in the codebase — no job route, no direct invocation.
+    // It runs independently of proof-engine (which checks OOB/sandbox) since
+    // this checks something different: whether the finding is reproducible
+    // and whether the target's baseline was actually stable when we probed it.
+    // Fires for every finding regardless of severity — false positives hide
+    // in "medium" findings just as often as "critical" ones.
+    try {
+      await supa.from("scan_jobs").insert({
+        target_id: input.targetId,
+        job_type: "triple_verify",
+        priority: input.severity === "critical" ? 8 : 5,
+        payload: { findingId: inserted.id },
+        status: "queued",
+        next_run_at: new Date(Date.now() + 15_000).toISOString(),
+      });
+    } catch {
+      /* best-effort */
     }
 
     return { ok: true, findingId: inserted.id, exploitJobId };
