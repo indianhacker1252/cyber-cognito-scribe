@@ -50,7 +50,6 @@ interface FindingLike {
   updated_at?: string;
   dedup_key?: string | null;
   group_key?: string | null;
-  finding_type?: string | null;
   vuln_class?: string | null;
   affected_url?: string | null;
   scanner_module?: string | null;
@@ -473,6 +472,60 @@ export default function FindingDetailsDialog({ open, onOpenChange, finding }: Pr
                 </Button>
               </div>
               <pre className="text-xs font-mono text-cyber-green bg-black/40 p-3 rounded border border-cyber-green/20 overflow-auto whitespace-pre max-h-[55vh]">{advancedPoc}</pre>
+            </TabsContent>
+
+            <TabsContent value="provenance" className="space-y-2">
+              <p className="text-[10px] font-mono text-muted-foreground">
+                Origin & dedup keys — trace every finding back to the scanner that produced it.
+              </p>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-[11px] font-mono">
+                <div className="rounded border border-border bg-muted/20 p-2">
+                  <div className="text-muted-foreground text-[10px] uppercase">Scanner / Source</div>
+                  <div className="text-card-foreground break-all">{finding.scanner_module || finding.discovered_by || finding.source || finding.finding_type || finding.vuln_class || "unknown"}</div>
+                </div>
+                <div className="rounded border border-border bg-muted/20 p-2">
+                  <div className="text-muted-foreground text-[10px] uppercase">Vuln Class</div>
+                  <div className="text-card-foreground break-all">{finding.vuln_class || finding.finding_type || "—"}</div>
+                </div>
+                <div className="rounded border border-border bg-muted/20 p-2">
+                  <div className="text-muted-foreground text-[10px] uppercase">Created</div>
+                  <div className="text-card-foreground">{finding.created_at ? new Date(finding.created_at).toLocaleString() : "—"}</div>
+                </div>
+                <div className="rounded border border-border bg-muted/20 p-2">
+                  <div className="text-muted-foreground text-[10px] uppercase">Updated</div>
+                  <div className="text-card-foreground">{finding.updated_at ? new Date(finding.updated_at).toLocaleString() : "—"}</div>
+                </div>
+                <div className="rounded border border-border bg-muted/20 p-2 md:col-span-2">
+                  <div className="text-muted-foreground text-[10px] uppercase">Affected URL</div>
+                  <div className="text-card-foreground break-all">{finding.affected_url || "—"}</div>
+                </div>
+                <div className="rounded border border-border bg-muted/20 p-2 md:col-span-2">
+                  <div className="text-muted-foreground text-[10px] uppercase flex items-center justify-between">
+                    <span>Dedup Key</span>
+                    {finding.dedup_key && (
+                      <Button size="sm" variant="ghost" className="h-5 px-1 text-[10px]" onClick={() => copy("Dedup key", finding.dedup_key!)}>
+                        <Copy className="h-3 w-3" />
+                      </Button>
+                    )}
+                  </div>
+                  <div className="text-card-foreground break-all">{finding.dedup_key || "—"}</div>
+                </div>
+                <div className="rounded border border-border bg-muted/20 p-2 md:col-span-2">
+                  <div className="text-muted-foreground text-[10px] uppercase flex items-center justify-between">
+                    <span>Group Key</span>
+                    {finding.group_key && (
+                      <Button size="sm" variant="ghost" className="h-5 px-1 text-[10px]" onClick={() => copy("Group key", finding.group_key!)}>
+                        <Copy className="h-3 w-3" />
+                      </Button>
+                    )}
+                  </div>
+                  <div className="text-card-foreground break-all">{finding.group_key || "—"}</div>
+                </div>
+                <div className="rounded border border-border bg-muted/20 p-2 md:col-span-2">
+                  <div className="text-muted-foreground text-[10px] uppercase">Finding ID</div>
+                  <div className="text-card-foreground break-all">{finding.id}</div>
+                </div>
+              </div>
             </TabsContent>
 
             <TabsContent value="report" className="space-y-2">
