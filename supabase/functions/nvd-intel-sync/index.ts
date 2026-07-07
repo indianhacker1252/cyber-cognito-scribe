@@ -95,6 +95,130 @@ serve(async (req) => {
     const daysBack = body.daysBack || 1;
     const action = body.action || "full-sync";
 
+    if (action === "resync-target" && body.targetId) {
+      // Re-trigger NVD sync for exactly one target — fetch fresh CVEs, upsert
+      // them into nvd_intel, match against this target's fingerprint, queue
+      // any new relevant tests, then report job-status counts separately for
+      // queued/running/completed so the caller can see progress, not just a
+      // single aggregate "autoQueued" number.
+      const targetId = body.targetId as string;
+      const freshCves = await fetchNvdCves(body.daysBack || 7, 200);
+
+      let cveInserted = 0,
+        cveSkipped = 0;
+      for (const cve of freshCves) {
+        const { error } = await supa.from("nvd_intel").upsert(
+          {
+            cve_id: cve.cve_id,
+            title: cve.title,
+            description: cve.description,
+            cvss_score: cve.cvss_score,
+            severity: cve.severity,
+            published: cve.published,
+            references: cve.references,
+            affected_products: cve.affected_products,
+            synced_at: new Date().toISOString(),
+          },
+          { onConflict: "cve_id", ignoreDuplicates: true },
+        );
+        if (error) cveSkipped++;
+        else cveInserted++;
+      }
+
+      const { data: recon } = await supa
+        .from("agent_tasks")
+        .select("result")
+        .eq("target_id", targetId)
+        .eq("task_type", "reconnaissance")
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      const fingerprint = (recon?.result as any)?.tech_fingerprint || {};
+
+      const relevant = freshCves
+        .map((c) => ({ ...c, score: scoreRelevance(c, fingerprint) }))
+        .filter((c) => c.score >= 60 && c.cvss_score >= 7)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, body.maxCves || 5);
+
+      let newlyQueued = 0;
+      for (const cve of relevant) {
+        const { data: existing } = await supa
+          .from("scan_jobs")
+          .select("id")
+          .eq("target_id", targetId)
+          .eq("job_type", "cve")
+          .in("status", ["queued", "running"])
+          .contains("payload", { cveId: cve.cve_id })
+          .limit(1)
+          .maybeSingle();
+        if (existing) continue;
+
+        await supa.from("scan_jobs").insert({
+          target_id: targetId,
+          job_type: "cve",
+          status: "queued",
+          priority: 8,
+          payload: { cveId: cve.cve_id, cvssScore: cve.cvss_score, description: cve.description.slice(0, 500) },
+          next_run_at: new Date().toISOString(),
+        });
+        newlyQueued++;
+
+        await supa.from("scan_logs").insert({
+          target_id: targetId,
+          log_type: "info",
+          message: `🔴 NVD manual resync: ${cve.cve_id} (CVSS ${cve.cvss_score}, relevance ${cve.score}/100) — queuing targeted test`,
+          metadata: { cve_id: cve.cve_id, cvss: cve.cvss_score, relevance: cve.score, trigger: "manual-resync" },
+        });
+      }
+
+      // Report the state of every cve job for this target, grouped by status,
+      // so the caller sees actual pipeline progress rather than a single number.
+      const { data: allCveJobs } = await supa
+        .from("scan_jobs")
+        .select("id, status, payload, created_at, completed_at")
+        .eq("target_id", targetId)
+        .eq("job_type", "cve")
+        .order("created_at", { ascending: false });
+
+      const byStatus = { queued: [] as any[], running: [] as any[], done: [] as any[], failed: [] as any[] };
+      for (const j of allCveJobs || []) {
+        const bucket =
+          j.status === "done"
+            ? "done"
+            : j.status === "failed"
+              ? "failed"
+              : j.status === "running"
+                ? "running"
+                : "queued";
+        byStatus[bucket as keyof typeof byStatus].push({
+          jobId: j.id,
+          cveId: (j.payload as any)?.cveId,
+          createdAt: j.created_at,
+          completedAt: j.completed_at,
+        });
+      }
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          targetId,
+          cveFetched: freshCves.length,
+          cveInserted,
+          cveSkipped,
+          newlyQueued,
+          jobCounts: {
+            queued: byStatus.queued.length,
+            running: byStatus.running.length,
+            completed: byStatus.done.length,
+            failed: byStatus.failed.length,
+          },
+          jobs: byStatus,
+        }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
     if (action === "relevance-check" && body.targetId) {
       const { data: recon } = await supa
         .from("agent_tasks")
