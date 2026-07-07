@@ -5,6 +5,7 @@
 // Both learn from outcomes and self-correlate.
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { logAiNextStep } from "../_shared/ai-next-step.ts";
 import {
   AiCreditsExhaustedError,
   isCreditExhaustionResponse,
@@ -1000,6 +1001,34 @@ Propose a CLEAN-SLATE attack with a DIFFERENT vuln class.`;
       })
       .select()
       .single();
+
+    // Structured "AI next step" entry — what the two-agent debate concluded
+    // and what runs next, so Neural Logs shows this as a distinct decision
+    // card rather than burying it in the raw agent transcript lines below.
+    await logAiNextStep(db, {
+      targetId,
+      decisionType: "tp-fp-debate",
+      debating: `${vulnClassHint || "vulnerability"} on ${paramName} at ${endpointUrl}`,
+      reasoningSummary: `Agent A/B debate concluded "${fpVerdict}" (confidence ${confidence}). ${a2.slice(0, 150)}`,
+      nextStep:
+        fpVerdict === "true_positive"
+          ? {
+              tool: "exploit-engine",
+              action: `escalate confirmed ${vulnClassHint || "finding"}`,
+              targetUrl: endpointUrl,
+              vulnClass: vulnClassHint ?? undefined,
+            }
+          : fpVerdict === "inconclusive"
+            ? {
+                tool: "triple-verify",
+                action: "run independent re-verification before deciding",
+                targetUrl: endpointUrl,
+                vulnClass: vulnClassHint ?? undefined,
+              }
+            : null,
+      confidence,
+      extra: { run_id: runId, debate_id: debateRow?.id, fp_verdict: fpVerdict },
+    });
 
     // Stream phase logs
     await db.from("scan_logs").insert([
