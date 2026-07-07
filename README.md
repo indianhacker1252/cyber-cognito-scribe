@@ -480,3 +480,43 @@ From **Findings** click **PDF** on any row to download a per-finding professiona
 - **DOM-Fuzz (Playwright)** — Auto-dispatched on every full scan. Uses worker `POST /playwright` if available, else falls back to the edge headless-browser DOM watcher.
 - **Application Package Scanner** — New "App Packages" page in the sidebar. Upload `.apk / .exe / .ipa / .zip / .jar`, AI audits manifests, source files, secrets, and configuration.
 - **Extended Docker Worker** — `docker-worker-reference/` now ships with `apktool`, `jadx`, and Playwright/Chromium so all the new endpoints work end-to-end.
+
+---
+
+## Latest updates (July 2026)
+
+### System Health — live scan control
+- Per-target progress bars (queued/running/done/failed with %) at `/system-health`.
+- **Cancel per-job** and **Cancel all pending for target** to free AI credits.
+- Live job queue auto-refreshes every 5s.
+- **Purge All History** (RPC `purge_history`) resets a target or every table safely.
+
+### OWASP Checklist
+- Full dependency chain shown for every missing A01–A10 check (checklist → scanner module → job type → last run).
+- **Auto-rerun missing** / **Run now** buttons call `enqueue_missing_owasp_modules` (respects active-scan guard, `_force=true` overrides).
+- **Delete checklist** with typed confirmation (`DELETE <name>` / `DELETE <domain>` / `DELETE <uuid>`); all deletions written to `owasp_checklist_audit`.
+- Orphaned checklists (target row deleted) can now be removed by UUID.
+
+### Findings provenance
+- New **Provenance** tab in the finding details dialog: scanner/source, vuln class, timestamps, affected URL, and the `dedup_key` / `group_key` used to collapse duplicates across retries and agent restarts.
+- DB trigger `trg_auto_dedup_finding` auto-generates canonical keys for every scanner (host + normalized path + param + vuln class), so retries cannot create duplicates.
+
+### NVD sync
+- `nvd-intel-sync` now cross-references CVEs against **queued / running / in_progress / completed** targets (not just completed).
+- Dedupes per-target CVE jobs so the hourly cron cannot re-queue the same `cveId` while a job is still queued or running.
+
+### Subdomain enumeration
+- `subdomain-enum` fans out to **crt.sh + HackerTarget + AlienVault OTX + Wayback CDX** in parallel plus the 63-word brute list, typically 3–5× more hosts before fuzzing.
+
+### Verification & audit commands
+```sh
+# Duplicate audit
+psql -c "SELECT dedup_key, count(*) c FROM vulnerability_findings GROUP BY dedup_key HAVING count(*)>1 ORDER BY c DESC;"
+psql -c "SELECT group_key,  count(*) c FROM vulnerability_findings GROUP BY group_key  HAVING count(*)>1 ORDER BY c DESC;"
+
+# Trigger NVD sync
+curl -s -X POST "$SUPABASE_URL/functions/v1/nvd-intel-sync" \
+     -H "Authorization: Bearer $SUPABASE_ANON_KEY" \
+     -H "Content-Type: application/json" \
+     -d '{"daysBack":3}'
+```

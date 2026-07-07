@@ -119,6 +119,7 @@ export default function OwaspChecklist() {
     } catch (e: any) { toast.error(e.message || "Failed"); } finally { setBusy(null); }
   };
 
+
   const moduleToJobType = (mod: string | null) => {
     const jobMap: Record<string, string> = {
       "advanced-fuzzer": "fuzz", "matrix-fuzzer": "matrix_fuzz", "form-attacker": "form_attack",
@@ -205,8 +206,8 @@ export default function OwaspChecklist() {
         const pct = all.length ? Math.round((done / all.length) * 100) : 0;
         const missing = all.filter((r) => !isDone(r.status));
         const t = targets[targetId];
-        const label = t ? (t.name || t.domain || targetId) : `(deleted target ${targetId.slice(0, 8)}…)`;
-        const displayLabel = t ? `${t.name}${t.domain && t.domain !== t.name ? ` — ${t.domain}` : ""}` : label;
+        const label = t ? (t.name || t.domain || targetId) : targetId;
+        const displayLabel = t ? `${t.name}${t.domain && t.domain !== t.name ? ` — ${t.domain}` : ""}` : `(orphaned target ${targetId.slice(0, 8)}…)`;
 
         return (
           <Card key={targetId}>
@@ -217,20 +218,20 @@ export default function OwaspChecklist() {
                   <Badge variant={pct === 100 ? "default" : pct >= 70 ? "secondary" : "destructive"}>
                     {done}/{all.length} ({pct}%)
                   </Badge>
-                  <Button size="sm" variant="outline" disabled={busy === targetId || missing.length === 0}
+                  <Button size="sm" variant="outline" disabled={busy === targetId || missing.length === 0 || !t}
                           onClick={() => runMissing(targetId, false)}>
                     <Play className="h-3 w-3 mr-1" /> Auto-rerun missing
                   </Button>
-                  <Button size="sm" variant="outline" disabled={busy === targetId || missing.length === 0}
+                  <Button size="sm" variant="outline" disabled={busy === targetId || missing.length === 0 || !t}
                           onClick={() => runMissing(targetId, true)}>
                     <Play className="h-3 w-3 mr-1" /> Run now
                   </Button>
-                  <Button size="sm" variant="outline" disabled={busy === targetId} onClick={() => reseed(targetId)}>
+                  <Button size="sm" variant="outline" disabled={busy === targetId || !t} onClick={() => reseed(targetId)}>
                     <RefreshCw className="h-3 w-3 mr-1" /> Re-seed
                   </Button>
-                  <Button size="sm" variant="destructive" disabled={busy === targetId || !t}
-                          onClick={() => { setDeleteTarget({ id: targetId, label: label }); setDeleteConfirm(""); }}>
-                    <Trash2 className="h-3 w-3 mr-1" /> Delete
+                  <Button size="sm" variant="destructive" disabled={busy === targetId}
+                          onClick={() => { setDeleteTarget({ id: targetId, label }); setDeleteConfirm(""); }}>
+                    <Trash2 className="h-3 w-3 mr-1" /> Delete{!t ? " orphan" : ""}
                   </Button>
                 </div>
               </CardTitle>
