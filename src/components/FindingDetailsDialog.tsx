@@ -47,6 +47,14 @@ interface FindingLike {
   target_id?: string;
   endpoint_id?: string | null;
   created_at?: string;
+  updated_at?: string;
+  dedup_key?: string | null;
+  group_key?: string | null;
+  finding_type?: string | null;
+  vuln_class?: string | null;
+  affected_url?: string | null;
+  scanner_module?: string | null;
+  discovered_by?: string | null;
 }
 
 
@@ -325,6 +333,7 @@ export default function FindingDetailsDialog({ open, onOpenChange, finding }: Pr
             <TabsTrigger value="remediation">Remediation</TabsTrigger>
             <TabsTrigger value="poc"><Wand2 className="h-3 w-3 mr-1" />Advanced PoC</TabsTrigger>
             <TabsTrigger value="report">H1 Report</TabsTrigger>
+            <TabsTrigger value="provenance"><BrainCircuit className="h-3 w-3 mr-1" />Provenance</TabsTrigger>
           </TabsList>
 
           <div className="flex-1 overflow-auto mt-3">
