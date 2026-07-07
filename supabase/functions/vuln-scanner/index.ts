@@ -1006,15 +1006,28 @@ async function runPassiveChecks(domain: string): Promise<PassiveResult[]> {
   const results: PassiveResult[] = [];
 
   try {
-    const resp = await safeFetch(
-      `https://${domain}`,
-      {
-        method: "GET",
-        headers: { "User-Agent": "CyberScope-Scanner/1.0" },
-        redirect: "follow",
-      },
-      6000,
-    );
+    // Try https first, fall back to http — was hardcoded to https:// only,
+    // so any HTTP-only or HTTPS-flaky target (e.g. testaspnet.vulnweb.com)
+    // threw immediately and fell into the outer catch below, silently
+    // returning an empty array every time. That's why "Passive checks
+    // found 0 issues" appeared on every target in every scan this session,
+    // regardless of how well or poorly the target was actually configured.
+    let resp: Response;
+    let scheme = "https";
+    try {
+      resp = await safeFetch(
+        `https://${domain}`,
+        { method: "GET", headers: { "User-Agent": "CyberScope-Scanner/1.0" }, redirect: "follow" },
+        5000,
+      );
+    } catch {
+      scheme = "http";
+      resp = await safeFetch(
+        `http://${domain}`,
+        { method: "GET", headers: { "User-Agent": "CyberScope-Scanner/1.0" }, redirect: "follow" },
+        6000,
+      );
+    }
 
     const headers = Object.fromEntries(resp.headers.entries());
     const body = await resp.text();
@@ -1182,7 +1195,7 @@ async function runPassiveChecks(domain: string): Promise<PassiveResult[]> {
     for (const lp of loggingPaths) {
       try {
         const lResp = await safeFetch(
-          `https://${domain}${lp}`,
+          `${scheme}://${domain}${lp}`,
           { method: "GET", headers: { "User-Agent": "CyberScope-Scanner/1.0" } },
           4000,
         );
