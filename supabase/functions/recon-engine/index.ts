@@ -1386,12 +1386,15 @@ serve(async (req) => {
 
     // Juicy paths from dorks
     for (const jp of dorkResults.juicyPaths) {
-      if (!allUrls.has(jp)) allUrls.set(jp, { method: "GET", params: {}, source: "google-dork-juicy" });
+      const key = normalizeUrl(jp, SCHEME);
+      if (!allUrls.has(key)) allUrls.set(key, { method: "GET", params: {}, source: "google-dork-juicy" });
     }
 
     // AI-inferred endpoints
     for (const ep of aiResults.apiEndpoints) {
-      const key = ep.startsWith("http") ? ep : `https://${domain}${ep.startsWith("/") ? ep : "/" + ep}`;
+      const key = ep.startsWith("http")
+        ? normalizeUrl(ep, SCHEME)
+        : normalizeUrl(`${SCHEME}://${domain}${ep.startsWith("/") ? ep : "/" + ep}`, SCHEME);
       if (!allUrls.has(key)) allUrls.set(key, { method: "GET", params: {}, source: "ai-inferred" });
     }
 
