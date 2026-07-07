@@ -2,6 +2,7 @@
 // the asset graph + existing findings + tech stack via Lovable AI Gateway.
 // Each hypothesis becomes a hypothesis_test scan_job.
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { logAiNextStep } from "../_shared/ai-next-step.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -49,7 +50,10 @@ ${JSON.stringify(context.wafProfile || {})}
 ${context.oobCount || 0}
 
 ═══ RECENT AGENT DECISIONS (last 10 log lines) ═══
-${(context.recentDecisions || []).slice(0, 10).map((l: any) => `- [${l.log_type}] ${l.message}`).join("\n")}
+${(context.recentDecisions || [])
+  .slice(0, 10)
+  .map((l: any) => `- [${l.log_type}] ${l.message}`)
+  .join("\n")}
 
 Generate up to 12 high-value attack hypotheses we have NOT tested yet.
 For each, output strict JSON in this schema:
@@ -99,7 +103,15 @@ Output ONLY a JSON array of hypothesis objects. No prose.`;
 }
 
 async function strategize(db: any, targetId: string, round: number) {
-  const [{ data: assets }, { data: findings }, { data: proven }, { data: endpoints }, { data: tgt }, { data: oob }, { data: recentDecisions }] = await Promise.all([
+  const [
+    { data: assets },
+    { data: findings },
+    { data: proven },
+    { data: endpoints },
+    { data: tgt },
+    { data: oob },
+    { data: recentDecisions },
+  ] = await Promise.all([
     db.from("scan_assets").select("host,base_url,source").eq("target_id", targetId).limit(50),
     db
       .from("vulnerability_findings")
@@ -115,7 +127,13 @@ async function strategize(db: any, targetId: string, round: number) {
     db.from("discovered_endpoints").select("url,method,parameters").eq("target_id", targetId).limit(60),
     db.from("target_workspaces").select("domain,waf_profile").eq("id", targetId).maybeSingle(),
     db.from("oob_callbacks").select("id", { count: "exact", head: true }).eq("target_id", targetId),
-    db.from("scan_logs").select("log_type,message").eq("target_id", targetId).in("log_type", ["action","warning","result","thought"]).order("created_at", { ascending: false }).limit(20),
+    db
+      .from("scan_logs")
+      .select("log_type,message")
+      .eq("target_id", targetId)
+      .in("log_type", ["action", "warning", "result", "thought"])
+      .order("created_at", { ascending: false })
+      .limit(20),
   ]);
 
   const techStack: Record<string, string> = {};
@@ -193,12 +211,41 @@ async function strategize(db: any, targetId: string, round: number) {
   }));
   if (jobs.length) await db.from("scan_jobs").insert(jobs);
 
+  // Structured "AI next step" entries — one per queued hypothesis, so Neural
+  // Logs can show exactly what the AI debated and what it decided to run
+  // next, instead of just a plain "N hypotheses generated" count.
+  for (const h of rows.slice(0, jobs.length)) {
+    await logAiNextStep(db, {
+      targetId,
+      decisionType: "hypothesis-selection",
+      debating: h.hypothesis,
+      reasoningSummary: `Round ${round}: chose to test ${h.vuln_class || "unclassified"} on ${h.endpoint_url || h.asset_host || "target"} based on recon/findings context`,
+      nextStep: {
+        tool: "hypothesis-test-runner",
+        action: `test ${h.vuln_class || "vuln"} via ${h.mutation?.param ? `param "${h.mutation.param}"` : "mutation"}`,
+        targetUrl: h.endpoint_url,
+        vulnClass: h.vuln_class,
+      },
+      extra: { round },
+    });
+  }
+  if (rows.length === 0) {
+    await logAiNextStep(db, {
+      targetId,
+      decisionType: "hypothesis-selection",
+      debating: `whether any high-value untested attack surface remains after round ${round}`,
+      reasoningSummary:
+        "No viable hypotheses generated from current recon/findings context — likely need more recon depth or the surface is exhausted",
+      nextStep: null,
+      extra: { round },
+    });
+  }
+
   await db.from("scan_logs").insert({
     target_id: targetId,
     log_type: "action",
     message: `🧠 AI Strategist queued ${jobs.length} hypothesis tests from round ${round}`,
   });
-
 
   await db
     .from("scan_logs")
