@@ -261,6 +261,20 @@ function analyzeExecutionEvidence(
     /PDOException/i,
     /unclosed quotation mark/i,
     /syntax error at or near/i,
+    // Microsoft SQL Server / ASP.NET / ADO — was completely absent, so a
+    // classic ASP.NET+MSSQL target (this exact stack: Microsoft-IIS/8.5)
+    // could throw a genuine, textbook SQL error and still score as
+    // "no evidence" because none of the above patterns match Microsoft's
+    // specific error text.
+    /microsoft ole db provider/i,
+    /microsoft jet database engine/i,
+    /incorrect syntax near/i,
+    /system\.data\.sqlclient\.sqlexception/i,
+    /80040e(14|07|10)/i, // classic ADO/OLE DB SQL error codes
+    /conversion failed when converting/i,
+    /server error in .*application/i, // classic ASP.NET yellow-screen marker
+    /adodb\.field/i,
+    /\[microsoft\]\[odbc sql server driver\]/i,
   ];
   const cmdiEvidence = [/uid=\d+\(/, /root:.*:0:0/, /cyberscope_marker/, /bin\/bash/, /bin\/sh/];
   const pathEvidence = [/root:.*:0:0/, /\[boot loader\]/i, /bin\//, /etc\/passwd/];
