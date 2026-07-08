@@ -317,14 +317,32 @@ Deno.serve(async (req) => {
         continue;
       }
 
-      await supa
+      // Atomic claim: check status=queued in the UPDATE's own WHERE
+      // clause and inspect what was actually updated. If a concurrent
+      // worker invocation already claimed this job (flipped it to
+      // "running") between our SELECT above and this UPDATE, this call
+      // affects zero rows and we skip processing — instead of both
+      // workers racing to run the same job simultaneously, which doubled
+      // AI credit consumption and network load against the target on
+      // every scan, and produced inconsistent results (e.g. the same
+      // recon run reporting 6 endpoints in one invocation and 301 in a
+      // concurrently-racing one for the same target).
+      const { data: claimed } = await supa
         .from("scan_jobs")
         .update({
           status: "running",
           started_at: new Date().toISOString(),
           attempts: job.attempts + 1,
         })
-        .eq("id", job.id);
+        .eq("id", job.id)
+        .eq("status", "queued")
+        .select("id");
+
+      if (!claimed || claimed.length === 0) {
+        // Another worker instance already claimed this job — skip it.
+        results.push({ id: job.id, type: job.job_type, skipped: true, reason: "already_claimed_by_concurrent_worker" });
+        continue;
+      }
 
       const out = await runJob(job);
 
