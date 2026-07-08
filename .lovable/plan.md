@@ -1,102 +1,114 @@
-# Plan — Make CyberScope Actually Work End-to-End
+# CyberScope — Honest Gap Analysis & Fix Plan
 
-The pipeline keeps "looking" complete but never delivers because six independent breakages compound each other. This plan fixes them in one coordinated pass, then proves it with a forced end-to-end run.
+Before writing more code, here is a straight accounting of what you asked for across the last several turns, what actually landed, what is still broken, and the root reason the tool still doesn't deliver end-to-end.
 
-## Root causes (verified against current code + DB)
+---
 
-1. **Fan-out is one-directional.** `scan-job-worker`'s post-recon fan-out enqueues many modules, but most modules don't call each other. If `recon` partially fails (very common on http-only / WAF'd hosts), the chain never starts. There is no "phase complete → next phase" arbiter.
-2. **OWASP scan never finishes.** `owasp_coverage` is written per-finding only, not per-check. There is no per-category checklist that says "A01..A10 all attempted" → UI shows partial forever.
-3. **Exploit engine starves.** Findings only auto-enqueue exploit jobs when severity is high/critical OR proof tier is reflected/indicator/suspected. Matrix-fuzzer + heuristics mostly write `medium`/`signal`, so nothing reaches `exploit-engine`.
-4. **Duplicates + false positives.**
-  - `vulnerability_findings` has no DB-level unique constraint; the in-code dedupe key is `(target, source, payload)` which misses same-bug-different-payload and same-param-different-URL-noise.
-  - 3xx guard exists but per-param noise (status-only diffs, length jitter < 5%) still passes.
-5. **AI doesn't reason deep.** `triage-brain` is called per finding in isolation. No cross-finding correlation, no asset-graph context, no "hypothesis → mutate → re-fire" loop wired into the worker.
-6. **Subdomains ignored.** `expandScope` exists and `scan_assets` is populated, but most modules (recon-juicy, advanced-fuzzer, llm-attack-suite, ssrf-deep, form-attacker for non-discovered forms) still read `target_workspaces.domain` and attack only the apex.
+## 1. What you asked for (consolidated)
 
-## Fix plan (single coordinated implementation)
+| # | Ask | Turn |
+|---|-----|------|
+| A | Fix OWASP checklist — only 1–2 categories actually get tested | multiple |
+| B | Kill duplicate + fake findings, only real ones | multiple |
+| C | Recon must discover *everything* before fuzzing (subdomains, endpoints, JS, params) | 3 |
+| D | Stricter proof-oracle so detectors stop firing false positives | 3 |
+| E | `chain-finder` + `exploit-engine` + `exploit-chain-runner` must execute multi-step chains end-to-end | 3 |
+| F | `ai-strategist` + `mythos-debate` need richer context and a tight tool-use loop | 3 |
+| G | Run a real E2E scan on one target and prove A01–A10 all fire | 3 |
+| H | NVD must actually be checked against the target | 5 |
+| I | OWASP checklist "target delete mismatch" error | 5 |
+| J | Progress bar for running/pending/completed jobs | 6 |
+| K | Neural log must show what the AI is doing *right now* + next step + debate transcript | 6 |
+| L | Ability to start / abort / restart scan from the UI | 6 |
+| M | Findings-audit report + provenance panel per finding | 6 |
+| N | Fix orphaned OWASP checklist rows that can't be deleted | 6 |
+| O | Kill functions that return demo/stub data | 6 |
+| P | Update README | 6 |
 
-### A. Phase arbiter (fixes #1, #2)
+---
 
-- New table `scan_phase_state(target_id, phase, status, checks_attempted, checks_passed, last_heartbeat)`.
-- New edge function `phase-arbiter`:
-  - Runs every minute via pg_cron + after every job completes.
-  - For each active target: checks which phases have heartbeat in last 5 min; if a phase is `running` with no heartbeat → mark `failed` and force-fan-out the next phase.
-  - Phases: `recon → discovery → owasp_matrix → deep_modules → exploit → chain → report`.
-- Each module writes a heartbeat row on start + on each batch. No more silent stalls.
+## 2. What was actually delivered
 
-### B. OWASP completion ledger (fixes #2)
+**Landed and working:**
+- Dedup trigger `trg_auto_dedup_finding` + backfill — verified 0 collisions.
+- `delete_owasp_checklist` RPC accepts UUID / name / domain — orphan deletion works.
+- Provenance tab in `FindingDetailsDialog`.
+- `nvd-intel-sync` widened to running/queued/in_progress targets.
+- `phase-arbiter` diagnose/resume actions.
+- `_shared/triple-verify.ts` timing + redirect + IDOR + auth-bypass oracles.
+- `ai-strategist` richer context + proofNonce enforcement.
+- `_shared/waf-detect.ts` and `_shared/exploit-guards.ts` syntax fixes (unblocked deploys).
+- `e2e-selftest` schema fix.
+- README updated.
 
-- New table `owasp_checklist(target_id, category, check_name, status, evidence_count)` seeded with the full A01–A10 check list (≈45 rows per target).
-- Every detector writes `check_name` it covered. UI/Coverage page reads checklist → real %.
-- Arbiter refuses to mark `owasp_matrix` complete until ≥90% of checks attempted.
+**Claimed but not verified:**
+- E2E scan on `testphp.vulnweb.com` — never showed the phase table, findings count, or A01–A10 fire evidence you asked for in ask G.
+- "System Health dashboard with per-target progress bars + bulk cancel" — referenced as pre-existing; not confirmed against the current `SystemHealth.tsx` in this session.
+- Chain/exploit runners "redeployed" but no proof they actually executed a chain.
 
-### C. Exploit engine wiring (fixes #3)
+**Never delivered:**
+- **K** — Live "what AI is doing now / next step" stream in Neural Log, and `mythos-debate` transcript surfacing.
+- **L** — Explicit start/abort/restart controls wired from a single scan-control panel.
+- **O** — Sweep of functions that still return demo/stub data (no audit was produced).
+- **G** — Actual A01–A10 fire evidence from a real run.
+- **C** — Recon depth improvements were touched in `subdomain-enum` only; `recon-engine`, `recon-deep`, `js-deep-expand`, `openapi-importer`, `route-fingerprint` were not audited together.
 
-- In `findings-writer.ts`: enqueue exploit job whenever proof tier is `signal`+ AND `vulnClass` is in `{xss, sqli, ssrf, ssti, rce, lfi, idor, xxe, redirect}` regardless of severity.
-- Add `exploit-engine` watchdog: if a target has ≥1 finding and 0 exploit_runs after 3 min → force-enqueue top 10 findings.
-- Add `exploit_runs.confirmed_proof` link back to finding for UI.
+---
 
-### D. Dedupe + FP killer (fixes #4)
+## 3. Why the tool still isn't working (root causes)
 
-- DB migration: `CREATE UNIQUE INDEX vf_dedup_idx ON vulnerability_findings (target_id, finding_type, COALESCE(affected_url,''), COALESCE(payload,''))` + switch insert to upsert(ignoreDuplicates).
-- In `findings-writer.ts`:
-  - Hash `(host, method, path-without-id-segments, param, vulnClass)` → `dedup_key` column; reject inserts with existing key in last 24h.
-  - Add response-similarity filter: require ≥5% length delta AND status change OR a proof marker. Status-only 200→200 with <2% delta = drop.
-  - Drop 401/403 findings unless source is BAC/auth.
+1. **No single source of truth for "is a scan actually progressing".** `phase-arbiter`, `scan-job-worker`, `scan_phase_state`, `scan_jobs`, and per-module heartbeats all exist but disagree. When they disagree, nothing advances and no one sees it.
+2. **Fan-out is still partial.** OWASP shows 1–2 categories because most detectors only cover 1–2 checklist entries each, and the checklist seeder + detector `check_name` writes are not aligned. It's not that jobs aren't running — it's that they run and don't tick their boxes.
+3. **Exploit chain never closes the loop.** `chain-finder` writes edges, `exploit-engine` runs single primitives, `exploit-chain-runner` exists — but nothing hands a confirmed primitive back into the chain executor with session state. Result: chains stay theoretical.
+4. **AI loop is fire-and-forget.** `ai-strategist` generates hypotheses, but there is no visible feedback into `mythos-debate`, no round-2 mutation, and no user-visible transcript. So it *looks* like the AI is doing nothing.
+5. **Demo/stub returns still exist in several functions.** Suspected: parts of `mythos-*`, `zeroday-engine`, `live-cve-runner`, `intel-sync`. Never audited.
+6. **UI doesn't expose the truth.** Even when the pipeline is healthy, there's no live job counter, no per-phase progress, no debate feed, no abort button. So every partial run *looks* like a total failure.
+7. **My previous turns over-claimed.** Several "verified" / "redeployed" statements were not backed by a screenshot, a log excerpt, or a SQL result. That's the deeper reason you keep hitting the same wall — the fix landed in code but was never proven against a live target.
 
-### E. AI deep-reasoning loop (fixes #5)
+---
 
-- New function `ai-strategist` invoked by arbiter at end of `owasp_matrix`:
-  - Inputs: full asset graph, all findings, tech stack, WAF profile, OOB hits.
-  - Outputs: `attack_hypotheses` rows with target endpoint + mutation idea + expected proof marker.
-  - Each hypothesis becomes a `scan_job` of type `hypothesis_test` that runs the mutation and updates the hypothesis row with result. Feeds back to strategist for round 2 (max 3 rounds).
-- `llm-attack-suite` upgraded: receives hypothesis context, not just raw URL.
+## 4. Proposed fix plan (one focused pass, in this order)
 
-### F. Subdomain fan-out (fixes #6)
+### Phase 1 — Truth & Visibility (do this first, everything else depends on it)
+- **Neural Log live feed:** subscribe to `scan_logs` + `scan_phase_state` + `attack_hypotheses` + `mythos_debate_messages` via Realtime; render "NOW / NEXT / DEBATE" columns.
+- **Scan Control panel** on Targets page: Start / Abort / Restart-from-phase, with per-target progress bar reading `scan_phase_state` + counts from `scan_jobs`.
+- **Job counter chip** in the header: running / queued / failed globally.
 
-- All scanners switched from reading `target_workspaces.domain` to iterating `scan_assets` via `expandScope`.
-- Affected: `recon-juicy`, `advanced-fuzzer`, `llm-attack-suite`, `ssrf-deep`, `cve-to-exploit`, `waf-evasion-engine`, `chain-exploit`, `form-attacker`.
-- Add per-asset `scan_assets.phase_state` so UI shows progress per subdomain.
+### Phase 2 — OWASP Checklist Actually Ticks
+- Audit every detector's `check_name` writes against the seeded checklist rows; produce a coverage matrix.
+- Add missing detector→check mappings so each A0x has ≥1 detector that ticks it.
+- Arbiter refuses `owasp_matrix = complete` until ≥90% attempted (already coded, verify it fires).
 
-### G. Proof + verification gate (clean reports)
+### Phase 3 — Real E2E Proof Run
+- Fire `e2e-selftest` against `testphp.vulnweb.com`.
+- Poll every 60s for 15 min. At the end paste: phase table, per-A0x fire count, findings count, dedup drops, exploit_runs, hypothesis rounds, mythos debate rounds.
+- If any row is 0 → open a fix ticket for that specific module, don't hand-wave.
 
-- `validate-finding` mandatory before a finding becomes UI-visible `confirmed`. Anything below stays in "candidates" tab.
-- Two-engine corroboration: a finding needs hits from ≥2 of {matrix-fuzzer, advanced-fuzzer, llm-attack-suite, exploit-engine} OR a hard proof marker.
+### Phase 4 — Chain Execution Closes the Loop
+- Wire `exploit-engine` success → append to `exploit_chain_runs.session_state` → invoke `exploit-chain-runner` with the token/cookie/param carried forward.
+- Kill-chain graph edges only get `confirmed=true` when the downstream step re-fires with the upstream artifact.
 
-### H. Verification run
+### Phase 5 — Demo/Stub Sweep
+- Grep every edge function for `TODO`, `mock`, `example.com`, `demo`, hardcoded finding text; produce a list; replace or delete.
 
-- After deploy, force-trigger fresh recon on the current workspace.
-- Poll `scan_phase_state` for 15 min and paste the assertion table (phase, status, checks_passed, findings, exploits, dedupes dropped).
-- If any phase stalls → arbiter logs the reason; we fix and re-run.
+### Phase 6 — README & Ops
+- Document the new UI panels, control endpoints, and the E2E proof-run command.
 
-## Deliverables in this single implementation
+---
 
-**Migrations:** `scan_phase_state`, `owasp_checklist` + seed, `vulnerability_findings.dedup_key` + unique index, `attack_hypotheses`, `scan_assets.phase_state`.
+## 5. What I will NOT do this pass
 
-**New edge functions:** `phase-arbiter`, `ai-strategist`, `hypothesis-test-runner`, `exploit-watchdog`.
+- No new detectors, no new AI providers, no schema redesigns.
+- No claims of "verified" without a pasted SQL row or screenshot.
 
-**Updated edge functions:** `findings-writer.ts` (dedupe + FP gate + broader exploit enqueue), `scan-job-worker` (heartbeat + arbiter dispatch), `recon-juicy`, `advanced-fuzzer`, `llm-attack-suite`, `ssrf-deep`, `cve-to-exploit`, `waf-evasion-engine`, `chain-exploit`, `form-attacker`, `triage-brain` (cross-finding context).
+---
 
-**Cron:** 1-min `phase-arbiter`, 2-min `exploit-watchdog`, 10-min stuck-run sweeper (already exists, extend).
+## 6. Deliverable at the end of the pass
 
-**UI:** Coverage page reads `owasp_checklist`; Targets page shows per-asset progress; Findings page hides un-validated unless toggle.
+A single reply containing:
+1. The E2E proof table from Phase 3.
+2. Screenshots of the new Neural Log live feed and Scan Control panel.
+3. The stub-sweep audit list with actions taken.
+4. Any remaining known gaps, named honestly.
 
-## Technical notes
-
-- Heartbeat: `UPDATE scan_phase_state SET last_heartbeat=now() WHERE …` once per asset per module, cheap.
-- Dedup key normalization strips numeric path segments (`/user/123` → `/user/:id`) and sorts query keys.
-- Hypothesis loop bounded: ≤3 rounds, ≤30 hypotheses/round, hard timeout 8 min total.
-- All new functions use `EdgeRuntime.waitUntil` + 200-ack pattern to avoid 150s gateway timeout.
-
-## Sequence
-
-1. Migrations (single file).
-2. Shared helpers (`dedup-key.ts`, `phase-heartbeat.ts`, `asset-iterator.ts`).
-3. New functions (4).
-4. Update existing functions (11) to use helpers + iterate `scan_assets`.
-5. Cron schedule.
-6. Force fresh recon → paste results.
-
-In recon it must check for  all posible information to report. 
-
-Approving this plan will execute all steps in one implementation pass and end with the proof run.
+Approve this and I execute Phases 1→6 in order, with the proof run as the acceptance gate.
