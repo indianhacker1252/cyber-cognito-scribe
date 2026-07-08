@@ -419,12 +419,14 @@ export default function Targets() {
                       <Trash2 className="h-3 w-3" />
                     </Button>
 
-                </div>
+                    </div>
+                  </div>
 
                 {/* Per-target scan control: progress + start/abort/restart */}
                 <div className="mt-2">
                   <ScanControl targetId={target.id} targetDomain={target.domain || target.name} />
                 </div>
+
 
 
 
