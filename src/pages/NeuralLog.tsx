@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Pause, Play, Terminal, Trash2, Globe, Link, Bug, Shield, ChevronDown, ChevronRight, Target } from "lucide-react";
 import { toast } from "sonner";
+import { BrainPanel } from "@/components/BrainPanel";
 
 const logColors: Record<string, string> = {
   thought: "text-cyber-cyan",
@@ -322,6 +323,11 @@ export default function NeuralLog() {
                 Target: {targets?.find(t => t.id === selectedTarget)?.domain || targets?.find(t => t.id === selectedTarget)?.name}
               </div>
             )}
+
+            {/* AI brain: NOW / NEXT / HYPOTHESES */}
+            <BrainPanel targetId={selectedTarget} />
+
+
 
             {/* Findings & Vulns */}
             <DiscoverySection

@@ -20,6 +20,7 @@ import { toast } from "sonner";
 import { WafDriftMonitor } from "@/components/WafDriftMonitor";
 import { AdvancedScannerPanel } from "@/components/AdvancedScannerPanel";
 import { ScopeGateDialog } from "@/components/ScopeGateDialog";
+import { ScanControl } from "@/components/ScanControl";
 
 
 const statusColors: Record<string, string> = {
@@ -418,8 +419,14 @@ export default function Targets() {
                       <Trash2 className="h-3 w-3" />
                     </Button>
 
-                  </div>
                 </div>
+
+                {/* Per-target scan control: progress + start/abort/restart */}
+                <div className="mt-2">
+                  <ScanControl targetId={target.id} targetDomain={target.domain || target.name} />
+                </div>
+
+
 
                 {/* Deep Audit loading skeleton */}
                 {isDeepAuditing && (
