@@ -3314,6 +3314,7 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      abort_target_scan: { Args: { _target_id: string }; Returns: Json }
       assert_finding_submittable: {
         Args: { _finding_id: string }
         Returns: boolean
