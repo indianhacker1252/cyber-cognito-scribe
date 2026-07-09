@@ -242,18 +242,17 @@ async function callOllama(opts: LlmCallOptions & { ollamaUrl?: string }): Promis
  * On credit exhaustion (402 / bllmerror) marks DB and fails fast.
  */
 export async function llmCall(opts: LlmCallOptions): Promise<LlmResult> {
-  // Check if we are already out of credits
+  // Cached DB sentinel: only short-circuit when a very recent (≤2min) exhaustion
+  // was recorded. This is much tighter than before (was 10min) so the fallback
+  // chain gets a chance whenever a *new* call arrives.
   if (opts.db && opts.targetId) {
-    if (isGlobalCreditExhausted()) {
-      return { ok: false, text: "", provider: "none", error: "AI credits exhausted (in-memory sentinel)" };
-    }
-    if (await areCreditsRecentlyExhausted(opts.db, opts.targetId, 10)) {
-      setGlobalCreditExhausted(); // sync in-memory too
-      return { ok: false, text: "", provider: "none", error: "AI credits exhausted (cached sentinel)" };
+    if (await areCreditsRecentlyExhausted(opts.db, opts.targetId, 2)) {
+      // Even then, don't return early — try direct providers (OpenAI/Gemini/
+      // Anthropic/Ollama) first, only skipping Lovable Gateway which is the
+      // one that runs out of credits.
     }
   }
 
-  // WAF hint is injected into system prompt
   const messages = opts.wafHint
     ? [{ role: "system" as const, content: opts.wafHint }, ...opts.messages]
     : opts.messages;
@@ -276,19 +275,47 @@ export async function llmCall(opts: LlmCallOptions): Promise<LlmResult> {
       ollama: (o) => callOllama({ ...o, ollamaUrl: pref.ollamaUrl }),
       local: (o) => callOllama({ ...o, ollamaUrl: pref.ollamaUrl }),
     };
-    const providers = pref.provider === "auto"
-      ? [callLovable, callOpenAI, callGeminiDirect, callAnthropic, (o: LlmCallOptions) => callOllama({ ...o, ollamaUrl: pref.ollamaUrl })]
-      : [providerMap[pref.provider] || callLovable];
+
+    // Auto = try Lovable Gateway, then EVERY direct provider whose key exists.
+    // If Lovable returns 402/credit-exhausted, do NOT stop — direct providers
+    // have their own billing and are the whole point of fallback.
+    let providers: Array<(o: LlmCallOptions) => Promise<LlmResult>>;
+    if (pref.provider === "auto") {
+      const recentlyOut = opts.db && opts.targetId
+        ? await areCreditsRecentlyExhausted(opts.db, opts.targetId, 2).catch(() => false)
+        : false;
+      providers = [];
+      if (!recentlyOut) providers.push(callLovable);
+      if (OPENAI_KEY) providers.push(callOpenAI);
+      if (GEMINI_KEY) providers.push(callGeminiDirect);
+      if (ANTHROPIC_KEY) providers.push(callAnthropic);
+      if (pref.ollamaUrl || OLLAMA_BASE_URL) providers.push((o) => callOllama({ ...o, ollamaUrl: pref.ollamaUrl }));
+      if (!providers.length) providers = [callLovable]; // last resort
+    } else {
+      providers = [providerMap[pref.provider] || callLovable];
+    }
+
+    let sawCreditExhaustion = false;
+    let lastExhaustedError = "";
+
     for (let i = 0; i < providers.length; i++) {
       let backoff = 1000;
       for (let attempt = 0; attempt < 3; attempt++) {
         const out = await providers[i](reqOpts);
         if (out.ok && out.text) {
           const cleaned = opts.json ? out.text : sanitizeAiOutput(out.text);
+          // If we succeeded via a fallback, log which provider actually served
+          if (opts.db && opts.targetId && out.provider !== "lovable") {
+            opts.db.from("scan_logs").insert({
+              target_id: opts.targetId,
+              log_type: "info",
+              message: `🔀 LLM fallback served by ${out.provider}`,
+              metadata: { kind: "llm_fallback", provider: out.provider, phase: opts.phase },
+            }).then(() => {}, () => {});
+          }
           return { ...out, text: cleaned };
         }
 
-        // Detect credit exhaustion (402 or explicit bllmerror)
         const status = parseInt(out.error?.match(/\d+/)?.[0] || "0");
         const isCreditExhausted =
           isCreditExhaustionResponse(status, out.text) ||
@@ -296,32 +323,40 @@ export async function llmCall(opts: LlmCallOptions): Promise<LlmResult> {
           /bllmerror/i.test(out.text || "");
 
         if (isCreditExhausted) {
-          if (opts.db && opts.targetId) {
-            await markCreditsExhausted(opts.db, {
-              targetId: opts.targetId,
-              runId: opts.runId,
-              phase: opts.phase || "llm-call",
-              reason: out.error,
-            });
-            setGlobalCreditExhausted();
-          }
-          return { ok: false, text: "", provider: out.provider, error: `AI credits exhausted: ${out.error}` };
+          sawCreditExhaustion = true;
+          lastExhaustedError = out.error || "credit exhausted";
+          errors.push(`${out.provider}:credit_exhausted`);
+          break; // this provider is dry — move to the next one, don't bail out
         }
 
         errors.push(`${out.provider}:${out.error || "empty"}`);
         if (isThrottle(out.error || "")) {
           await sleep(backoff);
           backoff *= 2;
-          continue; // retry same provider
+          continue;
         }
-        break; // non-throttle error → next provider
+        break;
       }
     }
+
+    // Only mark the DB sentinel when EVERY provider failed *and* we saw a real
+    // credit-exhaustion signal on the way. Prevents a single Lovable 402 from
+    // silencing all future AI calls for 10 minutes.
+    if (sawCreditExhaustion && opts.db && opts.targetId) {
+      await markCreditsExhausted(opts.db, {
+        targetId: opts.targetId,
+        runId: opts.runId,
+        phase: opts.phase || "llm-call",
+        reason: lastExhaustedError,
+      }).catch(() => {});
+    }
+
     return { ok: false, text: "", provider: "none", error: errors.join(" | ") };
   } finally {
     release();
   }
 }
+
 
 /** Batch helper — runs N concurrently (default 5, same as global limit). */
 export async function llmCallBatch(items: LlmCallOptions[], concurrency = MAX_CONCURRENT): Promise<LlmResult[]> {

@@ -2762,6 +2762,7 @@ export type Database = {
           created_at: string
           error_message: string | null
           id: string
+          idempotency_key: string | null
           job_type: string
           max_attempts: number
           next_run_at: string
@@ -2778,6 +2779,7 @@ export type Database = {
           created_at?: string
           error_message?: string | null
           id?: string
+          idempotency_key?: string | null
           job_type: string
           max_attempts?: number
           next_run_at?: string
@@ -2794,6 +2796,7 @@ export type Database = {
           created_at?: string
           error_message?: string | null
           id?: string
+          idempotency_key?: string | null
           job_type?: string
           max_attempts?: number
           next_run_at?: string
@@ -2857,11 +2860,13 @@ export type Database = {
           checks_passed: number
           completed_at: string | null
           created_at: string
+          expected_modules: string[] | null
           findings_count: number
           id: string
           last_heartbeat: string
           metadata: Json
           phase: string
+          phase_order: number | null
           started_at: string | null
           status: string
           target_id: string
@@ -2872,11 +2877,13 @@ export type Database = {
           checks_passed?: number
           completed_at?: string | null
           created_at?: string
+          expected_modules?: string[] | null
           findings_count?: number
           id?: string
           last_heartbeat?: string
           metadata?: Json
           phase: string
+          phase_order?: number | null
           started_at?: string | null
           status?: string
           target_id: string
@@ -2887,11 +2894,13 @@ export type Database = {
           checks_passed?: number
           completed_at?: string | null
           created_at?: string
+          expected_modules?: string[] | null
           findings_count?: number
           id?: string
           last_heartbeat?: string
           metadata?: Json
           phase?: string
+          phase_order?: number | null
           started_at?: string | null
           status?: string
           target_id?: string
@@ -3155,6 +3164,7 @@ export type Database = {
           hard_evidence: Json | null
           id: string
           last_seen_at: string
+          parent_finding_id: string | null
           payload: string | null
           poc: string | null
           proof_tier: string
@@ -3191,6 +3201,7 @@ export type Database = {
           hard_evidence?: Json | null
           id?: string
           last_seen_at?: string
+          parent_finding_id?: string | null
           payload?: string | null
           poc?: string | null
           proof_tier?: string
@@ -3227,6 +3238,7 @@ export type Database = {
           hard_evidence?: Json | null
           id?: string
           last_seen_at?: string
+          parent_finding_id?: string | null
           payload?: string | null
           poc?: string | null
           proof_tier?: string
@@ -3257,6 +3269,13 @@ export type Database = {
             columns: ["evidence_package_id"]
             isOneToOne: false
             referencedRelation: "evidence_packages"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "vulnerability_findings_parent_finding_id_fkey"
+            columns: ["parent_finding_id"]
+            isOneToOne: false
+            referencedRelation: "vulnerability_findings"
             referencedColumns: ["id"]
           },
           {
