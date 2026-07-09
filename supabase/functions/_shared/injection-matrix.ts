@@ -41,23 +41,38 @@ const PAYLOADS: Record<PayloadClass, string[]> = {
   redirect: [`//evil.cyberscope.test`, `https://evil.cyberscope.test`, `/\\evil.cyberscope.test`],
 };
 
+// Strict proof markers — must be class-specific and NOT match generic doc pages.
+// Every marker must be tied to the CYBERSCOPE_PROVEN nonce OR to a hard, unambiguous
+// server-side error/behavior. Generic tokens like "onerror=", "\b49\b", "pg_query"
+// were removed because they fire on ordinary content pages and documentation.
 const PROOF_MARKERS: Record<PayloadClass, RegExp[]> = {
-  xss: [new RegExp(PROOF_TOKEN), /onerror=/i, /<svg/i],
-  sqli: [/SQL syntax/i, /mysql_fetch/i, /pg_query/i, /ORA-\d+/i, new RegExp(PROOF_TOKEN)],
-  ssrf: [/ami-id/i, /instance-id/i, /root:x:0:0/i, new RegExp(PROOF_TOKEN)],
-  lfi: [/root:x:0:0/i, /\[boot loader\]/i],
-  rce: [new RegExp(PROOF_TOKEN), /uid=\d+/],
-  ssti: [/\b49\b/, /\b14\b/],
-  nosqli: [/MongoError/i, /CastError/i],
-  redirect: [/Location:\s*\/\/evil\.cyberscope\.test/i],
+  xss: [new RegExp(PROOF_TOKEN)],
+  sqli: [
+    new RegExp(PROOF_TOKEN),
+    /You have an error in your SQL syntax/i,
+    /ORA-01756/i,
+    /PostgreSQL.*ERROR.*at or near/i,
+    /SQLSTATE\[42\d{3}\]/i,
+  ],
+  ssrf: [/ami-id/i, /instance-id\/i-[0-9a-f]/i, /^root:x:0:0:/m, new RegExp(PROOF_TOKEN)],
+  lfi: [/^root:x:0:0:/m, /\[boot loader\]/i],
+  rce: [new RegExp(PROOF_TOKEN)],
+  // SSTI: 7*7=49 and ${7*7}=49 — require the actual literal "49" as a bare token
+  // that appears next to the payload echo. Use a tight boundary + presence of ${ or {{.
+  ssti: [/(?:\{\{|\$\{|<%=|#\{)[^}]{0,20}\}\}[^0-9]{0,10}\b49\b/],
+  nosqli: [/MongoError/i, /BSONError/i, /CastError.*Cast to (Number|ObjectId)/i],
+  redirect: [/^Location:\s*\/\/evil\.cyberscope\.test/im, /^Location:\s*https?:\/\/evil\.cyberscope\.test/im],
 };
 
 export function detectProof(payloadClass: PayloadClass, status: number, body: string, headers: Headers): boolean {
   const markers = PROOF_MARKERS[payloadClass] || [];
   const headerStr = Array.from(headers.entries()).map(([k, v]) => `${k}: ${v}`).join("\n");
   const blob = body + "\n" + headerStr;
+  // Fail-closed: matches AND non-empty response required
+  if (!blob.trim() || blob.length < 20) return false;
   return markers.some((rx) => rx.test(blob));
 }
+
 
 export interface EndpointSpec {
   url: string;
