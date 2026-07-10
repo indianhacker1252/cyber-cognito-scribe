@@ -106,14 +106,24 @@ export default function Findings() {
   const filteredFindings = useMemo(() => {
     if (!findings) return [];
     let out = findings as any[];
+    if (sourceFilter !== "all") out = out.filter((f: any) => f.source_type === sourceFilter);
     if (activeTargetFilter) out = out.filter((f: any) => f.target_id === activeTargetFilter);
     if (statusFilter !== "all") {
-      out = out.filter((f: any) => {
-        return normalizeValidationStatus(f.validation_status) === statusFilter;
-      });
+      out = out.filter((f: any) => normalizeValidationStatus(f.validation_status) === statusFilter);
     }
     return out;
-  }, [findings, activeTargetFilter, statusFilter]);
+  }, [findings, activeTargetFilter, statusFilter, sourceFilter]);
+
+  const sourceCounts = useMemo(() => {
+    const base = { all: 0, dast: 0, code: 0, package: 0 };
+    for (const f of (findings || []) as any[]) {
+      base.all++;
+      if (f.source_type === "dast") base.dast++;
+      else if (f.source_type === "code") base.code++;
+      else if (f.source_type === "package") base.package++;
+    }
+    return base;
+  }, [findings]);
 
   const statusCounts = useMemo(() => {
     const base = { confirmed: 0, needs_review: 0, inconclusive: 0 };
