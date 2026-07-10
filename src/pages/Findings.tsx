@@ -133,7 +133,7 @@ export default function Findings() {
       if (error) throw error;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["findings"] });
+      queryClient.invalidateQueries({ queryKey: ["findings-unified"] });
       toast.success("Finding deleted");
     },
   });
@@ -144,7 +144,7 @@ export default function Findings() {
       if (error) throw error;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["findings"] });
+      queryClient.invalidateQueries({ queryKey: ["findings-unified"] });
       toast.success("All findings cleared");
     },
   });
@@ -167,7 +167,7 @@ export default function Findings() {
         ai_verified: result.classification === "deep_finding" || result.classification === "confirmed",
         triage_reasoning: result.reasoning,
       }).eq("id", f.id);
-      queryClient.invalidateQueries({ queryKey: ["findings"] });
+      queryClient.invalidateQueries({ queryKey: ["findings-unified"] });
       toast.success(`AI Triage: ${result.classification} (${result.confidenceScore}%)`);
     } catch {
       toast.error("AI triage failed");
@@ -182,7 +182,7 @@ export default function Findings() {
       const { data, error } = await supabase.functions.invoke("proof-engine", { body: { findingId: f.id } });
       if (error) throw error;
       if (!data?.ok) throw new Error(data?.error || "proof failed");
-      queryClient.invalidateQueries({ queryKey: ["findings"] });
+      queryClient.invalidateQueries({ queryKey: ["findings-unified"] });
       toast.success(`Proof tier: ${data.proof_tier}${data.sensitive ? " (sensitive — admin only)" : ""}`);
     } catch (e: any) { toast.error(`Proof engine: ${e.message}`); }
   };
@@ -206,7 +206,7 @@ export default function Findings() {
       const { data, error } = await supabase.functions.invoke("triple-verify", { body: { findingId: f.id } });
       if (error) throw error;
       if (!data?.ok) throw new Error(data?.error || "verify failed");
-      queryClient.invalidateQueries({ queryKey: ["findings"] });
+      queryClient.invalidateQueries({ queryKey: ["findings-unified"] });
       const tier = data.tier as string;
       const conf = data.confidence as number;
       if (tier === "confirmed") {
@@ -214,7 +214,7 @@ export default function Findings() {
         if (data.exploit?.ran) {
           toast.info("⚡ Exploit verification: running...");
           // exploit-engine already finished server-side, but invalidate again to pick up proof_tier
-          setTimeout(() => queryClient.invalidateQueries({ queryKey: ["findings"] }), 500);
+          setTimeout(() => queryClient.invalidateQueries({ queryKey: ["findings-unified"] }), 500);
           if (data.exploit.proven) {
             toast.success(`💀 EXPLOITED ✓ — ready for submission`);
           } else if (data.exploit.error) {
