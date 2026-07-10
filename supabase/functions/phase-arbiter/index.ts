@@ -106,70 +106,95 @@ async function enqueue(db: any, targetId: string, jobs: { type: string; priority
   return rows.length;
 }
 
+async function loadJobHistory(db: any, targetId: string) {
+  const { data } = await db
+    .from("scan_jobs")
+    .select("job_type,status,created_at,completed_at")
+    .eq("target_id", targetId)
+    .order("created_at", { ascending: false })
+    .limit(500);
+  const latest = new Map<string, any>();
+  for (const j of data || []) if (!latest.has(j.job_type)) latest.set(j.job_type, j);
+  return latest;
+}
+
 async function arbitrateTarget(db: any, targetId: string) {
-  // Ensure checklist seeded
-  try {
-    await db.rpc("seed_owasp_checklist", { _target_id: targetId });
-  } catch {
-    /* ignore */
-  }
+  try { await db.rpc("seed_owasp_checklist", { _target_id: targetId }); } catch { /* ignore */ }
 
   const { data: phaseRows } = await db
     .from("scan_phase_state")
-    .select("phase,status,last_heartbeat,checks_attempted,findings_count")
+    .select("phase,status,last_heartbeat,checks_attempted,findings_count,metadata")
     .eq("target_id", targetId);
 
   const phaseMap = new Map((phaseRows || []).map((p: any) => [p.phase, p]));
+  const jobLatest = await loadJobHistory(db, targetId);
   const advanced: string[] = [];
 
-  for (const phase of PHASES) {
-    const p: any = phaseMap.get(phase);
+  // Iterate strictly in phase_order so a later phase can never leap ahead.
+  const orderedPhases = [...PHASES].sort((a, b) => PHASE_ORDER[a] - PHASE_ORDER[b]);
 
-    // If phase is running but stale → mark failed and advance
+  for (const phase of orderedPhases) {
+    const p: any = phaseMap.get(phase);
+    const expected = EXPECTED_MODULES[phase] || [];
+
+    // Stalled running → mark failed and fall through so the loop can advance.
     if (p?.status === "running") {
       const age = Date.now() - new Date(p.last_heartbeat).getTime();
       if (age > STALL_MS) {
-        await db
-          .from("scan_phase_state")
-          .update({
-            status: "failed",
-            completed_at: new Date().toISOString(),
-            metadata: { ...(p.metadata || {}), stalled: true, stalled_after_ms: age },
-          })
-          .eq("target_id", targetId)
-          .eq("phase", phase);
+        await db.from("scan_phase_state").update({
+          status: "failed",
+          completed_at: new Date().toISOString(),
+          metadata: { ...(p.metadata || {}), stalled: true, stalled_after_ms: age },
+        }).eq("target_id", targetId).eq("phase", phase);
       } else {
-        // still alive, don't advance
-        return advanced;
+        // Running: gate — check whether all expected modules are actually
+        // "done"; if so, promote to complete instead of waiting for STALL_MS.
+        if (expected.length > 0) {
+          const allDone = expected.every((m) => jobLatest.get(m)?.status === "done");
+          if (allDone) {
+            await db.from("scan_phase_state").upsert({
+              target_id: targetId, phase,
+              phase_order: PHASE_ORDER[phase],
+              expected_modules: expected,
+              status: "complete",
+              completed_at: new Date().toISOString(),
+              last_heartbeat: new Date().toISOString(),
+            }, { onConflict: "target_id,phase" });
+            advanced.push(`${phase}=complete`);
+            continue;
+          }
+        }
+        return advanced; // still alive, wait
       }
     }
 
-    // If phase is pending or failed → trigger its jobs (recon is triggered by user)
+    // Pending or failed → check prerequisites, then start
     if (!p || p.status === "pending" || p.status === "failed") {
-      if (phase === "recon") continue; // recon kicks off externally
+      if (phase === "recon") continue; // recon triggered externally
 
-      // Require previous phase to be complete (or failed → keep moving)
-      const prevIdx = PHASES.indexOf(phase) - 1;
-      if (prevIdx >= 0) {
-        const prevPhase = PHASES[prevIdx];
-        const prev: any = phaseMap.get(prevPhase);
-        if (!prev || prev.status === "pending" || prev.status === "running") return advanced;
-      }
+      // Prerequisite gate: every earlier phase must be complete OR failed
+      // (never pending/running). This is what enforces strict VAPT ordering.
+      const prereqBlocked = orderedPhases
+        .filter((ph) => PHASE_ORDER[ph] < PHASE_ORDER[phase])
+        .some((ph) => {
+          const pp: any = phaseMap.get(ph);
+          if (!pp) return ph !== "recon"; // treat missing as blocking (recon starts things)
+          return pp.status === "pending" || pp.status === "running";
+        });
+      if (prereqBlocked) return advanced;
 
       const jobs = PHASE_JOBS[phase];
       if (jobs?.length) {
-        await db.from("scan_phase_state").upsert(
-          {
-            target_id: targetId,
-            phase,
-            status: "running",
-            started_at: new Date().toISOString(),
-            last_heartbeat: new Date().toISOString(),
-          },
-          { onConflict: "target_id,phase" },
-        );
+        await db.from("scan_phase_state").upsert({
+          target_id: targetId, phase,
+          phase_order: PHASE_ORDER[phase],
+          expected_modules: expected,
+          status: "running",
+          started_at: new Date().toISOString(),
+          last_heartbeat: new Date().toISOString(),
+          metadata: { ...(p?.metadata || {}), prereq_ok: true, started_by: "phase-arbiter" },
+        }, { onConflict: "target_id,phase" });
 
-        // Special: ai_strategist + exploit_watchdog are called directly, not via job worker
         const direct = jobs.filter((j) => j.type === "ai_strategist" || j.type === "exploit_watchdog");
         const queued = jobs.filter((j) => j.type !== "ai_strategist" && j.type !== "exploit_watchdog");
         for (const d of direct)
@@ -177,27 +202,20 @@ async function arbitrateTarget(db: any, targetId: string) {
         const n = await enqueue(db, targetId, queued);
         advanced.push(`${phase}+${n}`);
       } else {
-        // No jobs needed → mark complete
-        await db.from("scan_phase_state").upsert(
-          {
-            target_id: targetId,
-            phase,
-            status: "complete",
-            completed_at: new Date().toISOString(),
-            last_heartbeat: new Date().toISOString(),
-          },
-          { onConflict: "target_id,phase" },
-        );
+        await db.from("scan_phase_state").upsert({
+          target_id: targetId, phase,
+          phase_order: PHASE_ORDER[phase],
+          expected_modules: expected,
+          status: "complete",
+          completed_at: new Date().toISOString(),
+          last_heartbeat: new Date().toISOString(),
+        }, { onConflict: "target_id,phase" });
       }
       return advanced;
     }
-
-    // If complete → continue to next phase
+    // complete → advance to next phase in order
   }
-  await db.rpc("enqueue_missing_owasp_modules", { _target_id: targetId, _force: false }).then(
-    () => {},
-    () => {},
-  );
+  await db.rpc("enqueue_missing_owasp_modules", { _target_id: targetId, _force: false }).then(() => {}, () => {});
   return advanced;
 }
 
