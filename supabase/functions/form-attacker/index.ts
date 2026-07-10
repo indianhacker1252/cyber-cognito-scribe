@@ -38,6 +38,8 @@ Deno.serve(async (req) => {
     const { targetId } = await req.json().catch(() => ({}));
     if (!targetId) return ok({ ok: false, error: "targetId required" });
     const db = createClient(SUPA, SVC);
+    const guard = await checkLoopGuard(db, targetId, "form-attacker", { maxRuns: 4, stallStreak: 2 });
+    if (!guard.allow) return ok({ ok: false, skipped: true, reason: guard.reason });
 
     const { data: forms } = await db.from("discovered_forms")
       .select("*").eq("target_id", targetId).limit(40);
