@@ -39,6 +39,12 @@ Deno.serve(async (req) => {
   try {
     const { targetId } = await req.json();
     const supa = db();
+    const guard = await checkLoopGuard(supa, targetId, "business-logic-fuzzer", { maxRuns: 4, stallStreak: 2 });
+    if (!guard.allow) {
+      return new Response(JSON.stringify({ ok: false, skipped: true, reason: guard.reason }), {
+        status: 200, headers: { ...cors, "Content-Type": "application/json" },
+      });
+    }
     const { data: eps } = await supa.from("discovered_endpoints").select("id,url,method,parameters").eq("target_id", targetId).limit(40);
     const findings: any[] = [];
     let probes = 0;
