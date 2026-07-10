@@ -107,6 +107,7 @@ Deno.serve(async (req) => {
       message: `🧠 Business-Logic Fuzzer: ${probes} probes, ${findings.length} suspected logic bugs`,
       metadata: { probes, findings: findings.length },
     });
+    await recordLoopRun(supa, targetId, "business-logic-fuzzer", { findingsCreated: findings.length, probes });
 
     return new Response(JSON.stringify({ probes, findings: findings.length }), {
       headers: { ...cors, "Content-Type": "application/json" },
