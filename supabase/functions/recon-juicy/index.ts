@@ -4,6 +4,7 @@
 // All checks are READ-ONLY (no writes, no auth attempts).
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { probeFetchWithSchemeFallback, probeFetch, readBodySafe } from "../_shared/safe-fetch.ts";
+import { checkLoopGuard, recordLoopRun } from "../_shared/loop-guard.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
