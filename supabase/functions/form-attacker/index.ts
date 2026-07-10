@@ -134,6 +134,7 @@ Deno.serve(async (req) => {
       message: `📨 Form-attacker: ${forms?.length || 0} forms, ${submissions} submissions, ${uploads} upload tests, ${findings} findings`,
       metadata: { forms: forms?.length || 0, submissions, uploads, findings },
     });
+    await recordLoopRun(db, targetId, "form-attacker", { findingsCreated: findings, probes: submissions + uploads });
     return ok({ ok: true, forms: forms?.length || 0, submissions, uploads, findings });
   } catch (e) {
     return ok({ ok: false, error: e instanceof Error ? e.message : "err" });
