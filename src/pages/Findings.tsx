@@ -491,6 +491,8 @@ export default function Findings() {
                       <Button variant="outline" size="sm" className="font-mono text-[10px] gap-1 border-cyber-green/30 text-cyber-green hover:bg-cyber-green/10" onClick={() => setDetailsFinding(f)}>
                         <FileText className="h-3 w-3" /> Details
                       </Button>
+                      {isDast && (
+                        <>
                       <Button variant="outline" size="sm" className="font-mono text-[10px] gap-1 border-primary/30 text-primary hover:bg-primary/10" onClick={() => setSelectedFinding(f)}>
                         <Shield className="h-3 w-3" /> Validate
                       </Button>
@@ -503,9 +505,13 @@ export default function Findings() {
                       <Button variant="outline" size="sm" className="font-mono text-[10px] gap-1 border-cyber-red/30 text-cyber-red hover:bg-cyber-red/10" onClick={() => handleFalsePositive(f)}>
                         <Ban className="h-3 w-3" /> FP
                       </Button>
+                        </>
+                      )}
                       <Button variant="outline" size="sm" className="font-mono text-[10px] gap-1 border-cyber-cyan/30 text-cyber-cyan hover:bg-cyber-cyan/10" onClick={() => generateFindingPdf(f).catch(e => toast.error(e.message))}>
                         <FileDown className="h-3 w-3" /> PDF
                       </Button>
+                      {isDast && (
+                        <>
                       <Button variant="outline" size="sm" className="font-mono text-[10px] gap-1 border-cyber-green/30 text-cyber-green hover:bg-cyber-green/10" onClick={() => setSandboxFinding(f)}>
                         <Box className="h-3 w-3" /> Sandbox
                       </Button>
@@ -532,6 +538,8 @@ export default function Findings() {
                       <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" onClick={() => deleteFinding.mutate(f.id)}>
                         <Trash2 className="h-3 w-3" />
                       </Button>
+                        </>
+                      )}
                     </div>
                   </TableCell>
                 </TableRow>
