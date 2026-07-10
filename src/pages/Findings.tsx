@@ -409,15 +409,26 @@ export default function Findings() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {filteredFindings.map((f: any) => (
-                <TableRow key={f.id} className="border-border hover:bg-muted/30">
+              {filteredFindings.map((f: any) => {
+                const isDast = f.source_type === "dast";
+                const sourceLabel = f.source_type === "code" ? "SAST" : f.source_type === "package" ? "PKG" : "DAST";
+                const sourceCls = f.source_type === "code"
+                  ? "bg-cyber-cyan/20 text-cyber-cyan border-cyber-cyan/40"
+                  : f.source_type === "package"
+                  ? "bg-fuchsia-500/20 text-fuchsia-400 border-fuchsia-500/40"
+                  : "bg-primary/20 text-primary border-primary/40";
+                return (
+                <TableRow key={`${f.source_type}-${f.id}`} className="border-border hover:bg-muted/30">
                   <TableCell>
                     <Badge variant="outline" className={`text-[9px] font-mono ${severityBadge[f.severity]}`}>
                       {f.severity}
                     </Badge>
                   </TableCell>
                   <TableCell className="font-mono text-xs text-card-foreground max-w-xs truncate">
-                    {f.title}
+                    <div className="flex items-center gap-1.5">
+                      <Badge variant="outline" className={`text-[8px] font-mono ${sourceCls}`}>{sourceLabel}</Badge>
+                      <span className="truncate">{f.title}</span>
+                    </div>
                     {f.triage_reasoning && (
                       <p className="text-[9px] text-muted-foreground mt-0.5 truncate" title={f.triage_reasoning}>
                         💡 {f.triage_reasoning.slice(0, 60)}...
