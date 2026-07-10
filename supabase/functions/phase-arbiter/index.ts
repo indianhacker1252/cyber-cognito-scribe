@@ -13,9 +13,14 @@ const SVC = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const FN_BASE = `${SUPA}/functions/v1`;
 
 const PHASES = ["recon", "discovery", "owasp_matrix", "deep_modules", "exploit", "chain", "report"] as const;
+const PHASE_ORDER: Record<string, number> = {
+  recon: 1, discovery: 2, owasp_matrix: 3, deep_modules: 4, exploit: 5, chain: 6, report: 7,
+};
 const STALL_MS = 5 * 60_000;
 
-// Map phase → job types that fulfill it
+// Map phase → job types that fulfill it. Prerequisites are enforced by
+// PHASE_ORDER; a phase cannot begin until every earlier phase is complete OR
+// failed (never pending/running).
 const PHASE_JOBS: Record<string, { type: string; priority: number; payload?: any }[]> = {
   discovery: [
     { type: "subdomain_enum", priority: 9 },
@@ -49,6 +54,12 @@ const PHASE_JOBS: Record<string, { type: string; priority: number; payload?: any
   ],
   report: [{ type: "report_rewrite", priority: 2 }],
 };
+
+// Which job_types must have succeeded (status='done') before a phase can be
+// considered fully complete. Used by the completion gate below.
+const EXPECTED_MODULES: Record<string, string[]> = Object.fromEntries(
+  Object.entries(PHASE_JOBS).map(([p, jobs]) => [p, jobs.map((j) => j.type)]),
+);
 
 async function callFn(name: string, body: any) {
   try {
