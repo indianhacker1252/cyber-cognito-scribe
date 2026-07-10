@@ -506,6 +506,7 @@ Deno.serve(async (req) => {
       metadata: { phase: "recon-juicy-end", findings: inserted, candidates: findings.length },
     }).catch(() => {});
 
+    await recordLoopRun(db, targetId, "recon-juicy", { findingsCreated: inserted });
     return ok({ ok: true, findings: inserted, candidates: findings.length, assets: assets.length });
   } catch (e) {
     return ok({ ok: false, error: e instanceof Error ? e.message : String(e) });
