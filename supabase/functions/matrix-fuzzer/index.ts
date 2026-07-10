@@ -13,6 +13,7 @@ import {
 } from "../_shared/injection-matrix.ts";
 import { recordFinding } from "../_shared/findings-writer.ts";
 import { loadJar, applyJar } from "../_shared/session-jar.ts";
+import { checkLoopGuard, recordLoopRun } from "../_shared/loop-guard.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
