@@ -9,6 +9,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { safeFetch, readBodySafe, headersToObject } from "../_shared/safe-fetch.ts";
 import { confirmFinding } from "../_shared/ai-confirm-gate.ts";
+import { checkLoopGuard, recordLoopRun } from "../_shared/loop-guard.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
