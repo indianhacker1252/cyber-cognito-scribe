@@ -40,6 +40,11 @@ Deno.serve(async (req) => {
   }
   if (!input.url) return j({ ok: false, error: "url required" });
 
+  if (input.targetId) {
+    const guard = await checkLoopGuard(supa, input.targetId, "race-runner", { maxRuns: 6, stallStreak: 3 });
+    if (!guard.allow) return j({ ok: false, skipped: true, reason: guard.reason });
+  }
+
   const N = Math.min(Math.max(input.parallel || 20, 5), 40);
   const successRx = input.successPattern ? new RegExp(input.successPattern, "i") : null;
   const idRx = input.uniqueIdPattern ? new RegExp(input.uniqueIdPattern, "ig") : null;
