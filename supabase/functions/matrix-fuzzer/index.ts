@@ -188,6 +188,9 @@ Deno.serve(async (req) => {
       },
     });
 
+    await recordLoopRun(db, targetId, "matrix-fuzzer", { findingsCreated, probes: probesSent });
+
+
     return ok({
       ok: true,
       assets: assets.length,
