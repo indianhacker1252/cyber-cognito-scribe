@@ -158,6 +158,7 @@ Deno.serve(async (req) => {
         validation_status: "verified",
       };
   const { data } = await supa.from(table).insert(row).select("id").single();
+  if (input.targetId) await recordLoopRun(supa, input.targetId, "race-runner", { findingsCreated: data?.id ? 1 : 0, probes: N });
   return j({
     ok: true,
     raced: true,
