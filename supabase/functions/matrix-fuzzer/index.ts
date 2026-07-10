@@ -53,6 +53,9 @@ Deno.serve(async (req) => {
     if (!targetId) return ok({ ok: false, error: "targetId required" });
     const db = createClient(SUPA, SVC);
 
+    const guard = await checkLoopGuard(db, targetId, "matrix-fuzzer", { maxRuns: 5, stallStreak: 2 });
+    if (!guard.allow) return ok({ ok: false, skipped: true, reason: guard.reason });
+
     // Gap #1: auth-aware — load persisted session jar for this target
     const jar = await loadJar(db, targetId);
 
