@@ -100,7 +100,10 @@ Deno.serve(async (req) => {
     (idRx && allIds.length > ids.size && duplicates >= 2) || // duplicate IDs returned
     statusRaced; // fallback: multiple 2xx where locking should allow one
 
-  if (!raced) return j({ ok: true, raced: false, success_count: successCount, sent: N });
+  if (!raced) {
+    if (input.targetId) await recordLoopRun(supa, input.targetId, "race-runner", { findingsCreated: 0, probes: N });
+    return j({ ok: true, raced: false, success_count: successCount, sent: N });
+  }
 
   const sample = results.slice(0, 3);
   const proofType = successRx ? "success_more_than_once" : idRx ? "duplicate_ids_in_race" : "concurrent_2xx_status";
