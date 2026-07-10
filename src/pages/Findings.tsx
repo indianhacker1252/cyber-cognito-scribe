@@ -40,16 +40,48 @@ export default function Findings() {
   const [triaging, setTriaging] = useState<string | null>(null);
   const [activeTargetFilter, setActiveTargetFilter] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<"all" | "confirmed" | "needs_review" | "inconclusive">("all");
+  const [sourceFilter, setSourceFilter] = useState<"all" | "dast" | "code" | "package">("all");
   const [verifying, setVerifying] = useState<string | null>(null);
 
   const { data: findings, isLoading } = useQuery({
-    queryKey: ["findings"],
+    queryKey: ["findings-unified"],
     queryFn: async () => {
-      const { data } = await supabase
-        .from("vulnerability_findings")
-        .select("*, target_workspaces(name)")
-        .order("created_at", { ascending: false });
-      return data || [];
+      const [dast, code, pkg] = await Promise.all([
+        supabase.from("vulnerability_findings").select("*, target_workspaces(name)").order("created_at", { ascending: false }),
+        supabase.from("code_findings").select("*").order("created_at", { ascending: false }).limit(500),
+        supabase.from("app_package_findings").select("*, app_packages(name)").order("created_at", { ascending: false }).limit(500),
+      ]);
+      const dastRows = (dast.data || []).map((f: any) => ({ ...f, source_type: "dast" as const }));
+      const codeRows = (code.data || []).map((f: any) => ({
+        ...f,
+        source_type: "code" as const,
+        title: `[SAST] ${f.vuln_class || "code finding"} @ ${f.file_path || "unknown"}`,
+        description: f.ai_reasoning || f.source_snippet || "",
+        payload: f.file_path ? `${f.file_path}:${f.line_start ?? "?"}` : null,
+        source: "sast",
+        proof_tier: f.reachability_confirmed ? "reflected" : "signal",
+        validation_status: f.reachability_confirmed ? "confirmed" : "needs_review",
+        confidence_score: f.reachability_confirmed ? 85 : 55,
+        confidence_level: f.reachability_confirmed ? "high" : "medium",
+        cvss_score: null,
+      }));
+      const pkgRows = (pkg.data || []).map((f: any) => ({
+        ...f,
+        source_type: "package" as const,
+        target_id: null,
+        target_workspaces: f.app_packages ? { name: f.app_packages.name } : null,
+        title: `[Package] ${f.title || f.vuln_class}`,
+        description: f.description || f.ai_reasoning || "",
+        payload: f.file_path ? `${f.file_path}:${f.line_start ?? "?"}` : null,
+        source: "package-scan",
+        proof_tier: "signal",
+        validation_status: "needs_review",
+        confidence_score: 60,
+        confidence_level: "medium",
+      }));
+      return [...dastRows, ...codeRows, ...pkgRows].sort(
+        (a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+      );
     },
   });
 
