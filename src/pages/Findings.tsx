@@ -335,6 +335,33 @@ export default function Findings() {
         </div>
       )}
 
+      {/* Source Filter (DAST vs SAST/code vs Package) */}
+      {findings && findings.length > 0 && (
+        <div className="flex items-center gap-2 flex-wrap">
+          <Filter className="h-3.5 w-3.5 text-muted-foreground" />
+          <span className="text-[10px] font-mono text-muted-foreground">Source:</span>
+          {([
+            ["all", `All (${sourceCounts.all})`],
+            ["dast", `🎯 DAST (${sourceCounts.dast})`],
+            ["code", `📄 Code/SAST (${sourceCounts.code})`],
+            ["package", `📦 Package (${sourceCounts.package})`],
+          ] as const).map(([key, label]) => (
+            <button
+              key={key}
+              onClick={() => setSourceFilter(key as any)}
+              className={`px-2 py-1 rounded text-[10px] font-mono border transition-all ${
+                sourceFilter === key
+                  ? "bg-primary/20 border-primary text-primary"
+                  : "border-border text-muted-foreground hover:text-foreground hover:border-primary/30"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+
+
       {/* Verification Status Filter (triple-verify) */}
       {findings && findings.length > 0 && (
         <div className="flex items-center gap-2 flex-wrap">
