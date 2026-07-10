@@ -459,6 +459,9 @@ Deno.serve(async (req) => {
     if (!targetId) return ok({ ok: false, error: "targetId required" });
     const db = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 
+    const guard = await checkLoopGuard(db, targetId, "recon-juicy", { maxRuns: 5, stallStreak: 3 });
+    if (!guard.allow) return ok({ ok: false, skipped: true, reason: guard.reason });
+
     const { data: tgt } = await db.from("target_workspaces").select("domain,url").eq("id", targetId).maybeSingle();
     const apex = String(tgt?.domain || (tgt?.url ? new URL(tgt.url).hostname : "") || "").toLowerCase().trim();
     if (!apex) return ok({ ok: false, error: "no domain on target" });
