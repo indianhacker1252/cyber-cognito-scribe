@@ -4,6 +4,7 @@
 // All checks are READ-ONLY (no writes, no auth attempts).
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { probeFetchWithSchemeFallback, probeFetch, readBodySafe } from "../_shared/safe-fetch.ts";
+import { checkLoopGuard, recordLoopRun } from "../_shared/loop-guard.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -458,6 +459,9 @@ Deno.serve(async (req) => {
     if (!targetId) return ok({ ok: false, error: "targetId required" });
     const db = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 
+    const guard = await checkLoopGuard(db, targetId, "recon-juicy", { maxRuns: 5, stallStreak: 3 });
+    if (!guard.allow) return ok({ ok: false, skipped: true, reason: guard.reason });
+
     const { data: tgt } = await db.from("target_workspaces").select("domain,url").eq("id", targetId).maybeSingle();
     const apex = String(tgt?.domain || (tgt?.url ? new URL(tgt.url).hostname : "") || "").toLowerCase().trim();
     if (!apex) return ok({ ok: false, error: "no domain on target" });
@@ -502,6 +506,7 @@ Deno.serve(async (req) => {
       metadata: { phase: "recon-juicy-end", findings: inserted, candidates: findings.length },
     }).catch(() => {});
 
+    await recordLoopRun(db, targetId, "recon-juicy", { findingsCreated: inserted });
     return ok({ ok: true, findings: inserted, candidates: findings.length, assets: assets.length });
   } catch (e) {
     return ok({ ok: false, error: e instanceof Error ? e.message : String(e) });

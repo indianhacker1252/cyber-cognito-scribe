@@ -3,6 +3,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { recordFinding } from "../_shared/findings-writer.ts";
 import { POLYGLOTS, PROOF } from "../_shared/polyglot-files.ts";
+import { checkLoopGuard, recordLoopRun } from "../_shared/loop-guard.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -37,6 +38,8 @@ Deno.serve(async (req) => {
     const { targetId } = await req.json().catch(() => ({}));
     if (!targetId) return ok({ ok: false, error: "targetId required" });
     const db = createClient(SUPA, SVC);
+    const guard = await checkLoopGuard(db, targetId, "form-attacker", { maxRuns: 4, stallStreak: 2 });
+    if (!guard.allow) return ok({ ok: false, skipped: true, reason: guard.reason });
 
     const { data: forms } = await db.from("discovered_forms")
       .select("*").eq("target_id", targetId).limit(40);
@@ -131,6 +134,7 @@ Deno.serve(async (req) => {
       message: `📨 Form-attacker: ${forms?.length || 0} forms, ${submissions} submissions, ${uploads} upload tests, ${findings} findings`,
       metadata: { forms: forms?.length || 0, submissions, uploads, findings },
     });
+    await recordLoopRun(db, targetId, "form-attacker", { findingsCreated: findings, probes: submissions + uploads });
     return ok({ ok: true, forms: forms?.length || 0, submissions, uploads, findings });
   } catch (e) {
     return ok({ ok: false, error: e instanceof Error ? e.message : "err" });

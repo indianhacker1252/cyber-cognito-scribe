@@ -9,6 +9,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { safeFetch, readBodySafe, headersToObject } from "../_shared/safe-fetch.ts";
 import { confirmFinding } from "../_shared/ai-confirm-gate.ts";
+import { checkLoopGuard, recordLoopRun } from "../_shared/loop-guard.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -38,6 +39,11 @@ Deno.serve(async (req) => {
     return j({ ok: false, error: "invalid json" });
   }
   if (!input.url) return j({ ok: false, error: "url required" });
+
+  if (input.targetId) {
+    const guard = await checkLoopGuard(supa, input.targetId, "race-runner", { maxRuns: 6, stallStreak: 3 });
+    if (!guard.allow) return j({ ok: false, skipped: true, reason: guard.reason });
+  }
 
   const N = Math.min(Math.max(input.parallel || 20, 5), 40);
   const successRx = input.successPattern ? new RegExp(input.successPattern, "i") : null;
@@ -94,7 +100,10 @@ Deno.serve(async (req) => {
     (idRx && allIds.length > ids.size && duplicates >= 2) || // duplicate IDs returned
     statusRaced; // fallback: multiple 2xx where locking should allow one
 
-  if (!raced) return j({ ok: true, raced: false, success_count: successCount, sent: N });
+  if (!raced) {
+    if (input.targetId) await recordLoopRun(supa, input.targetId, "race-runner", { findingsCreated: 0, probes: N });
+    return j({ ok: true, raced: false, success_count: successCount, sent: N });
+  }
 
   const sample = results.slice(0, 3);
   const proofType = successRx ? "success_more_than_once" : idRx ? "duplicate_ids_in_race" : "concurrent_2xx_status";
@@ -149,6 +158,7 @@ Deno.serve(async (req) => {
         validation_status: "verified",
       };
   const { data } = await supa.from(table).insert(row).select("id").single();
+  if (input.targetId) await recordLoopRun(supa, input.targetId, "race-runner", { findingsCreated: data?.id ? 1 : 0, probes: N });
   return j({
     ok: true,
     raced: true,

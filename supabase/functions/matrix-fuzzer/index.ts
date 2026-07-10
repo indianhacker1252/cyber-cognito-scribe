@@ -13,6 +13,7 @@ import {
 } from "../_shared/injection-matrix.ts";
 import { recordFinding } from "../_shared/findings-writer.ts";
 import { loadJar, applyJar } from "../_shared/session-jar.ts";
+import { checkLoopGuard, recordLoopRun } from "../_shared/loop-guard.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -51,6 +52,9 @@ Deno.serve(async (req) => {
     const { targetId, perAssetCap = 60, methods, classes } = await req.json().catch(() => ({}));
     if (!targetId) return ok({ ok: false, error: "targetId required" });
     const db = createClient(SUPA, SVC);
+
+    const guard = await checkLoopGuard(db, targetId, "matrix-fuzzer", { maxRuns: 5, stallStreak: 2 });
+    if (!guard.allow) return ok({ ok: false, skipped: true, reason: guard.reason });
 
     // Gap #1: auth-aware — load persisted session jar for this target
     const jar = await loadJar(db, targetId);
@@ -183,6 +187,9 @@ Deno.serve(async (req) => {
         assets: assets.length,
       },
     });
+
+    await recordLoopRun(db, targetId, "matrix-fuzzer", { findingsCreated, probes: probesSent });
+
 
     return ok({
       ok: true,

@@ -2,6 +2,7 @@
 // price tampering, negative qty, workflow skip, tenant swap, replay, int-overflow.
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { safeFetch, readBodySafe } from "../_shared/safe-fetch.ts";
+import { checkLoopGuard, recordLoopRun } from "../_shared/loop-guard.ts";
 
 const cors = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type" };
 const db = () => createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
@@ -38,6 +39,12 @@ Deno.serve(async (req) => {
   try {
     const { targetId } = await req.json();
     const supa = db();
+    const guard = await checkLoopGuard(supa, targetId, "business-logic-fuzzer", { maxRuns: 4, stallStreak: 2 });
+    if (!guard.allow) {
+      return new Response(JSON.stringify({ ok: false, skipped: true, reason: guard.reason }), {
+        status: 200, headers: { ...cors, "Content-Type": "application/json" },
+      });
+    }
     const { data: eps } = await supa.from("discovered_endpoints").select("id,url,method,parameters").eq("target_id", targetId).limit(40);
     const findings: any[] = [];
     let probes = 0;
@@ -100,6 +107,7 @@ Deno.serve(async (req) => {
       message: `🧠 Business-Logic Fuzzer: ${probes} probes, ${findings.length} suspected logic bugs`,
       metadata: { probes, findings: findings.length },
     });
+    await recordLoopRun(supa, targetId, "business-logic-fuzzer", { findingsCreated: findings.length, probes });
 
     return new Response(JSON.stringify({ probes, findings: findings.length }), {
       headers: { ...cors, "Content-Type": "application/json" },

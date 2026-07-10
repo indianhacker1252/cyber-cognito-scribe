@@ -40,16 +40,48 @@ export default function Findings() {
   const [triaging, setTriaging] = useState<string | null>(null);
   const [activeTargetFilter, setActiveTargetFilter] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<"all" | "confirmed" | "needs_review" | "inconclusive">("all");
+  const [sourceFilter, setSourceFilter] = useState<"all" | "dast" | "code" | "package">("all");
   const [verifying, setVerifying] = useState<string | null>(null);
 
   const { data: findings, isLoading } = useQuery({
-    queryKey: ["findings"],
+    queryKey: ["findings-unified"],
     queryFn: async () => {
-      const { data } = await supabase
-        .from("vulnerability_findings")
-        .select("*, target_workspaces(name)")
-        .order("created_at", { ascending: false });
-      return data || [];
+      const [dast, code, pkg] = await Promise.all([
+        supabase.from("vulnerability_findings").select("*, target_workspaces(name)").order("created_at", { ascending: false }),
+        supabase.from("code_findings").select("*").order("created_at", { ascending: false }).limit(500),
+        supabase.from("app_package_findings").select("*, app_packages(name)").order("created_at", { ascending: false }).limit(500),
+      ]);
+      const dastRows = (dast.data || []).map((f: any) => ({ ...f, source_type: "dast" as const }));
+      const codeRows = (code.data || []).map((f: any) => ({
+        ...f,
+        source_type: "code" as const,
+        title: `[SAST] ${f.vuln_class || "code finding"} @ ${f.file_path || "unknown"}`,
+        description: f.ai_reasoning || f.source_snippet || "",
+        payload: f.file_path ? `${f.file_path}:${f.line_start ?? "?"}` : null,
+        source: "sast",
+        proof_tier: f.reachability_confirmed ? "reflected" : "signal",
+        validation_status: f.reachability_confirmed ? "confirmed" : "needs_review",
+        confidence_score: f.reachability_confirmed ? 85 : 55,
+        confidence_level: f.reachability_confirmed ? "high" : "medium",
+        cvss_score: null,
+      }));
+      const pkgRows = (pkg.data || []).map((f: any) => ({
+        ...f,
+        source_type: "package" as const,
+        target_id: null,
+        target_workspaces: f.app_packages ? { name: f.app_packages.name } : null,
+        title: `[Package] ${f.title || f.vuln_class}`,
+        description: f.description || f.ai_reasoning || "",
+        payload: f.file_path ? `${f.file_path}:${f.line_start ?? "?"}` : null,
+        source: "package-scan",
+        proof_tier: "signal",
+        validation_status: "needs_review",
+        confidence_score: 60,
+        confidence_level: "medium",
+      }));
+      return [...dastRows, ...codeRows, ...pkgRows].sort(
+        (a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+      );
     },
   });
 
@@ -74,14 +106,24 @@ export default function Findings() {
   const filteredFindings = useMemo(() => {
     if (!findings) return [];
     let out = findings as any[];
+    if (sourceFilter !== "all") out = out.filter((f: any) => f.source_type === sourceFilter);
     if (activeTargetFilter) out = out.filter((f: any) => f.target_id === activeTargetFilter);
     if (statusFilter !== "all") {
-      out = out.filter((f: any) => {
-        return normalizeValidationStatus(f.validation_status) === statusFilter;
-      });
+      out = out.filter((f: any) => normalizeValidationStatus(f.validation_status) === statusFilter);
     }
     return out;
-  }, [findings, activeTargetFilter, statusFilter]);
+  }, [findings, activeTargetFilter, statusFilter, sourceFilter]);
+
+  const sourceCounts = useMemo(() => {
+    const base = { all: 0, dast: 0, code: 0, package: 0 };
+    for (const f of (findings || []) as any[]) {
+      base.all++;
+      if (f.source_type === "dast") base.dast++;
+      else if (f.source_type === "code") base.code++;
+      else if (f.source_type === "package") base.package++;
+    }
+    return base;
+  }, [findings]);
 
   const statusCounts = useMemo(() => {
     const base = { confirmed: 0, needs_review: 0, inconclusive: 0 };
@@ -101,7 +143,7 @@ export default function Findings() {
       if (error) throw error;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["findings"] });
+      queryClient.invalidateQueries({ queryKey: ["findings-unified"] });
       toast.success("Finding deleted");
     },
   });
@@ -112,7 +154,7 @@ export default function Findings() {
       if (error) throw error;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["findings"] });
+      queryClient.invalidateQueries({ queryKey: ["findings-unified"] });
       toast.success("All findings cleared");
     },
   });
@@ -135,7 +177,7 @@ export default function Findings() {
         ai_verified: result.classification === "deep_finding" || result.classification === "confirmed",
         triage_reasoning: result.reasoning,
       }).eq("id", f.id);
-      queryClient.invalidateQueries({ queryKey: ["findings"] });
+      queryClient.invalidateQueries({ queryKey: ["findings-unified"] });
       toast.success(`AI Triage: ${result.classification} (${result.confidenceScore}%)`);
     } catch {
       toast.error("AI triage failed");
@@ -150,7 +192,7 @@ export default function Findings() {
       const { data, error } = await supabase.functions.invoke("proof-engine", { body: { findingId: f.id } });
       if (error) throw error;
       if (!data?.ok) throw new Error(data?.error || "proof failed");
-      queryClient.invalidateQueries({ queryKey: ["findings"] });
+      queryClient.invalidateQueries({ queryKey: ["findings-unified"] });
       toast.success(`Proof tier: ${data.proof_tier}${data.sensitive ? " (sensitive — admin only)" : ""}`);
     } catch (e: any) { toast.error(`Proof engine: ${e.message}`); }
   };
@@ -174,7 +216,7 @@ export default function Findings() {
       const { data, error } = await supabase.functions.invoke("triple-verify", { body: { findingId: f.id } });
       if (error) throw error;
       if (!data?.ok) throw new Error(data?.error || "verify failed");
-      queryClient.invalidateQueries({ queryKey: ["findings"] });
+      queryClient.invalidateQueries({ queryKey: ["findings-unified"] });
       const tier = data.tier as string;
       const conf = data.confidence as number;
       if (tier === "confirmed") {
@@ -182,7 +224,7 @@ export default function Findings() {
         if (data.exploit?.ran) {
           toast.info("⚡ Exploit verification: running...");
           // exploit-engine already finished server-side, but invalidate again to pick up proof_tier
-          setTimeout(() => queryClient.invalidateQueries({ queryKey: ["findings"] }), 500);
+          setTimeout(() => queryClient.invalidateQueries({ queryKey: ["findings-unified"] }), 500);
           if (data.exploit.proven) {
             toast.success(`💀 EXPLOITED ✓ — ready for submission`);
           } else if (data.exploit.error) {
@@ -293,6 +335,33 @@ export default function Findings() {
         </div>
       )}
 
+      {/* Source Filter (DAST vs SAST/code vs Package) */}
+      {findings && findings.length > 0 && (
+        <div className="flex items-center gap-2 flex-wrap">
+          <Filter className="h-3.5 w-3.5 text-muted-foreground" />
+          <span className="text-[10px] font-mono text-muted-foreground">Source:</span>
+          {([
+            ["all", `All (${sourceCounts.all})`],
+            ["dast", `🎯 DAST (${sourceCounts.dast})`],
+            ["code", `📄 Code/SAST (${sourceCounts.code})`],
+            ["package", `📦 Package (${sourceCounts.package})`],
+          ] as const).map(([key, label]) => (
+            <button
+              key={key}
+              onClick={() => setSourceFilter(key as any)}
+              className={`px-2 py-1 rounded text-[10px] font-mono border transition-all ${
+                sourceFilter === key
+                  ? "bg-primary/20 border-primary text-primary"
+                  : "border-border text-muted-foreground hover:text-foreground hover:border-primary/30"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+
+
       {/* Verification Status Filter (triple-verify) */}
       {findings && findings.length > 0 && (
         <div className="flex items-center gap-2 flex-wrap">
@@ -340,15 +409,26 @@ export default function Findings() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {filteredFindings.map((f: any) => (
-                <TableRow key={f.id} className="border-border hover:bg-muted/30">
+              {filteredFindings.map((f: any) => {
+                const isDast = f.source_type === "dast";
+                const sourceLabel = f.source_type === "code" ? "SAST" : f.source_type === "package" ? "PKG" : "DAST";
+                const sourceCls = f.source_type === "code"
+                  ? "bg-cyber-cyan/20 text-cyber-cyan border-cyber-cyan/40"
+                  : f.source_type === "package"
+                  ? "bg-fuchsia-500/20 text-fuchsia-400 border-fuchsia-500/40"
+                  : "bg-primary/20 text-primary border-primary/40";
+                return (
+                <TableRow key={`${f.source_type}-${f.id}`} className="border-border hover:bg-muted/30">
                   <TableCell>
                     <Badge variant="outline" className={`text-[9px] font-mono ${severityBadge[f.severity]}`}>
                       {f.severity}
                     </Badge>
                   </TableCell>
                   <TableCell className="font-mono text-xs text-card-foreground max-w-xs truncate">
-                    {f.title}
+                    <div className="flex items-center gap-1.5">
+                      <Badge variant="outline" className={`text-[8px] font-mono ${sourceCls}`}>{sourceLabel}</Badge>
+                      <span className="truncate">{f.title}</span>
+                    </div>
                     {f.triage_reasoning && (
                       <p className="text-[9px] text-muted-foreground mt-0.5 truncate" title={f.triage_reasoning}>
                         💡 {f.triage_reasoning.slice(0, 60)}...
@@ -411,6 +491,8 @@ export default function Findings() {
                       <Button variant="outline" size="sm" className="font-mono text-[10px] gap-1 border-cyber-green/30 text-cyber-green hover:bg-cyber-green/10" onClick={() => setDetailsFinding(f)}>
                         <FileText className="h-3 w-3" /> Details
                       </Button>
+                      {isDast && (
+                        <>
                       <Button variant="outline" size="sm" className="font-mono text-[10px] gap-1 border-primary/30 text-primary hover:bg-primary/10" onClick={() => setSelectedFinding(f)}>
                         <Shield className="h-3 w-3" /> Validate
                       </Button>
@@ -423,9 +505,13 @@ export default function Findings() {
                       <Button variant="outline" size="sm" className="font-mono text-[10px] gap-1 border-cyber-red/30 text-cyber-red hover:bg-cyber-red/10" onClick={() => handleFalsePositive(f)}>
                         <Ban className="h-3 w-3" /> FP
                       </Button>
+                        </>
+                      )}
                       <Button variant="outline" size="sm" className="font-mono text-[10px] gap-1 border-cyber-cyan/30 text-cyber-cyan hover:bg-cyber-cyan/10" onClick={() => generateFindingPdf(f).catch(e => toast.error(e.message))}>
                         <FileDown className="h-3 w-3" /> PDF
                       </Button>
+                      {isDast && (
+                        <>
                       <Button variant="outline" size="sm" className="font-mono text-[10px] gap-1 border-cyber-green/30 text-cyber-green hover:bg-cyber-green/10" onClick={() => setSandboxFinding(f)}>
                         <Box className="h-3 w-3" /> Sandbox
                       </Button>
@@ -452,10 +538,13 @@ export default function Findings() {
                       <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" onClick={() => deleteFinding.mutate(f.id)}>
                         <Trash2 className="h-3 w-3" />
                       </Button>
+                        </>
+                      )}
                     </div>
                   </TableCell>
                 </TableRow>
-              ))}
+                );
+              })}
             </TableBody>
           </Table>
         </div>
