@@ -328,7 +328,8 @@ Given a known CVE, identify its ROOT-CAUSE PATTERN, then return 3-5 novel varian
       metadata: { phase: "variant-generated", run_id: runId, count: variants.length },
     });
 
-    // Queue per-variant test jobs (streams results into Mythos tab as worker picks them up)
+    // Queue per-variant test jobs — deduped by variantId (30-min window).
+    const { enqueueJobs } = await import("../_shared/enqueue.ts");
     const jobs = variantRecords
       .filter((v) => v.test_endpoint)
       .map((v) => ({
@@ -342,8 +343,10 @@ Given a known CVE, identify its ROOT-CAUSE PATTERN, then return 3-5 novel varian
           paramName: v._paramName,
           vulnClass: v.vuln_class,
         },
+        dedupWindowMs: 30 * 60_000,
+        dedupExtraKey: v.id,
       }));
-    if (jobs.length) await db.from("scan_jobs").insert(jobs);
+    if (jobs.length) await enqueueJobs(db, jobs);
 
     // Also run inline tests for first 3 — only if pre-flight reachability passed
     let immediateCandidates = 0;
