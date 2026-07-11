@@ -182,6 +182,7 @@ serve(async (req) => {
     }).eq("id", runId);
 
     await append("done", `Run complete: ${totalFindings} SAST findings, ${totalChains} chains, ${totalVariants} variants`);
+    await recordLoopRun(db, targetId, "mythos-agent", { findingsCreated: totalFindings + totalChains + totalVariants });
 
     return new Response(JSON.stringify({ runId, totalFindings, totalChains, totalVariants }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
