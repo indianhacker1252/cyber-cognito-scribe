@@ -343,12 +343,22 @@ export async function llmCall(opts: LlmCallOptions): Promise<LlmResult> {
     // credit-exhaustion signal on the way. Prevents a single Lovable 402 from
     // silencing all future AI calls for 10 minutes.
     if (sawCreditExhaustion && opts.db && opts.targetId) {
+      const hasFallback = !!(OPENAI_KEY || GEMINI_KEY || ANTHROPIC_KEY || OLLAMA_BASE_URL);
       await markCreditsExhausted(opts.db, {
         targetId: opts.targetId,
         runId: opts.runId,
         phase: opts.phase || "llm-call",
         reason: lastExhaustedError,
       }).catch(() => {});
+      // One actionable warning per exhaustion window instead of a wall of "🪫".
+      if (!hasFallback) {
+        opts.db.from("scan_logs").insert({
+          target_id: opts.targetId,
+          log_type: "warning",
+          message: "🔌 AI credits exhausted and no fallback provider configured. Add OPENAI_API_KEY, GEMINI_API_KEY, ANTHROPIC_API_KEY, or OLLAMA_BASE_URL as an edge-function secret to keep AI-dependent modules running.",
+          metadata: { kind: "no_ai_fallback", phase: opts.phase },
+        }).then(() => {}, () => {});
+      }
     }
 
     return { ok: false, text: "", provider: "none", error: errors.join(" | ") };
