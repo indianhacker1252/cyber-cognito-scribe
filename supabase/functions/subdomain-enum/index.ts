@@ -206,15 +206,21 @@ Deno.serve(async (req) => {
       metadata: { alive, passive_count: passive.length, brute_count: COMMON.length, throttles, timeouts },
     });
 
-    // Fan out: queue recon-juicy + matrix-fuzz for each new host
+    // Fan out: queue recon-juicy + matrix-fuzz for each new host — deduped
+    // per host with 60-min window (prevents 60× dup jobs on repeated recon).
     if (alive.length) {
+      const { enqueueJobs } = await import("../_shared/enqueue.ts");
       const jobs = alive.flatMap((h) => ([
-        { target_id: targetId, job_type: "juicy", priority: 6, status: "queued",
-          payload: { host: h, base_url: `https://${h}` }, next_run_at: new Date().toISOString() },
-        { target_id: targetId, job_type: "matrix_fuzz", priority: 5, status: "queued",
-          payload: { host: h, base_url: `https://${h}` }, next_run_at: new Date(Date.now() + 5_000).toISOString() },
+        { target_id: targetId, job_type: "juicy", priority: 6,
+          payload: { host: h, base_url: `https://${h}` },
+          next_run_at: new Date().toISOString(),
+          dedupWindowMs: 60 * 60_000, dedupExtraKey: h },
+        { target_id: targetId, job_type: "matrix_fuzz", priority: 5,
+          payload: { host: h, base_url: `https://${h}` },
+          next_run_at: new Date(Date.now() + 5_000).toISOString(),
+          dedupWindowMs: 60 * 60_000, dedupExtraKey: h },
       ]));
-      await db.from("scan_jobs").insert(jobs).then(() => {}, () => {});
+      await enqueueJobs(db, jobs);
     }
 
     return ok({ ok: true, apex, alive, passive_count: passive.length });

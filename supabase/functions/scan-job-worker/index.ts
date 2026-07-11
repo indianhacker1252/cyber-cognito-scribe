@@ -689,7 +689,20 @@ Deno.serve(async (req) => {
               });
             }
 
-            await supa.from("scan_jobs").insert(followups);
+            // Dedupe via idempotency helper — prevents 100+ dup jobs when
+            // recon completes multiple times.
+            const { enqueueJobs: _enq } = await import("../_shared/enqueue.ts");
+            await _enq(
+              supa,
+              followups.map((f: any) => ({
+                target_id: f.target_id,
+                job_type: f.job_type,
+                priority: f.priority,
+                payload: f.payload,
+                next_run_at: f.next_run_at,
+                dedupWindowMs: 60 * 60_000, // 1h window: recon-followups are hot
+              })),
+            );
             await supa.from("scan_logs").insert({
               target_id: job.target_id,
               log_type: "info",

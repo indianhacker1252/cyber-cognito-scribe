@@ -56,12 +56,14 @@ async function enqueueNext(db: any, runId: string, targetId: string, nextPhase: 
     console.log(`enqueueNext skipped: dup queued/running for ${runId}/${nextPhase}`);
     return;
   }
-  await db.from("scan_jobs").insert({
+  const { enqueueJob } = await import("../_shared/enqueue.ts");
+  await enqueueJob(db, {
     target_id: targetId,
     job_type: "mythos_step",
     payload: { runId, nextPhase, ...payload },
-    status: "queued",
     priority: 7,
+    dedupWindowMs: 10 * 60_000,
+    dedupExtraKey: `${runId}|${nextPhase}`,
   });
   // No self-fire — pg_cron + scan-job-worker will pick it up. Self-fire caused cascade fanout.
 }
