@@ -1424,6 +1424,14 @@ serve(async (req) => {
 
     const db = supabaseAdmin();
 
+    // Loop-guard: vuln-scanner was queued 49× per target — cap the storm.
+    const { checkLoopGuard, recordLoopRun } = await import("../_shared/loop-guard.ts");
+    const _vg = await checkLoopGuard(db, targetId, "vuln-scanner", { maxRuns: 3, stallStreak: 2, windowMinutes: 60 });
+    if (!_vg.allow) {
+      return new Response(JSON.stringify({ ok: false, skipped: true, reason: _vg.reason }),
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
+
     const { data: target } = await db.from("target_workspaces").select("*").eq("id", targetId).single();
     if (!target) {
       return new Response(JSON.stringify({ error: "Target not found" }), {

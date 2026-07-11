@@ -126,6 +126,12 @@ Deno.serve(async (req) => {
     const { targetId } = await req.json().catch(() => ({}));
     if (!targetId) return ok({ ok: false, error: "targetId required" });
     const db = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
+
+    // Loop-guard: subdomain_enum was running 171×/6h due to repeated recon fanouts.
+    const { checkLoopGuard, recordLoopRun } = await import("../_shared/loop-guard.ts");
+    const _guard = await checkLoopGuard(db, targetId, "subdomain-enum", { maxRuns: 3, stallStreak: 2, windowMinutes: 60 });
+    if (!_guard.allow) return ok({ ok: false, skipped: true, reason: _guard.reason });
+
     const { data: tgt } = await db.from("target_workspaces").select("domain").eq("id", targetId).maybeSingle();
     const apex = normalizeHost(tgt?.domain || "");
     if (!apex) return ok({ ok: false, error: "no apex domain" });
@@ -206,17 +212,25 @@ Deno.serve(async (req) => {
       metadata: { alive, passive_count: passive.length, brute_count: COMMON.length, throttles, timeouts },
     });
 
-    // Fan out: queue recon-juicy + matrix-fuzz for each new host
+    // Fan out: queue recon-juicy + matrix-fuzz for each new host — deduped
+    // per host with 60-min window (prevents 60× dup jobs on repeated recon).
     if (alive.length) {
+      const { enqueueJobs } = await import("../_shared/enqueue.ts");
       const jobs = alive.flatMap((h) => ([
-        { target_id: targetId, job_type: "juicy", priority: 6, status: "queued",
-          payload: { host: h, base_url: `https://${h}` }, next_run_at: new Date().toISOString() },
-        { target_id: targetId, job_type: "matrix_fuzz", priority: 5, status: "queued",
-          payload: { host: h, base_url: `https://${h}` }, next_run_at: new Date(Date.now() + 5_000).toISOString() },
+        { target_id: targetId, job_type: "juicy", priority: 6,
+          payload: { host: h, base_url: `https://${h}` },
+          next_run_at: new Date().toISOString(),
+          dedupWindowMs: 60 * 60_000, dedupExtraKey: h },
+        { target_id: targetId, job_type: "matrix_fuzz", priority: 5,
+          payload: { host: h, base_url: `https://${h}` },
+          next_run_at: new Date(Date.now() + 5_000).toISOString(),
+          dedupWindowMs: 60 * 60_000, dedupExtraKey: h },
       ]));
-      await db.from("scan_jobs").insert(jobs).then(() => {}, () => {});
+      await enqueueJobs(db, jobs);
     }
 
+    const { recordLoopRun: _rec } = await import("../_shared/loop-guard.ts");
+    await _rec(db, targetId, "subdomain-enum", { findingsCreated: alive.length });
     return ok({ ok: true, apex, alive, passive_count: passive.length });
   } catch (e) {
     return new Response(JSON.stringify({ ok: false, error: e instanceof Error ? e.message : "err" }),
