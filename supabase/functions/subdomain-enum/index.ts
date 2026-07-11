@@ -126,6 +126,12 @@ Deno.serve(async (req) => {
     const { targetId } = await req.json().catch(() => ({}));
     if (!targetId) return ok({ ok: false, error: "targetId required" });
     const db = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
+
+    // Loop-guard: subdomain_enum was running 171×/6h due to repeated recon fanouts.
+    const { checkLoopGuard, recordLoopRun } = await import("../_shared/loop-guard.ts");
+    const _guard = await checkLoopGuard(db, targetId, "subdomain-enum", { maxRuns: 3, stallStreak: 2, windowMinutes: 60 });
+    if (!_guard.allow) return ok({ ok: false, skipped: true, reason: _guard.reason });
+
     const { data: tgt } = await db.from("target_workspaces").select("domain").eq("id", targetId).maybeSingle();
     const apex = normalizeHost(tgt?.domain || "");
     if (!apex) return ok({ ok: false, error: "no apex domain" });
@@ -223,6 +229,8 @@ Deno.serve(async (req) => {
       await enqueueJobs(db, jobs);
     }
 
+    const { recordLoopRun: _rec } = await import("../_shared/loop-guard.ts");
+    await _rec(db, targetId, "subdomain-enum", { findingsCreated: alive.length });
     return ok({ ok: true, apex, alive, passive_count: passive.length });
   } catch (e) {
     return new Response(JSON.stringify({ ok: false, error: e instanceof Error ? e.message : "err" }),

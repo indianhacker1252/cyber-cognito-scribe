@@ -58,6 +58,15 @@ Deno.serve(async (req) => {
     let { seedUrl } = body;
     const supa = db();
 
+    if (targetId) {
+      const { checkLoopGuard } = await import("../_shared/loop-guard.ts");
+      const g = await checkLoopGuard(supa, targetId, "js-deep-expand", { maxRuns: 3, stallStreak: 2, windowMinutes: 60 });
+      if (!g.allow) {
+        return new Response(JSON.stringify({ ok: false, skipped: true, reason: g.reason }),
+          { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+    }
+
     // Gap #7 auto-mode: if no seedUrl, derive from target_workspaces
     if (!seedUrl && targetId) {
       const { data: tw } = await supa.from("target_workspaces").select("url,domain").eq("id", targetId).maybeSingle();
@@ -112,6 +121,11 @@ Deno.serve(async (req) => {
       message: `🧬 js-deep-expand: ${discovered.length} unique route templates from ${seedUrl}`,
       metadata: { count: discovered.length },
     } as any);
+
+    if (targetId) {
+      const { recordLoopRun } = await import("../_shared/loop-guard.ts");
+      await recordLoopRun(supa, targetId, "js-deep-expand", { findingsCreated: discovered.length });
+    }
 
     return new Response(JSON.stringify({ ok: true, discovered: discovered.slice(0, 200) }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } });
