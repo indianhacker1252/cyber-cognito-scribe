@@ -28,6 +28,27 @@ serve(async (req) => {
 
     const db = createClient(SUPABASE_URL, SERVICE_KEY);
 
+    // Bail early if AI credits are exhausted — mythos is 100% LLM-driven, so
+    // running it without any working provider just spams "🪫" error rows.
+    const { areCreditsRecentlyExhausted } = await import("../_shared/ai-credits.ts");
+    if (await areCreditsRecentlyExhausted(db, targetId, 15)) {
+      await db.from("scan_logs").insert({
+        target_id: targetId, log_type: "warning",
+        message: "🧠 Mythos paused: AI credits exhausted and no fallback provider configured. Add OPENAI_API_KEY / GEMINI_API_KEY / ANTHROPIC_API_KEY or top up Lovable AI, then re-trigger.",
+        metadata: { kind: "mythos_paused_no_ai" },
+      });
+      return new Response(JSON.stringify({ ok: false, paused: true, reason: "no_ai_provider" }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
+
+    // Loop-guard: mythos-agent ran 100+ times per target — cap it.
+    const { checkLoopGuard, recordLoopRun } = await import("../_shared/loop-guard.ts");
+    const _mg = await checkLoopGuard(db, targetId, "mythos-agent", { maxRuns: 3, stallStreak: 2, windowMinutes: 60 });
+    if (!_mg.allow) {
+      return new Response(JSON.stringify({ ok: false, skipped: true, reason: _mg.reason }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
+
     const { data: run, error: runErr } = await db.from("mythos_runs").insert({
       target_id: targetId, trigger_type: triggerType, max_iterations: maxIterations,
       status: "running", started_at: new Date().toISOString(), current_phase: "init",
