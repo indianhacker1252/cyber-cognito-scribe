@@ -377,8 +377,24 @@ Deno.serve(async (req) => {
     }
 
     const targets: string[] = body.targetId ? [body.targetId] : await detectActiveTargets(db);
+    // Drop targets that no longer exist — otherwise the arbiter loops on
+    // orphan job rows forever (2 of 3 active targets were deleted; phase
+    // fanout still fired every 6 min against them).
+    let liveTargets = targets;
+    if (targets.length) {
+      const { data: existing } = await db
+        .from("target_workspaces")
+        .select("id")
+        .in("id", targets);
+      const liveSet = new Set((existing || []).map((r: any) => r.id));
+      const ghosts = targets.filter((t) => !liveSet.has(t));
+      liveTargets = targets.filter((t) => liveSet.has(t));
+      if (ghosts.length) {
+        await db.from("scan_jobs").delete().in("target_id", ghosts).in("status", ["queued", "running"]);
+      }
+    }
     const out: Record<string, string[]> = {};
-    for (const t of targets.slice(0, 20)) {
+    for (const t of liveTargets.slice(0, 20)) {
       out[t] = await arbitrateTarget(db, t);
     }
     return new Response(JSON.stringify({ ok: true, arbitrated: out }), {
