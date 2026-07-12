@@ -76,34 +76,44 @@ async function callFn(name: string, body: any) {
 
 async function enqueue(db: any, targetId: string, jobs: { type: string; priority: number; payload?: any }[]) {
   const now = new Date().toISOString();
-  // Filter out: already running, or queued + recent
   const types = jobs.map((j) => j.type);
-  const { data: existing } = await db
-    .from("scan_jobs")
-    .select("job_type,status")
-    .eq("target_id", targetId)
-    .in("job_type", types)
-    .in("status", ["queued", "running"]);
-  const busy = new Set((existing || []).map((e: any) => e.job_type));
-  const rows = jobs
-    .filter((j) => !busy.has(j.type))
-    .map((j) => ({
+  // Skip: already queued/running OR already succeeded within last 2h.
+  // Without the "done" filter, the arbiter re-queues succeeded modules on
+  // every tick (subdomain_enum ran 55× per target for exactly this reason).
+  const sinceDone = new Date(Date.now() - 2 * 60 * 60_000).toISOString();
+  const [{ data: busyRows }, { data: doneRows }] = await Promise.all([
+    db
+      .from("scan_jobs")
+      .select("job_type")
+      .eq("target_id", targetId)
+      .in("job_type", types)
+      .in("status", ["queued", "running"]),
+    db
+      .from("scan_jobs")
+      .select("job_type")
+      .eq("target_id", targetId)
+      .in("job_type", types)
+      .eq("status", "done")
+      .gte("completed_at", sinceDone),
+  ]);
+  const skip = new Set<string>([
+    ...(busyRows || []).map((r: any) => r.job_type),
+    ...(doneRows || []).map((r: any) => r.job_type),
+  ]);
+  const toEnqueue = jobs.filter((j) => !skip.has(j.type));
+  if (!toEnqueue.length) return 0;
+  const { enqueueJobs } = await import("../_shared/enqueue.ts");
+  return await enqueueJobs(
+    db,
+    toEnqueue.map((j) => ({
       target_id: targetId,
       job_type: j.type,
-      status: "queued",
       priority: j.priority,
       payload: j.payload ?? {},
       next_run_at: now,
-    }));
-  if (rows.length)
-    await db
-      .from("scan_jobs")
-      .insert(rows)
-      .then(
-        () => {},
-        () => {},
-      );
-  return rows.length;
+      dedupWindowMs: 2 * 60 * 60_000, // 2h dedup — matches "already succeeded" window above
+    })),
+  );
 }
 
 async function loadJobHistory(db: any, targetId: string) {
