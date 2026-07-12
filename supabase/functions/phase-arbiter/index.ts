@@ -182,19 +182,6 @@ async function arbitrateTarget(db: any, targetId: string) {
     if (!p || p.status === "pending" || p.status === "failed") {
       if (phase === "recon") continue; // recon triggered externally
 
-      // Prerequisite gate: every earlier phase must be complete OR failed
-      // (never pending/running). This is what enforces strict VAPT ordering.
-      const prereqBlocked = orderedPhases
-        .filter((ph) => PHASE_ORDER[ph] < PHASE_ORDER[phase])
-        .some((ph) => {
-          const pp: any = phaseMap.get(ph);
-          if (!pp) return ph !== "recon"; // treat missing as blocking (recon starts things)
-          return pp.status === "pending" || pp.status === "running";
-        });
-    // Pending or failed → check prerequisites, then start
-    if (!p || p.status === "pending" || p.status === "failed") {
-      if (phase === "recon") continue; // recon triggered externally
-
       // Attempt cap: if this phase has already been kicked off 3 times, stop
       // re-entering it. Otherwise a permanently-failing module (e.g. vuln_scan
       // 402ing on AI) makes the arbiter re-queue the whole phase forever.
