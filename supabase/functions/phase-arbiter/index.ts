@@ -191,6 +191,38 @@ async function arbitrateTarget(db: any, targetId: string) {
           if (!pp) return ph !== "recon"; // treat missing as blocking (recon starts things)
           return pp.status === "pending" || pp.status === "running";
         });
+    // Pending or failed → check prerequisites, then start
+    if (!p || p.status === "pending" || p.status === "failed") {
+      if (phase === "recon") continue; // recon triggered externally
+
+      // Attempt cap: if this phase has already been kicked off 3 times, stop
+      // re-entering it. Otherwise a permanently-failing module (e.g. vuln_scan
+      // 402ing on AI) makes the arbiter re-queue the whole phase forever.
+      const attempts = Number(p?.metadata?.attempts || 0);
+      if (attempts >= 3) {
+        // Mark permanently failed and move on so later phases can start.
+        await db.from("scan_phase_state").upsert({
+          target_id: targetId, phase,
+          phase_order: PHASE_ORDER[phase],
+          expected_modules: expected,
+          status: "failed",
+          completed_at: new Date().toISOString(),
+          last_heartbeat: new Date().toISOString(),
+          metadata: { ...(p?.metadata || {}), attempts, permanently_failed: true },
+        }, { onConflict: "target_id,phase" });
+        advanced.push(`${phase}=abandoned(${attempts})`);
+        continue;
+      }
+
+      // Prerequisite gate: every earlier phase must be complete OR failed
+      // (never pending/running). This is what enforces strict VAPT ordering.
+      const prereqBlocked = orderedPhases
+        .filter((ph) => PHASE_ORDER[ph] < PHASE_ORDER[phase])
+        .some((ph) => {
+          const pp: any = phaseMap.get(ph);
+          if (!pp) return ph !== "recon"; // treat missing as blocking (recon starts things)
+          return pp.status === "pending" || pp.status === "running";
+        });
       if (prereqBlocked) return advanced;
 
       const jobs = PHASE_JOBS[phase];
@@ -202,7 +234,7 @@ async function arbitrateTarget(db: any, targetId: string) {
           status: "running",
           started_at: new Date().toISOString(),
           last_heartbeat: new Date().toISOString(),
-          metadata: { ...(p?.metadata || {}), prereq_ok: true, started_by: "phase-arbiter" },
+          metadata: { ...(p?.metadata || {}), prereq_ok: true, started_by: "phase-arbiter", attempts: attempts + 1 },
         }, { onConflict: "target_id,phase" });
 
         const direct = jobs.filter((j) => j.type === "ai_strategist" || j.type === "exploit_watchdog");
