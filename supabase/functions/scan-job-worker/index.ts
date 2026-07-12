@@ -305,15 +305,24 @@ Deno.serve(async (req) => {
     const results: any[] = [];
     for (const job of jobs) {
       if (recentExhausted.has(job.target_id) && aiHeavy.has(job.job_type)) {
+        // After 3 deferrals, fail permanently — otherwise mythos_step
+        // ping-pongs forever between "deferred" and "AI exhausted"
+        // (52+ cycles observed in prod logs).
+        const deferred = (job.attempts ?? 0) + 1;
+        const shouldFail = deferred >= 3;
         await supa
           .from("scan_jobs")
           .update({
-            status: "queued",
-            error_message: "deferred: AI credits exhausted",
-            next_run_at: new Date(Date.now() + 5 * 60_000).toISOString(),
+            status: shouldFail ? "failed" : "queued",
+            error_message: shouldFail
+              ? "abandoned: AI credits exhausted for 3+ tries — configure OPENAI_API_KEY / GEMINI_API_KEY to resume"
+              : "deferred: AI credits exhausted",
+            attempts: deferred,
+            next_run_at: shouldFail ? null : new Date(Date.now() + 30 * 60_000).toISOString(),
+            completed_at: shouldFail ? new Date().toISOString() : null,
           })
           .eq("id", job.id);
-        results.push({ id: job.id, type: job.job_type, deferred: true });
+        results.push({ id: job.id, type: job.job_type, deferred: !shouldFail, failed: shouldFail });
         continue;
       }
 

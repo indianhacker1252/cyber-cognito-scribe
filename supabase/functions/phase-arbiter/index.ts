@@ -76,34 +76,44 @@ async function callFn(name: string, body: any) {
 
 async function enqueue(db: any, targetId: string, jobs: { type: string; priority: number; payload?: any }[]) {
   const now = new Date().toISOString();
-  // Filter out: already running, or queued + recent
   const types = jobs.map((j) => j.type);
-  const { data: existing } = await db
-    .from("scan_jobs")
-    .select("job_type,status")
-    .eq("target_id", targetId)
-    .in("job_type", types)
-    .in("status", ["queued", "running"]);
-  const busy = new Set((existing || []).map((e: any) => e.job_type));
-  const rows = jobs
-    .filter((j) => !busy.has(j.type))
-    .map((j) => ({
+  // Skip: already queued/running OR already succeeded within last 2h.
+  // Without the "done" filter, the arbiter re-queues succeeded modules on
+  // every tick (subdomain_enum ran 55× per target for exactly this reason).
+  const sinceDone = new Date(Date.now() - 2 * 60 * 60_000).toISOString();
+  const [{ data: busyRows }, { data: doneRows }] = await Promise.all([
+    db
+      .from("scan_jobs")
+      .select("job_type")
+      .eq("target_id", targetId)
+      .in("job_type", types)
+      .in("status", ["queued", "running"]),
+    db
+      .from("scan_jobs")
+      .select("job_type")
+      .eq("target_id", targetId)
+      .in("job_type", types)
+      .eq("status", "done")
+      .gte("completed_at", sinceDone),
+  ]);
+  const skip = new Set<string>([
+    ...(busyRows || []).map((r: any) => r.job_type),
+    ...(doneRows || []).map((r: any) => r.job_type),
+  ]);
+  const toEnqueue = jobs.filter((j) => !skip.has(j.type));
+  if (!toEnqueue.length) return 0;
+  const { enqueueJobs } = await import("../_shared/enqueue.ts");
+  return await enqueueJobs(
+    db,
+    toEnqueue.map((j) => ({
       target_id: targetId,
       job_type: j.type,
-      status: "queued",
       priority: j.priority,
       payload: j.payload ?? {},
       next_run_at: now,
-    }));
-  if (rows.length)
-    await db
-      .from("scan_jobs")
-      .insert(rows)
-      .then(
-        () => {},
-        () => {},
-      );
-  return rows.length;
+      dedupWindowMs: 2 * 60 * 60_000, // 2h dedup — matches "already succeeded" window above
+    })),
+  );
 }
 
 async function loadJobHistory(db: any, targetId: string) {
@@ -172,6 +182,25 @@ async function arbitrateTarget(db: any, targetId: string) {
     if (!p || p.status === "pending" || p.status === "failed") {
       if (phase === "recon") continue; // recon triggered externally
 
+      // Attempt cap: if this phase has already been kicked off 3 times, stop
+      // re-entering it. Otherwise a permanently-failing module (e.g. vuln_scan
+      // 402ing on AI) makes the arbiter re-queue the whole phase forever.
+      const attempts = Number(p?.metadata?.attempts || 0);
+      if (attempts >= 3) {
+        // Mark permanently failed and move on so later phases can start.
+        await db.from("scan_phase_state").upsert({
+          target_id: targetId, phase,
+          phase_order: PHASE_ORDER[phase],
+          expected_modules: expected,
+          status: "failed",
+          completed_at: new Date().toISOString(),
+          last_heartbeat: new Date().toISOString(),
+          metadata: { ...(p?.metadata || {}), attempts, permanently_failed: true },
+        }, { onConflict: "target_id,phase" });
+        advanced.push(`${phase}=abandoned(${attempts})`);
+        continue;
+      }
+
       // Prerequisite gate: every earlier phase must be complete OR failed
       // (never pending/running). This is what enforces strict VAPT ordering.
       const prereqBlocked = orderedPhases
@@ -192,7 +221,7 @@ async function arbitrateTarget(db: any, targetId: string) {
           status: "running",
           started_at: new Date().toISOString(),
           last_heartbeat: new Date().toISOString(),
-          metadata: { ...(p?.metadata || {}), prereq_ok: true, started_by: "phase-arbiter" },
+          metadata: { ...(p?.metadata || {}), prereq_ok: true, started_by: "phase-arbiter", attempts: attempts + 1 },
         }, { onConflict: "target_id,phase" });
 
         const direct = jobs.filter((j) => j.type === "ai_strategist" || j.type === "exploit_watchdog");
@@ -348,8 +377,24 @@ Deno.serve(async (req) => {
     }
 
     const targets: string[] = body.targetId ? [body.targetId] : await detectActiveTargets(db);
+    // Drop targets that no longer exist — otherwise the arbiter loops on
+    // orphan job rows forever (2 of 3 active targets were deleted; phase
+    // fanout still fired every 6 min against them).
+    let liveTargets = targets;
+    if (targets.length) {
+      const { data: existing } = await db
+        .from("target_workspaces")
+        .select("id")
+        .in("id", targets);
+      const liveSet = new Set((existing || []).map((r: any) => r.id));
+      const ghosts = targets.filter((t) => !liveSet.has(t));
+      liveTargets = targets.filter((t) => liveSet.has(t));
+      if (ghosts.length) {
+        await db.from("scan_jobs").delete().in("target_id", ghosts).in("status", ["queued", "running"]);
+      }
+    }
     const out: Record<string, string[]> = {};
-    for (const t of targets.slice(0, 20)) {
+    for (const t of liveTargets.slice(0, 20)) {
       out[t] = await arbitrateTarget(db, t);
     }
     return new Response(JSON.stringify({ ok: true, arbitrated: out }), {
