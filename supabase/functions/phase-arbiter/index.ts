@@ -384,11 +384,20 @@ Deno.serve(async (req) => {
     if (targets.length) {
       const { data: existing } = await db
         .from("target_workspaces")
-        .select("id")
+        .select("id,status")
         .in("id", targets);
       const liveSet = new Set((existing || []).map((r: any) => r.id));
+      // Skip terminal-state targets — otherwise the arbiter re-fires phase
+      // fanout every tick against a completed scan because mythos_step /
+      // watchdog jobs keep touching scan_jobs and mark the target "active".
+      const TERMINAL = new Set(["completed", "failed", "aborted", "paused", "cancelled"]);
+      const activeSet = new Set(
+        (existing || [])
+          .filter((r: any) => !TERMINAL.has(String(r.status || "").toLowerCase()))
+          .map((r: any) => r.id),
+      );
       const ghosts = targets.filter((t) => !liveSet.has(t));
-      liveTargets = targets.filter((t) => liveSet.has(t));
+      liveTargets = targets.filter((t) => activeSet.has(t));
       if (ghosts.length) {
         await db.from("scan_jobs").delete().in("target_id", ghosts).in("status", ["queued", "running"]);
       }
