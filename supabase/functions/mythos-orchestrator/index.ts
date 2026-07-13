@@ -281,11 +281,20 @@ Deno.serve(async (req) => {
           ts: new Date().toISOString(), phase, msg: "Paused: AI credits exhausted. Resume after topping up.",
         }]),
       }).eq("id", runId);
-      await db.from("scan_logs").insert({
-        target_id: run.target_id, log_type: "error",
-        message: `⏸️ Mythos run paused — AI credits exhausted. Add credits in Workspace → Usage and re-trigger.`,
-        metadata: { runId, phase, kind: "ai_credits_exhausted" },
-      } as any);
+      // Throttle the user-visible "paused" log to once per hour so we don't
+      // spam scan_logs 30× while the arbiter/worker keep polling.
+      const sincePauseLog = new Date(Date.now() - 60 * 60_000).toISOString();
+      const { data: recentPause } = await db.from("scan_logs").select("id")
+        .eq("target_id", run.target_id)
+        .like("message", "%Mythos run paused%")
+        .gte("created_at", sincePauseLog).limit(1);
+      if (!recentPause || recentPause.length === 0) {
+        await db.from("scan_logs").insert({
+          target_id: run.target_id, log_type: "error",
+          message: `⏸️ Mythos run paused — AI credits exhausted. Add credits in Workspace → Usage and re-trigger.`,
+          metadata: { runId, phase, kind: "ai_credits_exhausted" },
+        } as any);
+      }
       return ok({ ok: true, runId, status: "paused", reason: "ai_credits_exhausted" });
     }
 

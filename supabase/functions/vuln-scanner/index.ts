@@ -3372,6 +3372,19 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
 
     // ── Always auto-trigger Mythos agent post-scan + reflection-XSS sweep ──
     try {
+      // Debounce: skip if we already auto-triggered within the last 2h.
+      // Without this the post-scan retrigger fired every 6 min (22× per target).
+      const sinceAuto = new Date(Date.now() - 2 * 60 * 60_000).toISOString();
+      const { data: recentAuto } = await db
+        .from("scan_logs")
+        .select("id")
+        .eq("target_id", targetId)
+        .like("message", "%Auto-triggering Mythos%")
+        .gte("created_at", sinceAuto)
+        .limit(1);
+      if (recentAuto && recentAuto.length > 0) {
+        throw new Error("__skip_auto_trigger__");
+      }
       await db.from("scan_logs").insert({
         target_id: targetId,
         log_type: "info",
@@ -3493,7 +3506,9 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
         }
       }
     } catch (e) {
-      console.error("post-scan auto-trigger failed:", e);
+      if (!(e instanceof Error && e.message === "__skip_auto_trigger__")) {
+        console.error("post-scan auto-trigger failed:", e);
+      }
     }
 
     return new Response(
