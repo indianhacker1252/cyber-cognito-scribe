@@ -3506,7 +3506,9 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
         }
       }
     } catch (e) {
-      console.error("post-scan auto-trigger failed:", e);
+      if (!(e instanceof Error && e.message === "__skip_auto_trigger__")) {
+        console.error("post-scan auto-trigger failed:", e);
+      }
     }
 
     return new Response(
