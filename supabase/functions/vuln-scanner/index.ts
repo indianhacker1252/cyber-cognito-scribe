@@ -3024,6 +3024,8 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
       const mutSnippet =
         typeof diff.mutated === "string" ? diff.mutated : JSON.stringify(diff.mutated || "").slice(0, 1500);
       const aiGate = await confirmFinding({
+        db,
+        targetId,
         vulnClass: diff.vulnClass,
         payload: diff.truePayload || "",
         endpoint: matchingCheck?.url || "",

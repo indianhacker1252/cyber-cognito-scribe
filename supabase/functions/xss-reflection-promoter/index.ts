@@ -137,6 +137,8 @@ serve(async (req) => {
 
       // ── AI confirmation + honeypot trap detector ──
       const gate = await confirmFinding({
+        db,
+        targetId,
         vulnClass: "rxss",
         payload,
         endpoint: targetUrl,
@@ -158,6 +160,14 @@ serve(async (req) => {
         await (db as any).from("scan_logs").insert({
           target_id: targetId, log_type: "info",
           message: `🍯 XSS gate suppressed approval ${a.id}: ${gate.reasoning}`,
+          metadata: { approvalId: a.id, gate, headlessExecuted, headlessNotes },
+        });
+        continue;
+      }
+      if (gate.recommendedAction !== "insert_finding") {
+        await (db as any).from("scan_logs").insert({
+          target_id: targetId, log_type: "info",
+          message: `🛡️ XSS reflection kept in review, not auto-promoted: ${gate.reasoning}`,
           metadata: { approvalId: a.id, gate, headlessExecuted, headlessNotes },
         });
         continue;
