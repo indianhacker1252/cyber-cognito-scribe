@@ -3,6 +3,8 @@
 // Each hypothesis becomes a hypothesis_test scan_job.
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { logAiNextStep } from "../_shared/ai-next-step.ts";
+import { llmCall, tryParseJson } from "../_shared/llm.ts";
+import { enqueueJobs } from "../_shared/enqueue.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -11,7 +13,6 @@ const corsHeaders = {
 
 const SUPA = Deno.env.get("SUPABASE_URL")!;
 const SVC = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-const LOVABLE_AI_KEY = Deno.env.get("LOVABLE_API_KEY")!;
 
 interface Hypothesis {
   asset_host?: string;
@@ -23,8 +24,7 @@ interface Hypothesis {
   expected_proof?: string;
 }
 
-async function generateHypotheses(context: any): Promise<Hypothesis[]> {
-  if (!LOVABLE_AI_KEY) return [];
+async function generateHypotheses(db: any, targetId: string, context: any): Promise<{ hypotheses: Hypothesis[]; provider: string; error?: string }> {
   const proofNonce = Math.random().toString(36).slice(2, 10).toUpperCase(); // e.g. "X4K9P2QR"
   const prompt = `You are XBOW-tier offensive AI — reviewing a target's full recon + evidence trail. Compete with Mythos + XBOW on chain-depth.
 
@@ -79,27 +79,25 @@ Focus on:
 
 Output ONLY a JSON array of hypothesis objects. No prose.`;
 
-  try {
-    const r = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "Lovable-API-Key": LOVABLE_AI_KEY },
-      body: JSON.stringify({
-        model: "google/gemini-2.5-flash",
-        messages: [{ role: "user", content: prompt }],
-        temperature: 0.6,
-      }),
-      signal: AbortSignal.timeout(40_000),
-    });
-    if (!r.ok) return [];
-    const j = await r.json();
-    const txt = j?.choices?.[0]?.message?.content || "";
-    const m = txt.match(/\[[\s\S]*\]/);
-    if (!m) return [];
-    const arr = JSON.parse(m[0]);
-    return Array.isArray(arr) ? arr.slice(0, 15) : [];
-  } catch {
-    return [];
-  }
+  const out = await llmCall({
+    db,
+    targetId,
+    phase: "ai-strategist",
+    temperature: 0.6,
+    maxTokens: 3000,
+    messages: [
+      { role: "system", content: "Return only a strict JSON array. No prose, no markdown." },
+      { role: "user", content: prompt },
+    ],
+  });
+  if (!out.ok || !out.text) return { hypotheses: [], provider: out.provider, error: out.error || "empty_output" };
+  const parsed = tryParseJson<unknown>(out.text) ?? (() => {
+    const m = out.text.match(/\[[\s\S]*\]/);
+    if (!m) return null;
+    try { return JSON.parse(m[0]); } catch { return null; }
+  })();
+  const arr = Array.isArray(parsed) ? parsed : [];
+  return { hypotheses: arr.slice(0, 15) as Hypothesis[], provider: out.provider };
 }
 
 async function strategize(db: any, targetId: string, round: number) {
@@ -165,15 +163,16 @@ async function strategize(db: any, targetId: string, round: number) {
     recentDecisions: recentDecisions || [],
   };
 
-  const hyps = await generateHypotheses(ctx);
+  const ai = await generateHypotheses(db, targetId, ctx);
+  const hyps = ai.hypotheses.filter((h) => h?.hypothesis && (h.endpoint_url || h.asset_host)).slice(0, 15);
   if (!hyps.length) {
     await db
       .from("scan_logs")
       .insert({
         target_id: targetId,
         log_type: "warn",
-        message: `🧠 ai-strategist round ${round}: no hypotheses generated (AI gateway empty/error)`,
-        metadata: { kind: "ai_strategist_empty", round },
+        message: `🧠 ai-strategist round ${round}: no hypotheses generated (${ai.provider}${ai.error ? `: ${ai.error}` : ""})`,
+        metadata: { kind: "ai_strategist_empty", round, provider: ai.provider, error: ai.error },
       })
       .then(
         () => {},
@@ -205,11 +204,12 @@ async function strategize(db: any, targetId: string, round: number) {
     target_id: targetId,
     job_type: "hypothesis_test",
     priority: 7,
-    status: "queued",
     payload: { hypothesisId: h.id },
     next_run_at: new Date().toISOString(),
+    dedupWindowMs: 60 * 60_000,
+    dedupExtraKey: h.id,
   }));
-  if (jobs.length) await db.from("scan_jobs").insert(jobs);
+  if (jobs.length) await enqueueJobs(db, jobs);
 
   // Structured "AI next step" entries — one per queued hypothesis, so Neural
   // Logs can show exactly what the AI debated and what it decided to run
@@ -253,7 +253,7 @@ async function strategize(db: any, targetId: string, round: number) {
       target_id: targetId,
       log_type: "action",
       message: `🧠 ai-strategist round ${round}: ${rows.length} hypotheses generated`,
-      metadata: { kind: "ai_strategist", round, count: rows.length },
+      metadata: { kind: "ai_strategist", round, count: rows.length, provider: ai.provider },
     })
     .then(
       () => {},

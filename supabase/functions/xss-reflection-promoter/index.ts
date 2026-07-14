@@ -38,6 +38,26 @@ function isReflected(body: unknown, payload: string): boolean {
   return false;
 }
 
+function isDangerousReflectionContext(body: string, payload: string): boolean {
+  if (!body || !payload || !body.includes(payload)) return false;
+  if (!/[<>'"=]/.test(payload)) return false;
+  let from = 0;
+  while (true) {
+    const idx = body.indexOf(payload, from);
+    if (idx === -1) return false;
+    const before = body.slice(Math.max(0, idx - 220), idx).toLowerCase();
+    const after = body.slice(idx + payload.length, Math.min(body.length, idx + payload.length + 100)).toLowerCase();
+    const lastTagOpen = before.lastIndexOf("<");
+    const lastTagClose = before.lastIndexOf(">");
+    const insideTag = lastTagOpen > lastTagClose;
+    const escapedNearby = /&lt;|&gt;|&#39;|&quot;|&amp;/.test(body.slice(Math.max(0, idx - 20), idx + payload.length + 20));
+    const safeUrlAttr = insideTag && /\b(href|src|srcset|action|formaction|cite|data|poster|content)\s*=\s*['"][^'"]*$/i.test(before) && /^[^'"]*['"]/.test(after);
+    const jsonUrlString = /"(?:url|@id|canonical|image|sameas|contenturl|thumbnailurl)"\s*:\s*"[^"]*$/i.test(before) && /^[^"]*"/.test(after);
+    if (!escapedNearby && !safeUrlAttr && !jsonUrlString) return true;
+    from = idx + payload.length;
+  }
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
   try {
@@ -52,7 +72,7 @@ serve(async (req) => {
     // Pull recent pending approvals for this target
     const { data: approvals } = await (db as any)
       .from("pending_approvals")
-      .select("id,title,payload_used,response_data,mutated_response,parameter,endpoint_id,finding_type,severity")
+      .select("id,title,payload_used,response_data,mutated_response,parameter,endpoint_id,finding_type,severity,evidence")
       .eq("target_id", targetId)
       .order("created_at", { ascending: false })
       .limit(200);
@@ -70,6 +90,15 @@ serve(async (req) => {
         a.mutated_response ?? a.response_data;
 
       if (!isReflected(respBody, payload)) continue;
+      const respText = typeof respBody === "string" ? respBody : JSON.stringify(respBody);
+      if (!isDangerousReflectionContext(respText, payload)) {
+        await (db as any).from("scan_logs").insert({
+          target_id: targetId, log_type: "info",
+          message: `🛡️ XSS reflection suppressed: payload reflected only in safe/encoded context`,
+          metadata: { approvalId: a.id, parameter: a.parameter, status: (a.response_data as any)?.status || null },
+        });
+        continue;
+      }
 
       // Already promoted? skip
       const { data: existing } = await (db as any)
@@ -107,21 +136,38 @@ serve(async (req) => {
       }
 
       // ── AI confirmation + honeypot trap detector ──
-      const respText = typeof respBody === "string" ? respBody : JSON.stringify(respBody);
       const gate = await confirmFinding({
+        db,
+        targetId,
         vulnClass: "rxss",
         payload,
         endpoint: targetUrl,
         parameter: a.parameter || "unknown",
         baseline: { status: 200, length: 0, bodySnippet: "" },
         mutated: { status: (a.response_data as any)?.status || 200, length: respText.length, bodySnippet: respText.slice(0, 1500) },
-        deterministicProof: headlessExecuted || true,
+        deterministicProof: headlessExecuted,
         proofType: headlessExecuted ? "headless_dom_execution" : "reflected_sink",
       });
+      if (!headlessExecuted) {
+        await (db as any).from("scan_logs").insert({
+          target_id: targetId, log_type: "info",
+          message: `🛡️ XSS reflection suppressed: no browser execution proof for approval ${a.id}`,
+          metadata: { approvalId: a.id, gate, headlessNotes, payload: payload.slice(0, 120) },
+        });
+        continue;
+      }
       if (gate.recommendedAction === "drop_honeypot" || gate.recommendedAction === "drop_false_positive") {
         await (db as any).from("scan_logs").insert({
           target_id: targetId, log_type: "info",
           message: `🍯 XSS gate suppressed approval ${a.id}: ${gate.reasoning}`,
+          metadata: { approvalId: a.id, gate, headlessExecuted, headlessNotes },
+        });
+        continue;
+      }
+      if (gate.recommendedAction !== "insert_finding") {
+        await (db as any).from("scan_logs").insert({
+          target_id: targetId, log_type: "info",
+          message: `🛡️ XSS reflection kept in review, not auto-promoted: ${gate.reasoning}`,
           metadata: { approvalId: a.id, gate, headlessExecuted, headlessNotes },
         });
         continue;
@@ -142,6 +188,8 @@ serve(async (req) => {
         triage_reasoning: `AI gate (${gate.proofType}): ${gate.reasoning}. Promoted from approval ${a.id}.`,
         reachability_status: "reachable",
         remediation: "Apply context-aware output encoding (HTML, attribute, JS) and a strict CSP. Validate and reject reflected user input on the server.",
+        proof_tier: "exploited",
+        hard_evidence: { headlessExecuted, headlessNotes, gate, reflected_context: true },
       };
       const { data: insertedFinding, error: insErr } = await (db as any).from("vulnerability_findings").insert(findingPayload).select("id").single();
       if (insErr) { console.error("insert failed", insErr); continue; }

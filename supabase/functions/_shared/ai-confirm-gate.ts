@@ -8,7 +8,7 @@
 // Returns { confirmed, confidence, reasoning, honeypot, proofType } so the
 // caller can decide insert vs. drop.
 
-const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
+import { llmCall, tryParseJson } from "./llm.ts";
 
 // ─── Honeypot/Decoy Trap Signatures ──────────────────────────────────
 // These patterns indicate a trap server / WAF that responds with fake
@@ -47,6 +47,8 @@ export interface ProofBundle {
   deterministicProof?: boolean;
   proofType?: string;
   cveIds?: string[];
+  db?: any;
+  targetId?: string;
 }
 
 export interface ConfirmResult {
@@ -99,10 +101,6 @@ async function aiConfirm(
   bundle: ProofBundle,
   honeypot: boolean,
 ): Promise<{ confidence: number; reasoning: string; proofType: string }> {
-  if (!LOVABLE_API_KEY) {
-    return { confidence: 0, reasoning: "AI gateway unavailable — defaulting to drop", proofType: "no_ai" };
-  }
-
   const prompt = `You are a senior offensive-security engineer. Confirm whether this is a TRUE vulnerability or a FALSE POSITIVE.
 
 DO NOT confirm based on response status codes alone. Require deterministic proof:
@@ -122,56 +120,29 @@ Finding:
 Baseline (status ${bundle.baseline?.status}, ${bundle.baseline?.length}b): ${(bundle.baseline?.bodySnippet || "").slice(0, 600)}
 Mutated  (status ${bundle.mutated?.status}, ${bundle.mutated?.length}b): ${(bundle.mutated?.bodySnippet || "").slice(0, 600)}
 
-Return your verdict via the tool.`;
+Return strict JSON only: {"confidence":0-100,"reasoning":"...","proofType":"sql_error|template_eval|command_output|file_leak|headless_dom_execution|reflected_sink|honeypot_trap|no_proof"}`;
 
   try {
-    const resp = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${LOVABLE_API_KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: "google/gemini-2.5-flash",
-        messages: [
-          {
-            role: "system",
-            content: "Strict bug-bounty triage. No guesses. Status-code-only signals = false positive.",
-          },
-          { role: "user", content: prompt },
-        ],
-        tools: [
-          {
-            type: "function",
-            function: {
-              name: "confirm_vuln",
-              description: "Confirm or reject the vulnerability finding",
-              parameters: {
-                type: "object",
-                properties: {
-                  confidence: { type: "number", description: "0-100 confidence this is a real exploitable vuln" },
-                  reasoning: { type: "string", description: "Specific reason — cite proof string or absence" },
-                  proofType: {
-                    type: "string",
-                    description:
-                      "e.g. sql_error, template_eval, command_output, file_leak, reflected_sink, honeypot_trap, no_proof",
-                  },
-                },
-                required: ["confidence", "reasoning", "proofType"],
-                additionalProperties: false,
-              },
-            },
-          },
-        ],
-        tool_choice: { type: "function", function: { name: "confirm_vuln" } },
-      }),
-      signal: AbortSignal.timeout(15000),
+    const out = await llmCall({
+      db: bundle.db,
+      targetId: bundle.targetId,
+      phase: "ai-confirm-gate",
+      json: true,
+      temperature: 0,
+      maxTokens: 900,
+      messages: [
+        {
+          role: "system",
+          content: "Strict bug-bounty triage. No guesses. Status-code-only signals = false positive. Return JSON only.",
+        },
+        { role: "user", content: prompt },
+      ],
     });
-
-    if (!resp.ok) {
-      return { confidence: 0, reasoning: `AI gateway returned ${resp.status}`, proofType: "ai_error" };
+    if (!out.ok || !out.text) {
+      return { confidence: 0, reasoning: `AI unavailable: ${out.error || "empty output"}`, proofType: "ai_error" };
     }
-    const data = await resp.json();
-    const tool = data.choices?.[0]?.message?.tool_calls?.[0];
-    if (!tool) return { confidence: 0, reasoning: "AI returned no tool-call", proofType: "ai_no_output" };
-    const parsed = JSON.parse(tool.function.arguments);
+    const parsed = tryParseJson<any>(out.text);
+    if (!parsed) return { confidence: 0, reasoning: "AI returned unparseable JSON", proofType: "ai_no_output" };
     return {
       confidence: Number(parsed.confidence) || 0,
       reasoning: String(parsed.reasoning || ""),

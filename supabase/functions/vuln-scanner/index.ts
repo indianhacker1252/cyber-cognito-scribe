@@ -1458,7 +1458,7 @@ serve(async (req) => {
     await log(db, targetId, taskId, "info", "🔬 Comprehensive OWASP Top 10 vulnerability scan started");
 
     // ── Fetch endpoints ──
-    const { data: endpoints } = await db.from("discovered_endpoints").select("*").eq("target_id", targetId);
+    const { data: endpoints } = await db.from("discovered_endpoints").select("*").eq("target_id", targetId).limit(120);
 
     if (!endpoints || endpoints.length === 0) {
       await log(db, targetId, taskId, "error", "No endpoints found — run recon first");
@@ -3024,6 +3024,8 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
       const mutSnippet =
         typeof diff.mutated === "string" ? diff.mutated : JSON.stringify(diff.mutated || "").slice(0, 1500);
       const aiGate = await confirmFinding({
+        db,
+        targetId,
         vulnClass: diff.vulnClass,
         payload: diff.truePayload || "",
         endpoint: matchingCheck?.url || "",
@@ -3460,6 +3462,7 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
 
         // 2. SSRF-deep — fan out per endpoint+param that smells like a URL/path/redirect
         try {
+          const { enqueueJobs } = await import("../_shared/enqueue.ts");
           const { data: eps } = await db
             .from("discovered_endpoints")
             .select("url, parameters")
@@ -3468,15 +3471,25 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
           const ssrfParamRx =
             /^(url|uri|redirect|redirect_uri|next|return|return_to|callback|dest|destination|target|continue|image|img|src|file|path|fetch|domain|host|proxy|out|to|u|link)$/i;
           let ssrfQueued = 0;
+          const queuedDeepJobs: any[] = [];
           for (const ep of eps || []) {
             const params = (ep.parameters as Record<string, string>) || {};
             for (const pk of Object.keys(params)) {
               if (!ssrfParamRx.test(pk)) continue;
-              dispatch("ssrf-deep", { targetId, endpointUrl: ep.url, paramName: pk });
+              queuedDeepJobs.push({
+                target_id: targetId,
+                job_type: "ssrf_deep",
+                priority: 7,
+                payload: { endpointUrl: ep.url, paramName: pk },
+                next_run_at: new Date().toISOString(),
+                dedupWindowMs: 2 * 60 * 60_000,
+                dedupExtraKey: `${ep.url}:${pk}`,
+              });
               if (++ssrfQueued >= 30) break;
             }
             if (ssrfQueued >= 12) break;
           }
+          if (queuedDeepJobs.length) await enqueueJobs(db, queuedDeepJobs);
 
           // 3. Upload-fuzzer — endpoints whose path screams upload
           const uploadRx = /(upload|files?|attachment|avatar|image|media|import)\b/i;
