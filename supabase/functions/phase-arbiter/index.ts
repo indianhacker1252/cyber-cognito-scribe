@@ -26,9 +26,9 @@ const PHASE_JOBS: Record<string, { type: string; priority: number; payload?: any
     { type: "subdomain_enum", priority: 9 },
     { type: "juicy", priority: 8 },
     { type: "js_deep", priority: 7 },
-    { type: "vuln_scan", priority: 6 },
   ],
   owasp_matrix: [
+    { type: "vuln_scan", priority: 8 },
     { type: "fuzz", priority: 7 },
     { type: "matrix_fuzz", priority: 7 },
     { type: "advanced_detect", priority: 7 },
@@ -157,20 +157,22 @@ async function arbitrateTarget(db: any, targetId: string) {
           metadata: { ...(p.metadata || {}), stalled: true, stalled_after_ms: age },
         }).eq("target_id", targetId).eq("phase", phase);
       } else {
-        // Running: gate — check whether all expected modules are actually
-        // "done"; if so, promote to complete instead of waiting for STALL_MS.
+        // Running: gate — check whether all expected modules are terminal;
+        // if so, promote immediately instead of waiting for STALL_MS.
         if (expected.length > 0) {
+          const allTerminal = expected.every((m) => ["done", "failed"].includes(jobLatest.get(m)?.status));
           const allDone = expected.every((m) => jobLatest.get(m)?.status === "done");
-          if (allDone) {
+          if (allTerminal) {
             await db.from("scan_phase_state").upsert({
               target_id: targetId, phase,
               phase_order: PHASE_ORDER[phase],
               expected_modules: expected,
-              status: "complete",
+              status: allDone ? "complete" : "failed",
               completed_at: new Date().toISOString(),
               last_heartbeat: new Date().toISOString(),
+              metadata: { ...(p.metadata || {}), terminal_modules: true, all_done: allDone },
             }, { onConflict: "target_id,phase" });
-            advanced.push(`${phase}=complete`);
+            advanced.push(`${phase}=${allDone ? "complete" : "failed"}`);
             continue;
           }
         }
@@ -207,7 +209,7 @@ async function arbitrateTarget(db: any, targetId: string) {
         .filter((ph) => PHASE_ORDER[ph] < PHASE_ORDER[phase])
         .some((ph) => {
           const pp: any = phaseMap.get(ph);
-          if (!pp) return ph !== "recon"; // treat missing as blocking (recon starts things)
+          if (!pp) return ph !== "recon";
           return pp.status === "pending" || pp.status === "running";
         });
       if (prereqBlocked) return advanced;
@@ -297,7 +299,7 @@ Deno.serve(async (req) => {
 
       const { data: jobRows } = await db
         .from("scan_jobs")
-        .select("job_type,status,created_at,completed_at")
+        .select("job_type,status,created_at,completed_at,error_message")
         .eq("target_id", targetId)
         .order("created_at", { ascending: false });
 

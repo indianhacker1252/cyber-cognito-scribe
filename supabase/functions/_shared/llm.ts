@@ -36,10 +36,25 @@ export interface LlmResult {
 }
 
 const LOVABLE_KEY = Deno.env.get("LOVABLE_API_KEY");
-const OPENAI_KEY = Deno.env.get("OPENAI_API_KEY");
-const GEMINI_KEY = Deno.env.get("GEMINI_API_KEY");
-const ANTHROPIC_KEY = Deno.env.get("ANTHROPIC_API_KEY");
 const OLLAMA_BASE_URL = Deno.env.get("OLLAMA_BASE_URL");
+
+async function providerKey(opts: LlmCallOptions, provider: "openai" | "gemini" | "anthropic"): Promise<string | null> {
+  const envName = provider === "openai" ? "OPENAI_API_KEY" : provider === "gemini" ? "GEMINI_API_KEY" : "ANTHROPIC_API_KEY";
+  const envValue = Deno.env.get(envName);
+  if (envValue) return envValue;
+  if (!opts.db) return null;
+  try {
+    const { data } = await opts.db
+      .from("ai_provider_config")
+      .select("api_key,is_active")
+      .eq("provider", provider)
+      .eq("is_active", true)
+      .maybeSingle();
+    return data?.api_key || null;
+  } catch {
+    return null;
+  }
+}
 
 // ───── Concurrency limiter (Part B) ─────
 const MAX_CONCURRENT = 5;
@@ -94,11 +109,12 @@ async function callLovable(opts: LlmCallOptions): Promise<LlmResult> {
 }
 
 async function callOpenAI(opts: LlmCallOptions): Promise<LlmResult> {
-  if (!OPENAI_KEY) return { ok: false, text: "", provider: "openai", error: "no key" };
+  const key = await providerKey(opts, "openai");
+  if (!key) return { ok: false, text: "", provider: "openai", error: "no key" };
   try {
     const r = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
-      headers: { Authorization: `Bearer ${OPENAI_KEY}`, "Content-Type": "application/json" },
+      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         model: "gpt-4o-mini",
         messages: opts.messages,
@@ -123,7 +139,8 @@ async function callOpenAI(opts: LlmCallOptions): Promise<LlmResult> {
 }
 
 async function callGeminiDirect(opts: LlmCallOptions): Promise<LlmResult> {
-  if (!GEMINI_KEY) return { ok: false, text: "", provider: "gemini", error: "no key" };
+  const key = await providerKey(opts, "gemini");
+  if (!key) return { ok: false, text: "", provider: "gemini", error: "no key" };
   try {
     const sys = opts.messages
       .filter((m) => m.role === "system")
@@ -133,7 +150,7 @@ async function callGeminiDirect(opts: LlmCallOptions): Promise<LlmResult> {
       .filter((m) => m.role !== "system")
       .map((m) => ({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] }));
     const r = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_KEY}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -165,7 +182,8 @@ async function callGeminiDirect(opts: LlmCallOptions): Promise<LlmResult> {
 }
 
 async function callAnthropic(opts: LlmCallOptions): Promise<LlmResult> {
-  if (!ANTHROPIC_KEY) return { ok: false, text: "", provider: "anthropic", error: "no key" };
+  const key = await providerKey(opts, "anthropic");
+  if (!key) return { ok: false, text: "", provider: "anthropic", error: "no key" };
   try {
     const sys = opts.messages
       .filter((m) => m.role === "system")
@@ -174,7 +192,7 @@ async function callAnthropic(opts: LlmCallOptions): Promise<LlmResult> {
     const msgs = opts.messages.filter((m) => m.role !== "system");
     const r = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
-      headers: { "x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "Content-Type": "application/json" },
+      headers: { "x-api-key": key, "anthropic-version": "2023-06-01", "Content-Type": "application/json" },
       body: JSON.stringify({
         model: "claude-3-5-sonnet-latest",
         max_tokens: opts.maxTokens ?? 2048,
@@ -286,9 +304,9 @@ export async function llmCall(opts: LlmCallOptions): Promise<LlmResult> {
         : false;
       providers = [];
       if (!recentlyOut) providers.push(callLovable);
-      if (OPENAI_KEY) providers.push(callOpenAI);
-      if (GEMINI_KEY) providers.push(callGeminiDirect);
-      if (ANTHROPIC_KEY) providers.push(callAnthropic);
+      if (await providerKey(reqOpts, "openai")) providers.push(callOpenAI);
+      if (await providerKey(reqOpts, "gemini")) providers.push(callGeminiDirect);
+      if (await providerKey(reqOpts, "anthropic")) providers.push(callAnthropic);
       if (pref.ollamaUrl || OLLAMA_BASE_URL) providers.push((o) => callOllama({ ...o, ollamaUrl: pref.ollamaUrl }));
       if (!providers.length) providers = [callLovable]; // last resort
     } else {
@@ -343,7 +361,12 @@ export async function llmCall(opts: LlmCallOptions): Promise<LlmResult> {
     // credit-exhaustion signal on the way. Prevents a single Lovable 402 from
     // silencing all future AI calls for 10 minutes.
     if (sawCreditExhaustion && opts.db && opts.targetId) {
-      const hasFallback = !!(OPENAI_KEY || GEMINI_KEY || ANTHROPIC_KEY || OLLAMA_BASE_URL);
+      const hasFallback = !!(
+        (await providerKey(reqOpts, "openai")) ||
+        (await providerKey(reqOpts, "gemini")) ||
+        (await providerKey(reqOpts, "anthropic")) ||
+        OLLAMA_BASE_URL
+      );
       await markCreditsExhausted(opts.db, {
         targetId: opts.targetId,
         runId: opts.runId,
