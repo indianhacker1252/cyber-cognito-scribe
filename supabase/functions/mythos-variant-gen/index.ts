@@ -376,7 +376,6 @@ Given a known CVE, identify its ROOT-CAUSE PATTERN, then return 3-5 novel varian
             continue;
           }
           const body = await r.text();
-          const body = await r.text();
           const reflected = body.includes(v.variant_payload);
           const errorSig = /SQL|syntax error|stack trace|undefined|TypeError|fatal error/i.test(body);
           const isCand = reflected || errorSig;
