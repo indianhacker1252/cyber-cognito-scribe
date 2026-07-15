@@ -118,6 +118,7 @@ Output ONLY a JSON object with key "hypotheses" containing the array. No prose, 
 }
 
 async function strategize(db: any, targetId: string, round: number) {
+  const traceId = `hyp-${targetId.slice(0, 8)}-r${round}-${Date.now().toString(36)}`;
   const [
     { data: assets },
     { data: findings },
@@ -152,7 +153,6 @@ async function strategize(db: any, targetId: string, round: number) {
   ]);
 
   const techStack: Record<string, string> = {};
-  // Best-effort: pull most-recent tech from scan_logs
   try {
     const { data: techLogs } = await db
       .from("scan_logs")
@@ -180,7 +180,7 @@ async function strategize(db: any, targetId: string, round: number) {
     recentDecisions: recentDecisions || [],
   };
 
-  const ai = await generateHypotheses(db, targetId, ctx);
+  const ai = await generateHypotheses(db, targetId, ctx, traceId, round);
   const hyps = ai.hypotheses.filter((h) => h?.hypothesis && (h.endpoint_url || h.asset_host)).slice(0, 15);
   if (!hyps.length) {
     await db
@@ -188,14 +188,14 @@ async function strategize(db: any, targetId: string, round: number) {
       .insert({
         target_id: targetId,
         log_type: "warn",
-        message: `🧠 ai-strategist round ${round}: no hypotheses generated (${ai.provider}${ai.error ? `: ${ai.error}` : ""})`,
-        metadata: { kind: "ai_strategist_empty", round, provider: ai.provider, error: ai.error },
+        message: `🧠 [trace=${traceId}] ai-strategist round ${round}: 0 usable hypotheses (${ai.provider}${ai.error ? `: ${ai.error}` : ""}) raw_len=${ai.rawLen}`,
+        metadata: { kind: "ai_strategist_empty", trace_id: traceId, round, provider: ai.provider, error: ai.error, raw_snippet: ai.rawSnippet },
       })
       .then(
         () => {},
         () => {},
       );
-    return { generated: 0 };
+    return { generated: 0, traceId };
   }
 
   const rows = hyps.map((h) => ({
