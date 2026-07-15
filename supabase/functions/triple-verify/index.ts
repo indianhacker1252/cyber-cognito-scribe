@@ -126,19 +126,23 @@ Deno.serve(async (req) => {
     // ── Browser-exploit chaining for XSS/DOM findings (needs_review or confirmed) ──
     const isClientSide = /xss|dom|postmessage|prototype|client/i.test(`${f.title || ""} ${vulnClass}`);
     if (isClientSide && (verifyRes.tier === "confirmed" || verifyRes.tier === "needs_review")) {
-      await db.from("scan_jobs").insert({
+      const { enqueueJob } = await import("../_shared/enqueue.ts");
+      const inserted = await enqueueJob(db, {
         target_id: f.target_id,
         job_type: "browser_exploit",
-        payload: { findingId },
-        status: "queued",
         priority: 8,
+        payload: { findingId },
+        dedupWindowMs: 60 * 60_000,
+        dedupExtraKey: String(findingId),
       });
-      await db.from("scan_logs").insert({
-        target_id: f.target_id,
-        log_type: "action",
-        message: `🌐 Queued browser-exploit (headless Chrome) for "${f.title}"`,
-        metadata: { findingId },
-      });
+      if (inserted) {
+        await db.from("scan_logs").insert({
+          target_id: f.target_id,
+          log_type: "action",
+          message: `🌐 Queued browser-exploit (headless Chrome) for "${f.title}"`,
+          metadata: { findingId },
+        });
+      }
     }
 
     return ok({ ok: true, ...verifyRes, exploit, browserQueued: isClientSide });
