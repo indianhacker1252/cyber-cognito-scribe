@@ -314,19 +314,23 @@ async function probeDebugPaths(db: any, targetId: string, origin: string) {
       source: "deep-asset-scan",
       hard_evidence: { path: h.path, status: h.status, size: h.size, origin },
     }).select("id").single();
-    // Gap 7: every debug-path hit immediately fans out into exploit + SSRF jobs.
+    // Gap 7: every debug-path hit immediately fans out into exploit + SSRF jobs
+    // — deduped per (target, url, vuln_class) so we don't refire the same probe.
     try {
+      const { enqueueJob } = await import("../_shared/enqueue.ts");
       if (inserted?.id) {
-        await db.from("scan_jobs").insert({
+        await enqueueJob(db, {
           target_id: targetId, job_type: "exploit", priority: 7,
           payload: { findingId: inserted.id, vuln_class: "info-disclosure", url: origin + h.path },
-          status: "queued", next_run_at: new Date().toISOString(),
+          dedupWindowMs: 60 * 60_000,
+          dedupExtraKey: `info-disclosure|${origin}${h.path}`,
         });
       }
-      await db.from("scan_jobs").insert({
+      await enqueueJob(db, {
         target_id: targetId, job_type: "fuzz", priority: 6,
         payload: { url: origin + h.path, vuln_class: "ssrf", source: "debug-path-fanout" },
-        status: "queued", next_run_at: new Date().toISOString(),
+        dedupWindowMs: 60 * 60_000,
+        dedupExtraKey: `ssrf|${origin}${h.path}`,
       });
     } catch { /* best-effort */ }
   }
