@@ -24,7 +24,7 @@ interface Hypothesis {
   expected_proof?: string;
 }
 
-async function generateHypotheses(db: any, targetId: string, context: any): Promise<{ hypotheses: Hypothesis[]; provider: string; error?: string }> {
+async function generateHypotheses(db: any, targetId: string, context: any, traceId: string, round: number): Promise<{ hypotheses: Hypothesis[]; provider: string; error?: string; rawLen: number; rawSnippet: string }> {
   const proofNonce = Math.random().toString(36).slice(2, 10).toUpperCase(); // e.g. "X4K9P2QR"
   const prompt = `You are XBOW-tier offensive AI — reviewing a target's full recon + evidence trail. Compete with Mythos + XBOW on chain-depth.
 
@@ -62,22 +62,17 @@ For each, output strict JSON in this schema:
 CRITICAL — expected_proof rules (violation = useless finding):
 - Must be a STRING that will appear in the HTTP response IF AND ONLY IF the vulnerability exists.
 - Must be UNIQUE: use the nonce "${proofNonce}" embedded in your payload so only your specific test produces it.
-  Example for XSS: payload="<img src=x onerror=alert('${proofNonce}')>", expected_proof="${proofNonce}"
-  Example for SSTI: payload="{{${proofNonce.charCodeAt(0)}*${proofNonce.charCodeAt(1)}}}", expected_proof=(product of the two char codes)
-  Example for SQLi: payload="' AND '${proofNonce}'='${proofNonce}", expected_proof="${proofNonce}"
-  Example for SSRF: payload="http://oob-host/?t=${proofNonce}", expected_proof="${proofNonce}" (requires OOB callback)
-  Example for blind-SQLi: payload="' AND SLEEP(5)--", expected_proof="TIMING:>4000ms"
 - NEVER use generic words: "admin", "true", "200", "success", "error", "found", "ok", "user", "null".
-- If you cannot construct a unique detectable proof for a vuln class, omit expected_proof entirely.
 
-Focus on:
-- CHAINING proven primitives (e.g. exploited XSS on subA → cookie steal → IDOR on subB).
-- Forgotten admin/dev subdomains with default creds.
-- Tech-specific CVE plays based on detected stack.
-- Parameter names typical for the framework that we haven't fuzzed yet.
-- Auth-adjacent endpoints (JWT, oauth, /admin, /api/v*/users).
+Output ONLY a JSON object with key "hypotheses" containing the array. No prose, no markdown.`;
 
-Output ONLY a JSON array of hypothesis objects. No prose.`;
+  const t0 = Date.now();
+  await db.from("scan_logs").insert({
+    target_id: targetId,
+    log_type: "action",
+    message: `🧠 [trace=${traceId}] ai-strategist round ${round}: LLM call starting (ctx assets=${(context.assets||[]).length} findings=${(context.findings||[]).length} endpoints=${(context.endpoints||[]).length})`,
+    metadata: { kind: "ai_hypo_start", trace_id: traceId, round, phase: "ai-strategist" },
+  }).then(() => {}, () => {});
 
   const out = await llmCall({
     db,
@@ -85,19 +80,41 @@ Output ONLY a JSON array of hypothesis objects. No prose.`;
     phase: "ai-strategist",
     temperature: 0.6,
     maxTokens: 3000,
+    json: true,
     messages: [
-      { role: "system", content: "Return only a strict JSON array. No prose, no markdown." },
+      { role: "system", content: "Return strict JSON: {\"hypotheses\":[...]}. No prose, no markdown." },
       { role: "user", content: prompt },
     ],
   });
-  if (!out.ok || !out.text) return { hypotheses: [], provider: out.provider, error: out.error || "empty_output" };
-  const parsed = tryParseJson<unknown>(out.text) ?? (() => {
+  const dt = Date.now() - t0;
+  const rawLen = (out.text || "").length;
+  const rawSnippet = (out.text || "").slice(0, 400);
+
+  await db.from("scan_logs").insert({
+    target_id: targetId,
+    log_type: out.ok ? "info" : "warn",
+    message: `🧠 [trace=${traceId}] ai-strategist round ${round}: LLM ${out.ok ? "returned" : "FAILED"} via ${out.provider} in ${dt}ms (chars=${rawLen})${out.error ? ` err=${out.error.slice(0,140)}` : ""}`,
+    metadata: {
+      kind: "ai_hypo_llm_result", trace_id: traceId, round, provider: out.provider,
+      duration_ms: dt, ok: out.ok, error: out.error || null, raw_len: rawLen, raw_snippet: rawSnippet,
+    },
+  }).then(() => {}, () => {});
+
+  if (!out.ok || !out.text) return { hypotheses: [], provider: out.provider, error: out.error || "empty_output", rawLen, rawSnippet };
+  let parsed: any = tryParseJson<any>(out.text);
+  if (parsed && !Array.isArray(parsed) && Array.isArray(parsed.hypotheses)) parsed = parsed.hypotheses;
+  if (!parsed) {
     const m = out.text.match(/\[[\s\S]*\]/);
-    if (!m) return null;
-    try { return JSON.parse(m[0]); } catch { return null; }
-  })();
+    if (m) { try { parsed = JSON.parse(m[0]); } catch { /* noop */ } }
+  }
   const arr = Array.isArray(parsed) ? parsed : [];
-  return { hypotheses: arr.slice(0, 15) as Hypothesis[], provider: out.provider };
+  await db.from("scan_logs").insert({
+    target_id: targetId,
+    log_type: arr.length ? "info" : "warn",
+    message: `🧠 [trace=${traceId}] ai-strategist round ${round}: parsed ${arr.length} hypothesis object(s) from ${out.provider}`,
+    metadata: { kind: "ai_hypo_parsed", trace_id: traceId, round, parsed_count: arr.length, provider: out.provider },
+  }).then(() => {}, () => {});
+  return { hypotheses: arr.slice(0, 15) as Hypothesis[], provider: out.provider, rawLen, rawSnippet };
 }
 
 async function strategize(db: any, targetId: string, round: number) {
