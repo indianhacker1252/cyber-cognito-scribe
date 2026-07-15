@@ -405,16 +405,18 @@ Deno.serve(async (req) => {
         if (written.findingId) inserted.push({ id: written.findingId });
       }
 
+      const { enqueueJob } = await import("../_shared/enqueue.ts");
       for (let i = 0; i < inserted.length; i++) {
         if (!xssTmplIds.has(i)) continue;
-        await db.from("scan_jobs").insert({
+        const ok = await enqueueJob(db, {
           target_id: targetId,
           job_type: "browser_verify",
-          payload: { findingId: inserted[i].id },
-          status: "queued",
           priority: 8,
+          payload: { findingId: inserted[i].id },
+          dedupWindowMs: 60 * 60_000,
+          dedupExtraKey: inserted[i].id,
         });
-        queuedBrowserVerify++;
+        if (ok) queuedBrowserVerify++;
       }
     }
 
