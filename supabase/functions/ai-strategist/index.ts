@@ -258,26 +258,17 @@ async function strategize(db: any, targetId: string, round: number) {
     });
   }
 
-  await db.from("scan_logs").insert({
-    target_id: targetId,
-    log_type: "action",
-    message: `🧠 AI Strategist queued ${jobs.length} hypothesis tests from round ${round}`,
-  });
-
   await db
     .from("scan_logs")
     .insert({
       target_id: targetId,
       log_type: "action",
-      message: `🧠 ai-strategist round ${round}: ${rows.length} hypotheses generated`,
-      metadata: { kind: "ai_strategist", round, count: rows.length, provider: ai.provider },
+      message: `🧠 [trace=${traceId}] ai-strategist round ${round}: ${rows.length} hypotheses generated, ${jobs.length} scan_jobs queued`,
+      metadata: { kind: "ai_strategist_done", trace_id: traceId, round, count: rows.length, queued: jobs.length, provider: ai.provider },
     })
-    .then(
-      () => {},
-      () => {},
-    );
+    .then(() => {}, () => {});
 
-  return { generated: rows.length };
+  return { generated: rows.length, queued: jobs.length, traceId };
 }
 
 Deno.serve(async (req) => {
