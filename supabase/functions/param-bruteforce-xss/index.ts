@@ -285,6 +285,36 @@ Deno.serve(async (req) => {
         }).select("id").single();
         const sev = "high";
 
+        // Gate: require headless browser execution proof before recording a
+        // finding. Reflection alone (even in dangerous context) has been a
+        // repeated FP source — we only promote if the DOM actually executes.
+        let headlessExecuted = false;
+        let headlessNotes = "";
+        try {
+          const hbResp = await fetch(`${SUPABASE_URL}/functions/v1/headless-browser`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${SERVICE_KEY}` },
+            body: JSON.stringify({ targetId, url, payload: bestSink.value, checkForAlert: true }),
+            signal: AbortSignal.timeout(15000),
+          });
+          if (hbResp.ok) {
+            const hb: any = await hbResp.json().catch(() => ({}));
+            headlessExecuted = !!(hb?.alertFired || hb?.consoleMessage || hb?.domExecuted);
+            headlessNotes = hb?.executionEvidence || hb?.mode || "";
+          }
+        } catch { /* leave false */ }
+
+        if (!headlessExecuted) {
+          await log(supa, targetId, `XSS reflection suppressed on ${ep.url} — no browser execution proof`, {
+            endpointId: ep.id, param: pname, sink: bestSink.name, headlessNotes,
+          });
+          // leave the pending_approval so a human can inspect if desired,
+          // but do NOT recordFinding — promoter will re-check headless later.
+          approvals++;
+          if (ins?.id) findings.push({ approvalId: ins.id, endpoint: ep.url, param: pname, severity: sev, headless: false });
+          break;
+        }
+
         try {
           const { recordFinding } = await import("../_shared/findings-writer.ts");
           await recordFinding({
@@ -294,19 +324,19 @@ Deno.serve(async (req) => {
             category: "xss",
             severity: sev as any,
             title,
-            description: `Sink "${bestSink.name}" reflected verbatim in dangerous context on parameter '${pname}'.`,
+            description: `Sink "${bestSink.name}" executed in headless browser on parameter '${pname}'. ${headlessNotes}`,
             payload: bestSink.value,
             poc: `curl -i '${url}'`,
-            proofTier: "reflected",
-            evidence,
+            proofTier: "exploited",
+            evidence: { ...evidence, headlessExecuted: true, headlessNotes },
             request: { method: "GET", url, headers: { "User-Agent": "CyberScope/1.0" } },
             response: { status: res.status, body: res.body.slice(0, 16384) },
           });
         } catch (e) { console.error("recordFinding(xss) failed", e); }
 
         approvals++;
-        if (ins?.id) findings.push({ approvalId: ins.id, endpoint: ep.url, param: pname, severity: sev });
-        await log(supa, targetId, `${title} on ${ep.url}`, { endpointId: ep.id, param: pname, sink: bestSink?.name, paramSource: evidence.paramSource });
+        if (ins?.id) findings.push({ approvalId: ins.id, endpoint: ep.url, param: pname, severity: sev, headless: true });
+        await log(supa, targetId, `${title} on ${ep.url} (headless-confirmed)`, { endpointId: ep.id, param: pname, sink: bestSink?.name, paramSource: evidence.paramSource, headlessNotes });
 
         // Move on to next endpoint after first confirmed reflection per endpoint
         break;

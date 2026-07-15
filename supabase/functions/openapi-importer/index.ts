@@ -174,43 +174,31 @@ Deno.serve(async (req) => {
       // Fan out attack jobs. Cap per category to avoid queue floods.
       const CAP = 40;
       const slice = endpoints.slice(0, CAP);
+      const { enqueueJobs } = await import("../_shared/enqueue.ts");
       const jobs: any[] = [];
+      const mk = (job_type: string, priority: number, payload: any, technique: string) => ({
+        target_id: targetId, job_type, priority, payload,
+        dedupWindowMs: 60 * 60_000,
+        dedupExtraKey: `${technique}|${payload.method || "GET"}|${payload.url || ""}`,
+      });
       for (const ep of slice) {
-        jobs.push({
-          target_id: targetId, job_type: "fuzz", status: "queued", priority: 7,
-          payload: { url: ep.url, method: ep.method, params: ep.params, bodyParams: ep.bodyParams, source: "openapi" },
-          next_run_at: new Date().toISOString(),
-        });
+        jobs.push(mk("fuzz", 7, { url: ep.url, method: ep.method, params: ep.params, bodyParams: ep.bodyParams, source: "openapi" }, "fuzz"));
         if (ep.acceptsFiles) {
-          jobs.push({
-            target_id: targetId, job_type: "fuzz", status: "queued", priority: 6,
-            payload: { url: ep.url, method: ep.method, mode: "upload", source: "openapi" },
-            next_run_at: new Date().toISOString(),
-          });
+          jobs.push(mk("fuzz", 6, { url: ep.url, method: ep.method, mode: "upload", source: "openapi" }, "upload"));
         }
         if (/chat|ai|completion|prompt|llm/i.test(ep.url)) {
-          jobs.push({
-            target_id: targetId, job_type: "llm_attack", status: "queued", priority: 7,
-            payload: { url: ep.url, method: ep.method, source: "openapi" },
-            next_run_at: new Date().toISOString(),
-          });
+          jobs.push(mk("llm_attack", 7, { url: ep.url, method: ep.method, source: "openapi" }, "llm_attack"));
         }
-        jobs.push({
-          target_id: targetId, job_type: "oob", status: "queued", priority: 5,
-          payload: { url: ep.url, method: ep.method, source: "openapi" },
-          next_run_at: new Date().toISOString(),
-        });
+        jobs.push(mk("oob", 5, { url: ep.url, method: ep.method, source: "openapi" }, "oob"));
       }
       // One chain pass over the imported surface
       jobs.push({
-        target_id: targetId, job_type: "chain", status: "queued", priority: 6,
+        target_id: targetId, job_type: "chain", priority: 6,
         payload: { source: "openapi", endpointCount: slice.length },
-        next_run_at: new Date().toISOString(),
+        dedupWindowMs: 60 * 60_000,
+        dedupExtraKey: `chain|openapi|${slice.length}`,
       });
-      for (let i = 0; i < jobs.length; i += 50) {
-        const { error } = await supa.from("scan_jobs").insert(jobs.slice(i, i + 50));
-        if (!error) queued += Math.min(50, jobs.length - i);
-      }
+      queued = await enqueueJobs(supa, jobs);
     }
 
     await supa.from("scan_logs").insert({
