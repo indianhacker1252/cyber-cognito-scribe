@@ -1,82 +1,65 @@
-# Deep Audit — What Actually Broke
+# Elite VAPT Hardening Plan
 
-I queried the live database. The failures have **4 concrete causes**, not 17.
+Twelve root-cause issues, mapped to concrete work. Foundation shipped this pass;
+integration passes explicitly enumerated so nothing is left half-wired.
 
-## Evidence (from your DB, last 6h)
+## Foundation (this pass — SHIPPED)
+- `_shared/payloads-att.ts` — on-demand PayloadsAllTheThings loader (issue 12).
+- `_shared/ai-mutator.ts` — AI-as-mutator: LLM sees baseline response + PayloadsAllTheThings seeds and reasons about targeted mutations (issues 1, 3, 11).
+- `_shared/ai-confidence.ts` — mandatory 0-100 AI confidence gate with hard heuristic pre-filter that blocks "response-code-only" promotions and fails closed when AI is unavailable (issues 1, 4, 6).
 
+## Integration Pass 1 — findings gate (next)
+Wire `scoreConfidence` + `mayPromote` into every finding writer so nothing
+lands in `vulnerability_findings.status='accepted'` without >=85 score:
+- `_shared/findings-writer.ts`
+- `_shared/ai-confirm-gate.ts` (replace legacy check)
+- `xss-reflection-promoter`, `param-bruteforce-xss`, `advanced-fuzzer`,
+  `matrix-fuzzer`, `form-attacker`, `differential-oracle`, `ssrf-deep`,
+  `advanced-detectors`, `exploit-engine`
+Directly addresses issue 4 (false positives) and issue 6 (exploit engine
+must confirm).
 
-| Symptom                                                                                                          | Real cause                                                                                                                                                                                                                |
-| ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `subdomain_enum` ran **171×**, `juicy` **171×**, `js_deep` **171×**, `mythos_step` **134×** for the same targets | `scan_jobs.idempotency_key` column exists and has a unique index — **but no enqueue code sets it**. The dedup index is a no-op.                                                                                           |
-| Every AI-dependent module returns "AI credits exhausted"                                                         | Lovable AI genuinely returned 402. Fallback chain in `_shared/llm.ts` reads `ai_provider_config` table — **table is empty / `enabled=false**`, so nothing falls back. User has no OpenAI/Gemini/Anthropic key configured. |
-| Only 2 findings in 24h (both from `template-runner`)                                                             | Every real detector short-circuits on AI 402 OR loops without ever producing evidence.                                                                                                                                    |
-| Loop-guard "installed" but subdomain/js_deep/vuln_scan still loop                                                | Last pass only added loop-guard to 5 modules. The looping ones (`subdomain-enum`, `js-deep-expand`, `recon-engine`, `vuln-scanner`, `mythos-agent`) were never wired.                                                     |
-| `phase-arbiter` re-enqueues same modules                                                                         | It reads `expected_modules` but has no "already scheduled in last N minutes" check before inserting jobs.                                                                                                                 |
+## Integration Pass 2 — mutator adoption
+Replace static payload-list fuzzing loops with `mutateWithAi` calls in:
+- `advanced-fuzzer` (per-param round)
+- `matrix-fuzzer` (per-injection-point)
+- `form-attacker`
+- `request-mutator` (already AI-shaped — swap to shared helper)
+- `request-repeater` (add AI-driven tamper mode)
+Directly addresses issues 1, 3, 11.
 
+## Integration Pass 3 — recon depth
+Extend `recon-engine` and `recon-deep`:
+- DNS: A/AAAA/CNAME/MX/NS/TXT/SPF/DMARC/DNSKEY via DoH.
+- Subdomains: crt.sh + certspotter + Wayback fallback.
+- Ports (top 100): via existing worker dispatch (already present).
+- Tech detection: Wappalyzer-lite signatures on headers+HTML+JS bundle names.
+- JS deep: parse `<script src>` + inline for endpoints, secrets, framework versions (js-deep-expand already exists — invoke it always, not conditionally).
+- Sensitive path enum: seclists common.txt sample.
+- Headers audit: CSP/HSTS/XFO/CORP/COOP/COEP/Referrer-Policy.
+- Architecture summary: LLM digest of all recon output → stored on target for downstream modules.
+Addresses issues 9, 10.
 
-## Fix plan (surgical, no new features)
+## Integration Pass 4 — NVD + OWASP driven testing
+- `nvd-intel-sync` already ingests CVEs; add step that maps detected tech
+  versions → applicable CVEs → auto-enqueues `cve-to-exploit` with the
+  CVE PoC template (issue 2).
+- Materialize OWASP Top 10 checklist per target and gate scan completion
+  on coverage of all 10 categories with confidence >=50 (issue 2).
 
-### 1. Make idempotency_key actually work (kills 90% of loops)
+## Integration Pass 5 — Mythos + chaining
+- `mythos-chainer` already exists; enforce it runs after every scan with
+  >=2 accepted findings (issue 7, 8).
+- `chain-finder` → run confidence gate on chained proofs.
+- `exploit-chain-runner` → auto-execute proposed chains in sandbox with
+  fail-closed evidence capture (issue 8).
 
-- Central helper `_shared/enqueue.ts::enqueueJob(db, {targetId, jobType, payload, dedupWindow})` that:
-  - Computes `idempotency_key = sha1(targetId|jobType|stableHash(payload)|floor(now/dedupWindow))`
-  - Inserts with `ON CONFLICT (idempotency_key) DO NOTHING`
-- Replace **all** `db.from('scan_jobs').insert({...job_type...})` call sites with `enqueueJob(...)`. grep says ~40 sites.
-- Default window: 30 min for recon/discovery, 10 min for detectors, 5 min for mythos_step.
+## Integration Pass 6 — retry / cost control
+- Every module already has `checkLoopGuard`; audit that ALL enqueue
+  paths use `enqueueJob` with `dedupExtraKey` (issue 5).
+- Add "no-progress" watchdog: if a module runs 3x with zero findings AND
+  zero new endpoints, mark it saturated for 24h.
 
-### 2. Extend loop-guard to the 5 remaining loopers
-
-- Add `checkLoopGuard/recordLoopRun` to: `subdomain-enum`, `js-deep-expand`, `recon-engine`, `vuln-scanner`, `mythos-agent`.
-- Tighten defaults: `maxRuns=3`, `stallStreak=2` for recon (currently 6/3).
-
-### 3. Fix LLM fallback for empty `ai_provider_config`
-
-- Rewrite provider selection in `_shared/llm.ts`:
-  - On Lovable 402/429 → check `Deno.env` for `OPENAI_API_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `OLLAMA_URL` **directly** (ignore `ai_provider_config.enabled` flag)
-  - If ANY env key present → use it. Log which provider served the request.
-  - If NONE → set global exhaustion sentinel and skip AI-dependent work cleanly (no re-queue).
-- Add one status line to `scan_logs` explaining "no fallback provider configured" so user knows to add a key, instead of endless 402 spam.
-
-### 4. Stop mythos-agent from re-firing on exhaustion
-
-- In `mythos-agent`: before iteration loop, call `areCreditsRecentlyExhausted`. If true → mark run `paused`, do NOT enqueue next `mythos_step`.
-- Currently it enqueues, worker picks it up, hits 402, logs error, requeues. That's the "🪫" spam.
-
-### 5. phase-arbiter: dedup its own enqueues
-
-- Before `insert into scan_jobs`, query for existing queued/running job of same (target, job_type) in last 15 min. Skip if present.
-- (Idempotency helper from #1 handles this too, but this is belt-and-suspenders.)
-
-### 6. Orphan/dead code sweep
-
-- Grep for edge functions never referenced by any enqueue site or arbiter dispatch map. Report list to you; delete only after you confirm.
-
-7. AI Hypothesis not working fix it. 
-
-## Explicit non-goals (learning from last pass)
-
-- No new detectors.
-- No schema changes beyond the ones already applied.
-- No UI changes.
-- No "verify with 8 gates" theater — I'll paste actual dedup counts and one working AI call after the fix.
-
-## Verification (small, real)
-
-After the fixes, on your existing target `6308fd00-...`:
-
-```sql
--- Should show job_type × count where max count << 5 (was 171)
-SELECT job_type, count(*) FROM scan_jobs
- WHERE created_at > now() - interval '1 hour' GROUP BY 1 ORDER BY 2 DESC;
-```
-
-Plus one `ai_gateway_logs` line proving fallback fired (or a clean "no provider configured" log).
-
-After it analyze all the functions and their codes deeply to find more issue which are stopping this tool to work like xbow. 
-
-## Files touched (estimate)
-
-- New: `supabase/functions/_shared/enqueue.ts` (~40 lines)
-- Edited: `_shared/llm.ts`, `_shared/loop-guard.ts` (defaults), `mythos-agent`, `phase-arbiter`, `scan-job-worker`, plus ~5 detector modules for loop-guard, plus all enqueue call sites (mechanical replace).
-
-Approve and I execute in one pass.
+## Status
+Foundation compiles standalone. Integration passes are sequential — each
+depends on the previous being wired without regressions.
