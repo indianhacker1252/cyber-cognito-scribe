@@ -209,7 +209,78 @@ export async function recordFinding(input: RecordFindingInput): Promise<RecordFi
       }
     }
 
+    // ───── AI Confidence Gate (Pass 1) ─────
+    // Every finding must clear the AI confidence scorer unless it already
+    // carries hard exploit proof. This is the central gate that stops the
+    // 200-OK / reflection-only false positive flood across ALL writers.
+    try {
+      const ev = (input.evidence || {}) as any;
+      const hasHardMarker =
+        tier === "exploited" ||
+        /CYBERSCOPE_PROVEN|SPECTER_LLM_CONFIRMED|oob[_-]?(callback|hit|received)|root:.*:0:0:|iam\/security-credentials|you have an error in your sql syntax|ORA-\d{4,5}|PG::SyntaxError/i
+          .test((input.response?.body || "") + " " + JSON.stringify(ev) + " " + (input.payload || ""));
+      const baselineStatus = Number(ev.baseline_status ?? ev.baselineStatus ?? 0);
+      const baselineLength = Number(ev.baseline_length ?? ev.baselineLength ?? 0);
+      const baselineSnippet = String(ev.baseline_snippet ?? ev.baselineSnippet ?? ev.baseline_body ?? "");
+      const canScore = !hasHardMarker && input.response && baselineStatus > 0;
+      if (canScore) {
+        const vulnClass = (input.vulnClass || input.category || input.source || "generic").toLowerCase();
+        const score = await scoreConfidence(
+          {
+            vulnClass,
+            payload: input.payload || "",
+            baseline: {
+              status: baselineStatus,
+              length: baselineLength || baselineSnippet.length,
+              snippet: baselineSnippet,
+            },
+            mutated: {
+              status: input.response!.status,
+              length: input.response!.body?.length ?? 0,
+              snippet: (input.response!.body || "").slice(0, 1500),
+              headers: input.response!.headers,
+            },
+            executionEvidence: {
+              browserExecuted: !!(ev.browserExecuted ?? ev.browser_executed ?? ev.domExecuted),
+              alertFired: !!(ev.alertFired ?? ev.alert_fired),
+              consoleMessage: ev.consoleMessage ?? ev.console_message,
+              oobCallback: !!(ev.oobCallback ?? ev.oob_callback ?? ev.oob_hit),
+              timeDelayMs: Number(ev.timeDelayMs ?? ev.time_delay_ms ?? 0) || undefined,
+              dbError: ev.dbError ?? ev.db_error,
+              diffSignature: ev.diffSignature ?? ev.diff_signature,
+            },
+            differentialContext: ev.differential_context || "",
+          },
+          supa,
+          input.targetId,
+        );
+        // Persist score into evidence so triage UI can display it.
+        input.evidence = { ...(input.evidence || {}), ai_confidence: score };
+        if (!mayPromote(score)) {
+          await supa.from("scan_logs").insert({
+            target_id: input.targetId,
+            log_type: "info",
+            message: `🛑 AI-confidence gate suppressed ${input.source} (${score.confidenceScore}/100 ${score.verdict}): ${score.reasoning.slice(0, 160)}`,
+            metadata: {
+              kind: "ai_confidence_suppressed",
+              source: input.source,
+              vuln_class: vulnClass,
+              score: score.confidenceScore,
+              verdict: score.verdict,
+              required_next_step: score.requiredNextStep,
+              provider: score.provider,
+            },
+          }).then(() => {}, () => {});
+          return { ok: true, duplicate: true, error: `suppressed: ai_confidence ${score.confidenceScore} ${score.verdict}` };
+        }
+      }
+    } catch (e) {
+      // Never let the gate itself crash a finding write.
+      console.warn("ai-confidence gate error", e instanceof Error ? e.message : e);
+    }
+
     // ───── Dedup + Grouping (master + evidence rows, mythos-style) ─────
+
     const param = inferParam(input.request, input.evidence as Record<string, unknown>);
     const vulnClass = (input.vulnClass || input.category || input.source || "generic").toLowerCase();
     const dedupKey = buildDedupKey({
