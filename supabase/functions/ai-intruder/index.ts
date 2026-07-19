@@ -106,8 +106,8 @@ Deno.serve(async (req) => {
     // Target tech + WAF
     const { data: tw } = await supa.from("target_workspaces").select("detected_tech").eq("id", body.targetId).maybeSingle();
     const techStack = tw?.detected_tech ? (Array.isArray(tw.detected_tech) ? tw.detected_tech : Object.keys(tw.detected_tech as any)) : [];
-    const wafInfo = await detectWaf(body.url).catch(() => ({ waf: "" as string }));
-    const wafHint = (wafInfo as any)?.waf || "";
+    const wafInfo = await detectWaf(body.url).catch(() => ({ vendor: null as string | null }));
+    const wafHint = ((wafInfo as any)?.vendor || "").toString();
 
     await supa.from("scan_logs").insert({
       target_id: body.targetId, log_type: "action",
