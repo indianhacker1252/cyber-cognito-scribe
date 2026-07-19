@@ -65,6 +65,7 @@ const JOB_ROUTES: Record<string, string> = {
   vuln_scan: "vuln-scanner",
   authz_graph: "authz-grapher",
   auth_replay: "auth-replay",
+  ai_intrude: "ai-intruder",
 };
 
 // Per-type dispatch timeout (ms). Long-running types return 202 quickly via
