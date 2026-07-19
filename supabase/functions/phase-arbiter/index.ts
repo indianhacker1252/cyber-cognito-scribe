@@ -231,7 +231,33 @@ async function arbitrateTarget(db: any, targetId: string) {
         for (const d of direct)
           await callFn(d.type === "ai_strategist" ? "ai-strategist" : "exploit-watchdog", { targetId });
         const n = await enqueue(db, targetId, queued);
-        advanced.push(`${phase}+${n}`);
+        // Fan-out: at deep_modules, queue one ai_intrude job per discovered
+        // endpoint that has query params — the LLM mutates payloads per URL.
+        let intruded = 0;
+        if (phase === "deep_modules") {
+          const { data: eps } = await db
+            .from("discovered_endpoints")
+            .select("url")
+            .eq("target_id", targetId)
+            .limit(200);
+          const urls = Array.from(new Set((eps || [])
+            .map((e: any) => e.url)
+            .filter((u: string) => typeof u === "string" && u.includes("?"))))
+            .slice(0, 25);
+          if (urls.length) {
+            const { enqueueJobs } = await import("../_shared/enqueue.ts");
+            intruded = await enqueueJobs(db, urls.map((url) => ({
+              target_id: targetId,
+              job_type: "ai_intrude",
+              priority: 7,
+              payload: { url, source: "phase-arbiter:deep_modules" },
+              next_run_at: new Date().toISOString(),
+              dedupWindowMs: 2 * 60 * 60_000,
+              dedupExtraKey: url,
+            })));
+          }
+        }
+        advanced.push(`${phase}+${n}${intruded ? `+intrude:${intruded}` : ""}`);
       } else {
         await db.from("scan_phase_state").upsert({
           target_id: targetId, phase,
