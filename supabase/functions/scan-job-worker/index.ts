@@ -65,6 +65,7 @@ const JOB_ROUTES: Record<string, string> = {
   vuln_scan: "vuln-scanner",
   authz_graph: "authz-grapher",
   auth_replay: "auth-replay",
+  ai_intrude: "ai-intruder",
 };
 
 // Per-type dispatch timeout (ms). Long-running types return 202 quickly via
@@ -103,6 +104,7 @@ const ACK_TIMEOUT_MS: Record<string, number> = {
   ai_strategist: 10000,
   exploit_watchdog: 10000,
   phase_arbiter: 8000,
+  ai_intrude: 25000,
 };
 
 const DEFAULT_TIMEOUT_MS = 90000;
