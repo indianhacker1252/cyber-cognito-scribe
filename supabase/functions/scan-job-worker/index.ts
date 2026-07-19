@@ -104,6 +104,7 @@ const ACK_TIMEOUT_MS: Record<string, number> = {
   ai_strategist: 10000,
   exploit_watchdog: 10000,
   phase_arbiter: 8000,
+  ai_intrude: 25000,
 };
 
 const DEFAULT_TIMEOUT_MS = 90000;
