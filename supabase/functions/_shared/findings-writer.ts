@@ -4,6 +4,7 @@
 import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { buildDedupKey, inferParam } from "./dedup-key.ts";
 import { scoreConfidence, mayPromote } from "./ai-confidence.ts";
+import { mapFindingToCves, owaspFor } from "./cve-mapper.ts";
 
 const MAX_RAW = 32 * 1024; // 32 KB cap on raw req/resp blobs
 
@@ -340,6 +341,19 @@ export async function recordFinding(input: RecordFindingInput): Promise<RecordFi
       return { ok: true, findingId: master.id, duplicate: true };
     }
 
+    // ───── CVE + OWASP stamping — every promoted finding maps to authoritative refs ─────
+    let cveMatches: any[] = [];
+    let owaspCategory = owaspFor(vulnClass);
+    try {
+      cveMatches = await mapFindingToCves(supa, input.targetId, vulnClass, 5);
+    } catch {/* non-fatal */}
+    const enrichedEvidence = {
+      ...(input.evidence ?? {}),
+      owasp_category: owaspCategory,
+      cve_ids: cveMatches.map((c) => c.cve_id),
+      cve_matches: cveMatches,
+    };
+
     const row = {
       target_id: input.targetId,
       endpoint_id: input.endpointId ?? null,
@@ -351,8 +365,8 @@ export async function recordFinding(input: RecordFindingInput): Promise<RecordFi
       proof_tier: tier,
       source: input.source,
       finding_type: input.category ?? input.source,
-      hard_evidence: input.evidence ?? {},
-      evidence: input.evidence ?? {},
+      hard_evidence: enrichedEvidence,
+      evidence: enrichedEvidence,
       request_raw: requestRaw,
       response_raw: responseRaw,
       response_diff: responseDiff,

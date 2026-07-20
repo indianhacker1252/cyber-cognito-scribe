@@ -245,6 +245,48 @@ export type Database = {
           },
         ]
       }
+      ai_confidence_calibration: {
+        Row: {
+          created_at: string
+          evidence_total: number
+          evidence_weights: Json
+          id: string
+          outcome: string | null
+          outcome_marked_at: string | null
+          provider: string
+          score: number
+          target_id: string | null
+          verdict: string
+          vuln_class: string
+        }
+        Insert: {
+          created_at?: string
+          evidence_total?: number
+          evidence_weights?: Json
+          id?: string
+          outcome?: string | null
+          outcome_marked_at?: string | null
+          provider: string
+          score: number
+          target_id?: string | null
+          verdict: string
+          vuln_class: string
+        }
+        Update: {
+          created_at?: string
+          evidence_total?: number
+          evidence_weights?: Json
+          id?: string
+          outcome?: string | null
+          outcome_marked_at?: string | null
+          provider?: string
+          score?: number
+          target_id?: string | null
+          verdict?: string
+          vuln_class?: string
+        }
+        Relationships: []
+      }
       ai_provider_config: {
         Row: {
           api_key: string
