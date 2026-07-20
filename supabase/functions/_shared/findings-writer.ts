@@ -4,6 +4,7 @@
 import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { buildDedupKey, inferParam } from "./dedup-key.ts";
 import { scoreConfidence, mayPromote } from "./ai-confidence.ts";
+import { mapFindingToCves, owaspFor } from "./cve-mapper.ts";
 
 const MAX_RAW = 32 * 1024; // 32 KB cap on raw req/resp blobs
 
