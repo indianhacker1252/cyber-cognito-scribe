@@ -803,6 +803,9 @@ serve(async (req) => {
       });
     }
 
+    const resolved = await resolveTargetProtocol(domain, 3000);
+    const SCHEME = resolved.scheme;
+
     const { data: task } = await db
       .from("agent_tasks")
       .insert({ target_id: targetId, task_type: "reconnaissance", status: "running" })
@@ -814,32 +817,10 @@ serve(async (req) => {
       .from("target_workspaces")
       .update({
         status: "scanning",
-        resolved_protocol: SCHEME, // FIX: persist resolved protocol for all downstream modules
+        resolved_protocol: SCHEME, // persist resolved protocol for all downstream modules
       })
       .eq("id", targetId);
     await log(db, targetId, taskId, "info", `🔍 Elite recon pipeline started for ${domain}`);
-    // Synthesize injectable endpoints from dork patterns even without CDX data
-    const INJECTABLE_PARAM_PATTERNS = [
-      { path: "/search", params: { q: "", s: "", query: "" } },
-      { path: "/products", params: { id: "", category: "", sort: "", page: "" } },
-      { path: "/api/v1/search", params: { q: "", term: "" } },
-      { path: "/api/v2/products", params: { id: "", filter: "" } },
-      { path: "/account/login", params: { redirect: "", next: "", return_url: "" } },
-      { path: "/checkout", params: { redirect: "", return: "" } },
-      { path: "/api/user", params: { id: "", uid: "" } },
-      { path: "/collections", params: { sort_by: "", page: "" } },
-      { path: "/?s", params: { s: "" } },
-    ];
-
-    for (const pat of INJECTABLE_PARAM_PATTERNS) {
-      const url = `${SCHEME}://${domain}${pat.path}`;
-      if (!allUrls.has(url)) {
-        allUrls.set(url, { method: "GET", params: pat.params, source: "synthetic-injectable" });
-      }
-    }
-    // ── Step 0: Protocol fallback engine (Rule 1) ──
-    // Test https first with a strict 3000ms timeout. If it drops/times out,
-    // downgrade to http so the spider/fingerprint never hangs on legacy targets.
     await log(
       db,
       targetId,
@@ -847,7 +828,6 @@ serve(async (req) => {
       "thought",
       `🔌 Resolving protocol for ${domain} (https first, 3s timeout, http fallback)`,
     );
-    const resolved = await resolveTargetProtocol(domain, 3000);
     if (resolved.downgraded) {
       await log(
         db,
@@ -860,7 +840,6 @@ serve(async (req) => {
     } else {
       await log(db, targetId, taskId, "info", `🔒 Using ${resolved.scheme}:// for ${domain}`, { resolved });
     }
-    const SCHEME = resolved.scheme;
 
     // ── Step 1: Parallel subdomain enumeration (crt.sh + Google Dorks + ThreatCrowd + URLScan) ──
     await log(
@@ -1110,6 +1089,24 @@ serve(async (req) => {
     await log(db, targetId, taskId, "action", "Normalizing and deduplicating all discovered endpoints");
 
     const allUrls = new Map<string, { method: string; params: Record<string, unknown>; source: string }>();
+
+    // Synthesize likely injectable endpoints after allUrls exists. These are
+    // candidates only; later modules must prove impact before promoting.
+    const INJECTABLE_PARAM_PATTERNS = [
+      { path: "/search", params: { q: "", s: "", query: "" } },
+      { path: "/products", params: { id: "", category: "", sort: "", page: "" } },
+      { path: "/api/v1/search", params: { q: "", term: "" } },
+      { path: "/api/v2/products", params: { id: "", filter: "" } },
+      { path: "/account/login", params: { redirect: "", next: "", return_url: "" } },
+      { path: "/checkout", params: { redirect: "", return: "" } },
+      { path: "/api/user", params: { id: "", uid: "" } },
+      { path: "/collections", params: { sort_by: "", page: "" } },
+      { path: "/?s", params: { s: "" } },
+    ];
+    for (const pat of INJECTABLE_PARAM_PATTERNS) {
+      const url = `${SCHEME}://${domain}${pat.path}`;
+      allUrls.set(url, { method: "GET", params: pat.params, source: "synthetic-injectable" });
+    }
 
     // Fix #13 — normalize URLs to dedupe http/https + www. variants of the same endpoint.
     // Strategy: prefer HTTPS, strip leading "www.", lowercase host, drop trailing slash, drop fragments.
