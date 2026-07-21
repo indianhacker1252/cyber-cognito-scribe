@@ -1510,7 +1510,19 @@ serve(async (req) => {
       })
       .eq("id", taskId);
 
-    await db.from("target_workspaces").update({ status: "completed" }).eq("id", targetId);
+    // Persist detected tech so cve-to-exploit / ai-intruder / advanced-fuzzer
+    // can actually see the target's stack (they all read `detected_tech`).
+    const techArr = Array.from(new Set(
+      [fingerprint.server, fingerprint.poweredBy, fingerprint.framework, fingerprint.waf]
+        .filter(Boolean)
+        .map((s) => String(s).toLowerCase())
+    ));
+    await db.from("target_workspaces").update({
+      status: "completed",
+      detected_tech: techArr,
+      tech_fingerprint: fingerprint,
+      tech_stack: techArr,
+    }).eq("id", targetId);
 
     await log(
       db,
