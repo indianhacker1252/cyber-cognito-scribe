@@ -62,281 +62,78 @@ async function enumerateSubdomains(domain: string): Promise<string[]> {
   } catch (e) {
     console.error("crt.sh error:", e);
   }
-  return [...subdomains];
-}
-// ADD: SecurityTrails-style passive DNS via free alternative (crt.sh full search)
-try {
-  // Try both %25.domain AND exact domain on crt.sh
-  const resp2 = await safeFetch(`https://crt.sh/?q=${encodeURIComponent(domain)}&output=json`, {
-    headers: { Accept: "application/json" },
-  });
-  if (resp2.ok) {
-    const data2 = await resp2.json();
-    for (const entry of data2) {
-      const names = (entry.name_value || "").split("\n");
-      for (const name of names) {
-        const clean = name.trim().toLowerCase().replace(/^\*\./, "");
-        if (clean.endsWith(`.${domain}`) || clean === domain) subdomains.add(clean);
+  try {
+    // Try both wildcard and exact-domain certificate searches. This used to be
+    // accidentally outside the function, causing recon-engine to crash at
+    // module load with undefined `domain` / `subdomains`.
+    const resp2 = await safeFetch(`https://crt.sh/?q=${encodeURIComponent(domain)}&output=json`, {
+      headers: { Accept: "application/json" },
+    });
+    if (resp2.ok) {
+      const data2 = await resp2.json();
+      for (const entry of data2) {
+        const names = (entry.name_value || "").split("\n");
+        for (const name of names) {
+          const clean = name.trim().toLowerCase().replace(/^\*\./, "");
+          if (clean.endsWith(`.${domain}`) || clean === domain) subdomains.add(clean);
+        }
       }
     }
+  } catch {
+    /* skip */
   }
-} catch {
-  /* skip */
-}
 
-// ADD: DNS brute force with Nike-specific + common wordlist
-const NIKE_COMMON_SUBS = [
-  "www",
-  "store",
-  "shop",
-  "api",
-  "app",
-  "m",
-  "mobile",
-  "cdn",
-  "static",
-  "media",
-  "img",
-  "images",
-  "assets",
-  "jobs",
-  "careers",
-  "blog",
-  "news",
-  "help",
-  "support",
-  "account",
-  "accounts",
-  "login",
-  "auth",
-  "sso",
-  "checkout",
-  "payment",
-  "pay",
-  "secure",
-  "ssl",
-  "admin",
-  "portal",
-  "dev",
-  "staging",
-  "beta",
-  "test",
-  "demo",
-  "api2",
-  "v2",
-  "v1",
-  "mail",
-  "smtp",
-  "ns1",
-  "ns2",
-  "ftp",
-  "vpn",
-  "remote",
-  "partners",
-  "wholesale",
-  "b2b",
-  "corporate",
-  "enterprise",
-  "analytics",
-  "tracking",
-  "tag",
-  "pixel",
-  "events",
-];
+  const COMMON_SUBS = [
+    "www", "store", "shop", "api", "app", "m", "mobile", "cdn", "static", "media", "img", "images",
+    "assets", "jobs", "careers", "blog", "news", "help", "support", "account", "accounts", "login", "auth",
+    "sso", "checkout", "payment", "pay", "secure", "ssl", "admin", "portal", "dev", "staging", "beta", "test",
+    "demo", "api2", "v2", "v1", "mail", "smtp", "ns1", "ns2", "ftp", "vpn", "remote", "partners",
+    "wholesale", "b2b", "corporate", "enterprise", "analytics", "tracking", "tag", "pixel", "events", "webmail",
+    "server", "mail2", "upload", "download", "alpha", "old", "new", "docs", "wiki", "status", "monitor",
+    "dashboard", "panel", "oauth", "my", "user", "users", "cp", "cpanel", "whm", "webdisk", "autodiscover",
+    "autoconfig", "imap", "pop", "pop3", "exchange", "owa", "web", "crm", "erp", "hr", "intranet", "internal",
+    "corp", "office", "backup", "db", "database", "sql", "mysql", "mongo", "redis", "elastic", "kibana", "grafana",
+    "jenkins", "gitlab", "git", "svn", "jira", "confluence", "bitbucket", "sonar", "nexus", "registry", "docker",
+    "k8s", "kubernetes", "rancher", "traefik", "nginx", "apache", "proxy", "lb", "load", "fw",
+  ];
 
-const dnsChecks = await Promise.allSettled(
-  NIKE_COMMON_SUBS.map(async (sub) => {
-    const fqdn = `${sub}.${domain}`;
-    try {
-      const r = await safeFetch(
-        `https://${fqdn}`,
-        {
-          method: "HEAD",
-          redirect: "manual",
-          headers: { "User-Agent": "Mozilla/5.0" },
-        },
-        3000,
-      );
-      if (r.status > 0 && r.status !== 0) return fqdn;
-    } catch {
-      /* dead */
-    }
-    return null;
-  }),
-);
-for (const r of dnsChecks) {
-  if (r.status === "fulfilled" && r.value) subdomains.add(r.value);
-}
-// ── HackerTarget (free, no key) ──
-try {
-  const r = await safeFetch(`https://api.hackertarget.com/hostsearch/?q=${domain}`, {}, 8000);
-  if (r.ok) {
-    const text = await r.text();
-    for (const line of text.split("\n")) {
-      const sub = line.split(",")[0]?.trim().toLowerCase();
-      if (sub && sub.endsWith(domain) && sub !== domain) subdomains.add(sub);
-    }
+  const passiveSources = await Promise.allSettled([
+    safeFetch(`https://api.hackertarget.com/hostsearch/?q=${domain}`, {}, 8000).then(async (r) => {
+      if (!r.ok) return [] as string[];
+      const text = await r.text();
+      return text.split("\n").map((line) => line.split(",")[0]?.trim().toLowerCase()).filter(Boolean) as string[];
+    }),
+    safeFetch(`https://rapiddns.io/subdomain/${domain}?full=1`, {}, 8000).then(async (r) => {
+      if (!r.ok) return [] as string[];
+      const text = await r.text();
+      return [...text.matchAll(/<td>([a-z0-9.-]+\.[a-z]{2,})<\/td>/gi)].map((m) => m[1].toLowerCase());
+    }),
+    safeFetch(`https://api.certspotter.com/v1/issuances?domain=${domain}&include_subdomains=true&expand=dns_names`, {}, 10000).then(async (r) => {
+      if (!r.ok) return [] as string[];
+      const data = await r.json();
+      return (data || []).flatMap((cert: any) => (cert.dns_names || []).map((n: string) => n.replace(/^\*\./, "").toLowerCase()));
+    }),
+  ]);
+  for (const src of passiveSources) {
+    if (src.status !== "fulfilled") continue;
+    for (const host of src.value) if (host && host.endsWith(domain)) subdomains.add(host);
   }
-} catch {
-  /* skip */
-}
 
-// ── RapidDNS (free) ──
-try {
-  const r = await safeFetch(`https://rapiddns.io/subdomain/${domain}?full=1`, {}, 8000);
-  if (r.ok) {
-    const text = await r.text();
-    const matches = text.matchAll(/<td>([a-z0-9.-]+\.[a-z]{2,})<\/td>/gi);
-    for (const m of matches) {
-      const sub = m[1].toLowerCase();
-      if (sub.endsWith(domain) && sub !== domain) subdomains.add(sub);
-    }
-  }
-} catch {
-  /* skip */
-}
-
-// ── CertSpotter (free, high accuracy) ──
-try {
-  const r = await safeFetch(
-    `https://api.certspotter.com/v1/issuances?domain=${domain}&include_subdomains=true&expand=dns_names`,
-    {},
-    10000,
+  const dnsResults = await Promise.allSettled(
+    COMMON_SUBS.map(async (sub) => {
+      const fqdn = `${sub}.${domain}`;
+      try {
+        const r = await safeFetch(`https://${fqdn}`, { method: "HEAD", redirect: "manual", headers: { "User-Agent": "Mozilla/5.0" } }, 3000);
+        if (r.status > 0) return fqdn;
+      } catch {
+        /* dead */
+      }
+      return null;
+    }),
   );
-  if (r.ok) {
-    const data = await r.json();
-    for (const cert of data) {
-      for (const name of cert.dns_names || []) {
-        const clean = name.replace(/^\*\./, "").toLowerCase();
-        if (clean.endsWith(domain) && clean !== domain) subdomains.add(clean);
-      }
-    }
-  }
-} catch {
-  /* skip */
-}
+  for (const r of dnsResults) if (r.status === "fulfilled" && r.value) subdomains.add(r.value);
 
-// ── DNS Brute Force with common wordlist ──
-const COMMON_SUBS = [
-  "www",
-  "mail",
-  "remote",
-  "blog",
-  "webmail",
-  "server",
-  "ns1",
-  "ns2",
-  "smtp",
-  "secure",
-  "vpn",
-  "m",
-  "shop",
-  "ftp",
-  "mail2",
-  "test",
-  "portal",
-  "api",
-  "dev",
-  "staging",
-  "admin",
-  "app",
-  "cdn",
-  "static",
-  "media",
-  "img",
-  "images",
-  "assets",
-  "upload",
-  "download",
-  "beta",
-  "alpha",
-  "demo",
-  "old",
-  "new",
-  "v2",
-  "v1",
-  "support",
-  "help",
-  "docs",
-  "wiki",
-  "status",
-  "monitor",
-  "dashboard",
-  "panel",
-  "login",
-  "auth",
-  "sso",
-  "oauth",
-  "account",
-  "accounts",
-  "my",
-  "user",
-  "users",
-  "cp",
-  "cpanel",
-  "whm",
-  "webdisk",
-  "autodiscover",
-  "autoconfig",
-  "imap",
-  "pop",
-  "pop3",
-  "exchange",
-  "owa",
-  "web",
-  "crm",
-  "erp",
-  "hr",
-  "intranet",
-  "internal",
-  "corp",
-  "office",
-  "backup",
-  "db",
-  "database",
-  "sql",
-  "mysql",
-  "mongo",
-  "redis",
-  "elastic",
-  "kibana",
-  "grafana",
-  "jenkins",
-  "gitlab",
-  "git",
-  "svn",
-  "jira",
-  "confluence",
-  "bitbucket",
-  "sonar",
-  "nexus",
-  "registry",
-  "docker",
-  "k8s",
-  "kubernetes",
-  "rancher",
-  "traefik",
-  "nginx",
-  "apache",
-  "proxy",
-  "lb",
-  "load",
-  "fw",
-];
-const dnsResults = await Promise.allSettled(
-  COMMON_SUBS.map(async (sub) => {
-    const fqdn = `${sub}.${domain}`;
-    try {
-      const r = await safeFetch(`https://${fqdn}`, { method: "HEAD", redirect: "manual" }, 3000);
-      if (r.status > 0) return fqdn;
-    } catch {
-      /* dead */
-    }
-    return null;
-  }),
-);
-for (const r of dnsResults) {
-  if (r.status === "fulfilled" && r.value) subdomains.add(r.value);
+  return [...subdomains];
 }
 // ─── 1b. Google Dorking for Subdomain & Param Discovery ───
 
@@ -1006,6 +803,9 @@ serve(async (req) => {
       });
     }
 
+    const resolved = await resolveTargetProtocol(domain, 3000);
+    const SCHEME = resolved.scheme;
+
     const { data: task } = await db
       .from("agent_tasks")
       .insert({ target_id: targetId, task_type: "reconnaissance", status: "running" })
@@ -1017,32 +817,10 @@ serve(async (req) => {
       .from("target_workspaces")
       .update({
         status: "scanning",
-        resolved_protocol: SCHEME, // FIX: persist resolved protocol for all downstream modules
+        resolved_protocol: SCHEME, // persist resolved protocol for all downstream modules
       })
       .eq("id", targetId);
     await log(db, targetId, taskId, "info", `🔍 Elite recon pipeline started for ${domain}`);
-    // Synthesize injectable endpoints from dork patterns even without CDX data
-    const INJECTABLE_PARAM_PATTERNS = [
-      { path: "/search", params: { q: "", s: "", query: "" } },
-      { path: "/products", params: { id: "", category: "", sort: "", page: "" } },
-      { path: "/api/v1/search", params: { q: "", term: "" } },
-      { path: "/api/v2/products", params: { id: "", filter: "" } },
-      { path: "/account/login", params: { redirect: "", next: "", return_url: "" } },
-      { path: "/checkout", params: { redirect: "", return: "" } },
-      { path: "/api/user", params: { id: "", uid: "" } },
-      { path: "/collections", params: { sort_by: "", page: "" } },
-      { path: "/?s", params: { s: "" } },
-    ];
-
-    for (const pat of INJECTABLE_PARAM_PATTERNS) {
-      const url = `${SCHEME}://${domain}${pat.path}`;
-      if (!allUrls.has(url)) {
-        allUrls.set(url, { method: "GET", params: pat.params, source: "synthetic-injectable" });
-      }
-    }
-    // ── Step 0: Protocol fallback engine (Rule 1) ──
-    // Test https first with a strict 3000ms timeout. If it drops/times out,
-    // downgrade to http so the spider/fingerprint never hangs on legacy targets.
     await log(
       db,
       targetId,
@@ -1050,7 +828,6 @@ serve(async (req) => {
       "thought",
       `🔌 Resolving protocol for ${domain} (https first, 3s timeout, http fallback)`,
     );
-    const resolved = await resolveTargetProtocol(domain, 3000);
     if (resolved.downgraded) {
       await log(
         db,
@@ -1063,7 +840,6 @@ serve(async (req) => {
     } else {
       await log(db, targetId, taskId, "info", `🔒 Using ${resolved.scheme}:// for ${domain}`, { resolved });
     }
-    const SCHEME = resolved.scheme;
 
     // ── Step 1: Parallel subdomain enumeration (crt.sh + Google Dorks + ThreatCrowd + URLScan) ──
     await log(
@@ -1313,6 +1089,24 @@ serve(async (req) => {
     await log(db, targetId, taskId, "action", "Normalizing and deduplicating all discovered endpoints");
 
     const allUrls = new Map<string, { method: string; params: Record<string, unknown>; source: string }>();
+
+    // Synthesize likely injectable endpoints after allUrls exists. These are
+    // candidates only; later modules must prove impact before promoting.
+    const INJECTABLE_PARAM_PATTERNS = [
+      { path: "/search", params: { q: "", s: "", query: "" } },
+      { path: "/products", params: { id: "", category: "", sort: "", page: "" } },
+      { path: "/api/v1/search", params: { q: "", term: "" } },
+      { path: "/api/v2/products", params: { id: "", filter: "" } },
+      { path: "/account/login", params: { redirect: "", next: "", return_url: "" } },
+      { path: "/checkout", params: { redirect: "", return: "" } },
+      { path: "/api/user", params: { id: "", uid: "" } },
+      { path: "/collections", params: { sort_by: "", page: "" } },
+      { path: "/?s", params: { s: "" } },
+    ];
+    for (const pat of INJECTABLE_PARAM_PATTERNS) {
+      const url = `${SCHEME}://${domain}${pat.path}`;
+      allUrls.set(url, { method: "GET", params: pat.params, source: "synthetic-injectable" });
+    }
 
     // Fix #13 — normalize URLs to dedupe http/https + www. variants of the same endpoint.
     // Strategy: prefer HTTPS, strip leading "www.", lowercase host, drop trailing slash, drop fragments.
