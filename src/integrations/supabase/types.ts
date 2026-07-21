@@ -3109,6 +3109,7 @@ export type Database = {
           bug_bounty_scope_url: string | null
           created_at: string
           custom_payloads: Json
+          detected_tech: Json
           domain: string | null
           id: string
           ip_range: string | null
@@ -3116,6 +3117,8 @@ export type Database = {
           resolved_protocol: string | null
           scan_ai_provider: string
           status: Database["public"]["Enums"]["target_status"]
+          tech_fingerprint: Json
+          tech_stack: string[]
           updated_at: string
           waf_profile: Json
         }
@@ -3131,6 +3134,7 @@ export type Database = {
           bug_bounty_scope_url?: string | null
           created_at?: string
           custom_payloads?: Json
+          detected_tech?: Json
           domain?: string | null
           id?: string
           ip_range?: string | null
@@ -3138,6 +3142,8 @@ export type Database = {
           resolved_protocol?: string | null
           scan_ai_provider?: string
           status?: Database["public"]["Enums"]["target_status"]
+          tech_fingerprint?: Json
+          tech_stack?: string[]
           updated_at?: string
           waf_profile?: Json
         }
@@ -3153,6 +3159,7 @@ export type Database = {
           bug_bounty_scope_url?: string | null
           created_at?: string
           custom_payloads?: Json
+          detected_tech?: Json
           domain?: string | null
           id?: string
           ip_range?: string | null
@@ -3160,6 +3167,8 @@ export type Database = {
           resolved_protocol?: string | null
           scan_ai_provider?: string
           status?: Database["public"]["Enums"]["target_status"]
+          tech_fingerprint?: Json
+          tech_stack?: string[]
           updated_at?: string
           waf_profile?: Json
         }
