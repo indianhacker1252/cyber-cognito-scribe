@@ -15,7 +15,7 @@
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { safeFetch } from "../_shared/safe-fetch.ts";
-import { mutateWithAi, type MutationContext } from "../_shared/ai-mutator.ts";
+import { mutateWithAi, recordMutationOutcome, type MutationContext } from "../_shared/ai-mutator.ts";
 import { scoreConfidence, mayPromote } from "../_shared/ai-confidence.ts";
 import { recordFinding } from "../_shared/findings-writer.ts";
 import { detectWaf } from "../_shared/waf-detect.ts";
