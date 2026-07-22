@@ -44,12 +44,54 @@ export interface MutationResult {
 const MAX_SEEDS = 20;
 const REQUEST_COUNT = 8;              // ask for 8 mutations per call
 
+/** Load the top winning payload hashes for a vuln class from past runs. */
+async function loadAdaptiveLessons(db: any, vulnClass: string, limit = 5): Promise<Array<{ strategy: string; notes: string }>> {
+  if (!db) return [];
+  try {
+    const { data } = await db.from("adaptive_lessons")
+      .select("strategy,notes")
+      .eq("vuln_class", vulnClass)
+      .eq("succeeded", true)
+      .order("created_at", { ascending: false })
+      .limit(limit);
+    return (data || []).filter((l: any) => l.strategy || l.notes);
+  } catch { return []; }
+}
+
+/** Record a mutation outcome so future runs bias toward what actually fired. */
+export async function recordMutationOutcome(
+  db: any,
+  targetId: string,
+  vulnClass: string,
+  payload: string,
+  succeeded: boolean,
+  notes: string,
+): Promise<void> {
+  if (!db) return;
+  try {
+    const enc = new TextEncoder().encode(payload);
+    const hashBuf = await crypto.subtle.digest("SHA-1", enc);
+    const hash = Array.from(new Uint8Array(hashBuf)).map((b) => b.toString(16).padStart(2, "0")).join("").slice(0, 16);
+    await db.from("adaptive_lessons").insert({
+      target_id: targetId,
+      vuln_class: vulnClass,
+      strategy: payload.slice(0, 400),
+      payload_hash: hash,
+      succeeded,
+      notes: notes.slice(0, 800),
+    });
+  } catch { /* non-fatal */ }
+}
+
 export async function mutateWithAi(
   ctx: MutationContext,
   db: any,
   targetId?: string,
 ): Promise<MutationResult> {
   const seeds = await getSeedPayloads(ctx.vulnClass, MAX_SEEDS);
+  const lessons = await loadAdaptiveLessons(db, ctx.vulnClass, 5);
+
+
 
   const systemPrompt = `You are an elite offensive security researcher specialized in ${ctx.vulnClass.toUpperCase()} exploitation.
 Your job: reason about the target's exact context, then propose ${REQUEST_COUNT} NOVEL payload mutations tailored to it.
@@ -76,7 +118,9 @@ Rules:
       previousAttempts: (ctx.previousAttempts || []).slice(-6),
     },
     seedPayloadsFromPayloadsAllTheThings: seeds.slice(0, MAX_SEEDS),
+    lessonsFromPriorRuns: lessons,
     outputSchema: {
+
       payloads: [
         {
           payload: "string — the actual payload to send",
