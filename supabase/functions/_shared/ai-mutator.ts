@@ -118,7 +118,9 @@ Rules:
       previousAttempts: (ctx.previousAttempts || []).slice(-6),
     },
     seedPayloadsFromPayloadsAllTheThings: seeds.slice(0, MAX_SEEDS),
+    lessonsFromPriorRuns: lessons,
     outputSchema: {
+
       payloads: [
         {
           payload: "string — the actual payload to send",
