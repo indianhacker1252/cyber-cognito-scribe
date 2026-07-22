@@ -157,6 +157,8 @@ Deno.serve(async (req) => {
 
           if (!mayPromote(conf)) {
             rejected++;
+            await recordMutationOutcome(supa, body.targetId, vulnClass, p.payload, false,
+              `verdict=${conf.verdict} score=${conf.confidenceScore} weights=${JSON.stringify(conf.evidenceWeights)}`);
             continue;
           }
 
@@ -174,7 +176,12 @@ Deno.serve(async (req) => {
             request: { method, url: mutUrl },
             response: { status: mutated.status, headers: mutated.headers, body: mutated.snippet },
           });
-          if (res.ok && !res.duplicate) promoted++;
+          if (res.ok && !res.duplicate) {
+            promoted++;
+            await recordMutationOutcome(supa, body.targetId, vulnClass, p.payload, true,
+              `promoted score=${conf.confidenceScore} signal=${p.expectedSignal}`);
+          }
+
         }
       }
     }
