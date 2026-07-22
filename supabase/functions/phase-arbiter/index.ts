@@ -49,11 +49,15 @@ const PHASE_JOBS: Record<string, { type: string; priority: number; payload?: any
   ],
   exploit: [{ type: "exploit_watchdog", priority: 8 }],
   chain: [
-    { type: "chain", priority: 5 },
+    // Only chain_exploit runs in this phase — it synthesizes chains AND
+    // enqueues chain_exec jobs with a real chainId. The bare `chain` job
+    // type used to run exploit-chain-runner with an empty payload, which
+    // guaranteed a 0-step "broken chain" every time.
     { type: "chain_exploit", priority: 5 },
   ],
   report: [{ type: "report_rewrite", priority: 2 }],
 };
+
 
 // Which job_types must have succeeded (status='done') before a phase can be
 // considered fully complete. Used by the completion gate below.
