@@ -1318,6 +1318,42 @@ serve(async (req) => {
       tech_stack: techArr,
     }).eq("id", targetId);
 
+    // Seed the per-target World Model so downstream modules can reason over it
+    // instead of re-deriving context. Concurrency-safe via merge_world_model RPC.
+    try {
+      const { updateWorld } = await import("../_shared/world-model.ts");
+      const framework = (fingerprint.framework || fingerprint.poweredBy || "").toString().toLowerCase();
+      const server = (fingerprint.server || "").toString().toLowerCase();
+      const isSpa = allJsFiles.length > 3 && allForms.length === 0;
+      const isApi = /json|application\/json/i.test(fingerprint.contentType || "") ||
+        insertedCount > 0 && allForms.length === 0 && !isSpa;
+      const routing: "spa" | "mpa" | "api" | "hybrid" | "unknown" =
+        isSpa && isApi ? "hybrid" : isSpa ? "spa" : isApi ? "api" : allForms.length > 0 ? "mpa" : "unknown";
+
+      const interestingParams = Array.from(new Set([
+        ...(jsAnalysis.hiddenParams || []),
+        ...(dorkResults.paramUrls || []).flatMap((u: string) => {
+          try { return Array.from(new URL(u).searchParams.keys()); } catch { return []; }
+        }),
+      ])).slice(0, 40);
+
+      await updateWorld(db, targetId, {
+        tech: { server, framework, versions: fingerprint.versions || {} },
+        waf: fingerprint.waf ? { vendor: String(fingerprint.waf), observedAt: new Date().toISOString() } : undefined,
+        routing,
+        interestingParams,
+        sources: allJsFiles.slice(0, 50),
+        applicability: {
+          ssti: routing !== "spa",
+          xxe: !!framework.match(/java|php|asp/),
+          prototype_pollution: !!(framework.match(/express|next|nest|node/) || server.includes("node")),
+          deserialization: !!framework.match(/java|php|rails|django|asp/),
+        },
+      }, "recon-engine");
+    } catch (e) {
+      console.warn("world-model seed failed:", (e as Error)?.message);
+    }
+
     await log(
       db,
       targetId,
