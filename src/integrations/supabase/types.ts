@@ -95,32 +95,41 @@ export type Database = {
       }
       adaptive_lessons: {
         Row: {
+          attempt_count: number
+          context_hash: string | null
           created_at: string
           id: string
           notes: string | null
           payload_hash: string
           strategy: string
           succeeded: boolean
+          succeeded_count: number
           target_id: string | null
           vuln_class: string
         }
         Insert: {
+          attempt_count?: number
+          context_hash?: string | null
           created_at?: string
           id?: string
           notes?: string | null
           payload_hash: string
           strategy: string
           succeeded: boolean
+          succeeded_count?: number
           target_id?: string | null
           vuln_class: string
         }
         Update: {
+          attempt_count?: number
+          context_hash?: string | null
           created_at?: string
           id?: string
           notes?: string | null
           payload_hash?: string
           strategy?: string
           succeeded?: boolean
+          succeeded_count?: number
           target_id?: string | null
           vuln_class?: string
         }
@@ -2524,6 +2533,53 @@ export type Database = {
           },
           {
             foreignKeyName: "pending_approvals_target_id_fkey"
+            columns: ["target_id"]
+            isOneToOne: false
+            referencedRelation: "target_workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      planner_traces: {
+        Row: {
+          actions: Json
+          created_at: string
+          id: string
+          open_findings: number
+          provider: string | null
+          reasoning: string | null
+          target_id: string
+          trace_id: string
+          turn: number
+          world_snapshot: Json
+        }
+        Insert: {
+          actions?: Json
+          created_at?: string
+          id?: string
+          open_findings?: number
+          provider?: string | null
+          reasoning?: string | null
+          target_id: string
+          trace_id: string
+          turn?: number
+          world_snapshot?: Json
+        }
+        Update: {
+          actions?: Json
+          created_at?: string
+          id?: string
+          open_findings?: number
+          provider?: string | null
+          reasoning?: string | null
+          target_id?: string
+          trace_id?: string
+          turn?: number
+          world_snapshot?: Json
+        }
+        Relationships: [
+          {
+            foreignKeyName: "planner_traces_target_id_fkey"
             columns: ["target_id"]
             isOneToOne: false
             referencedRelation: "target_workspaces"
