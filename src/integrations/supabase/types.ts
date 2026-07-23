@@ -3174,6 +3174,35 @@ export type Database = {
         }
         Relationships: []
       }
+      target_world_model: {
+        Row: {
+          created_at: string
+          model: Json
+          target_id: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          model?: Json
+          target_id: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          model?: Json
+          target_id?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "target_world_model_target_id_fkey"
+            columns: ["target_id"]
+            isOneToOne: true
+            referencedRelation: "target_workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       user_roles: {
         Row: {
           created_at: string
@@ -3412,6 +3441,10 @@ export type Database = {
           _user_id: string
         }
         Returns: boolean
+      }
+      merge_world_model: {
+        Args: { _patch: Json; _target_id: string }
+        Returns: Json
       }
       purge_history: {
         Args: { _scope?: string; _target_id?: string }
