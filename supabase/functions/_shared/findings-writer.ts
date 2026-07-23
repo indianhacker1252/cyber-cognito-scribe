@@ -210,10 +210,59 @@ export async function recordFinding(input: RecordFindingInput): Promise<RecordFi
       }
     }
 
+    // ───── Deterministic Proof Oracle (Pass C) ─────
+    // Runs BEFORE the AI confidence gate. If an oracle exists for this vuln
+    // class and does NOT fire, we suppress unless a hard marker is already
+    // present. If it fires, we promote regardless of AI score.
+    let oracleGranted = false;
+    try {
+      const { runOracle } = await import("./proof-oracles.ts");
+      const evO = (input.evidence || {}) as any;
+      const oracleRes = runOracle({
+        vulnClass: (input.vulnClass || input.category || input.source || "generic"),
+        payload: input.payload || "",
+        nonce: evO.nonce || evO.xss_nonce,
+        response: input.response ? {
+          status: input.response.status, body: input.response.body || "",
+          headers: input.response.headers,
+        } : undefined,
+        baseline: (evO.baseline_status && evO.baseline_snippet) ? {
+          status: Number(evO.baseline_status), body: String(evO.baseline_snippet),
+        } : undefined,
+        browser: {
+          dialogFired: !!(evO.dialogFired ?? evO.alertFired ?? evO.alert_fired),
+          dialogText: evO.dialogText,
+          executedNonce: evO.executedNonce,
+          domSink: evO.domSink,
+        },
+        oob: { hit: !!(evO.oobCallback ?? evO.oob_callback ?? evO.oob_hit), token: evO.oob_token },
+        timing: (evO.baselineMs && evO.mutatedMs)
+          ? { baselineMs: Number(evO.baselineMs), mutatedMs: Number(evO.mutatedMs) } : undefined,
+        differential: evO.peer_status
+          ? { peerStatus: Number(evO.peer_status), peerBody: String(evO.peer_body || "") } : undefined,
+      });
+      input.evidence = { ...(input.evidence || {}), oracle_result: oracleRes };
+      await supa.from("scan_logs").insert({
+        target_id: input.targetId, log_type: "info",
+        message: `🎯 Oracle[${input.vulnClass || input.source}] ${oracleRes.fired ? "FIRED" : oracleRes.hasOracle ? "did not fire" : "n/a"}: ${oracleRes.reason.slice(0, 140)}`,
+        metadata: { kind: "oracle_result", source: input.source, fired: oracleRes.fired, has_oracle: oracleRes.hasOracle, reason: oracleRes.reason },
+      }).then(() => {}, () => {});
+      if (oracleRes.hasOracle && !oracleRes.fired && tier !== "exploited") {
+        const hasHard = /CYBERSCOPE_PROVEN|SPECTER_LLM_CONFIRMED|oob[_-]?callback|root:x:0:0/i
+          .test((input.response?.body || "") + " " + JSON.stringify(evO));
+        if (!hasHard) {
+          return { ok: true, duplicate: true, error: `suppressed: oracle_failed ${oracleRes.reason.slice(0, 80)}` };
+        }
+      }
+      if (oracleRes.fired) oracleGranted = true;
+    } catch (e) {
+      console.warn("oracle gate error", (e as Error)?.message);
+    }
+
     // ───── AI Confidence Gate (Pass 1) ─────
-    // Every finding must clear the AI confidence scorer unless it already
-    // carries hard exploit proof. This is the central gate that stops the
-    // 200-OK / reflection-only false positive flood across ALL writers.
+    // Skipped when the oracle already granted promotion.
+    try {
+      if (oracleGranted) throw new Error("__skip_ai_gate__");
     try {
       const ev = (input.evidence || {}) as any;
       const hasHardMarker =
