@@ -261,6 +261,11 @@ async function arbitrateTarget(db: any, targetId: string) {
             })));
           }
         }
+        // Pass B: kick the agentic planner once deep_modules starts so the
+        // LLM can pick targeted next actions from the world model.
+        if (phase === "deep_modules") {
+          callFn("agent-planner", { targetId, maxActions: 5, reason: "deep_modules_start" }).catch(() => {});
+        }
         advanced.push(`${phase}+${n}${intruded ? `+intrude:${intruded}` : ""}`);
       } else {
         await db.from("scan_phase_state").upsert({
