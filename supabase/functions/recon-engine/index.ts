@@ -1315,8 +1315,11 @@ serve(async (req) => {
         .filter(Boolean)
         .map((s) => String(s).toLowerCase())
     ));
+    // NOTE: Do NOT set status='completed' here — the phase-arbiter treats
+    // that as terminal and skips every downstream phase. Recon is only the
+    // first of 7 phases; mark the workspace as actively scanning instead.
     await db.from("target_workspaces").update({
-      status: "completed",
+      status: "scanning",
       detected_tech: techArr,
       tech_fingerprint: fingerprint,
       tech_stack: techArr,
