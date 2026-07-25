@@ -896,13 +896,17 @@ serve(async (req) => {
         host: s.subdomain,
         base_url: `https://${s.subdomain}`,
         source: "recon-subdomain",
-        status_code: s.status,
-        server_header: s.server || null,
-        discovered_at: new Date().toISOString(),
+        scheme: "https",
+        is_dead: false,
+        last_scanned_at: new Date().toISOString(),
+        phase_state: { status_code: s.status, server: s.server || null },
       }));
 
     if (assetRows.length > 0) {
-      await db.from("scan_assets").upsert(assetRows, { onConflict: "target_id,host" });
+      const { error: assetErr } = await db.from("scan_assets").upsert(assetRows, { onConflict: "target_id,host" });
+      if (assetErr) {
+        await log(db, targetId, taskId, "error", `scan_assets upsert failed: ${assetErr.message}`);
+      }
       await log(
         db,
         targetId,
