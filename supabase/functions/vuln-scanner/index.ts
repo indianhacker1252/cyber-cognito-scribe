@@ -3370,7 +3370,20 @@ Return via the tool. Each chain step must have a specific URL path, parameter, a
       })
       .eq("id", taskId);
 
-    await db.from("target_workspaces").update({ status: "completed" }).eq("id", targetId);
+    // Only mark the whole workspace 'completed' when no other phases are still
+    // queued/running. Previously this fired unconditionally and short-circuited
+    // the phase-arbiter for every downstream module (chain, mythos, report).
+    {
+      const { count: pending } = await db.from("scan_jobs")
+        .select("id", { count: "exact", head: true })
+        .eq("target_id", targetId)
+        .in("status", ["queued", "running"]);
+      if (!pending || pending === 0) {
+        await db.from("target_workspaces").update({ status: "completed" }).eq("id", targetId);
+      } else {
+        await db.from("target_workspaces").update({ status: "scanning" }).eq("id", targetId);
+      }
+    }
 
     // ── Always auto-trigger Mythos agent post-scan + reflection-XSS sweep ──
     try {

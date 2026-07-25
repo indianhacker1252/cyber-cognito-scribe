@@ -1,6 +1,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { resolveTargetProtocol, browserHeaders, BROWSER_UA } from "../_shared/security-gates.ts";
+import { updateWorld } from "../_shared/world-model.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -1328,7 +1329,6 @@ serve(async (req) => {
     // Seed the per-target World Model so downstream modules can reason over it
     // instead of re-deriving context. Concurrency-safe via merge_world_model RPC.
     try {
-      const { updateWorld } = await import("../_shared/world-model.ts");
       const framework = (fingerprint.framework || fingerprint.poweredBy || "").toString().toLowerCase();
       const server = (fingerprint.server || "").toString().toLowerCase();
       const isSpa = allJsFiles.length > 3 && allForms.length === 0;
@@ -1344,7 +1344,7 @@ serve(async (req) => {
         }),
       ])).slice(0, 40);
 
-      await updateWorld(db, targetId, {
+      const patch = {
         tech: { server, framework, versions: fingerprint.versions || {} },
         waf: fingerprint.waf ? { vendor: String(fingerprint.waf), observedAt: new Date().toISOString() } : undefined,
         routing,
@@ -1356,9 +1356,22 @@ serve(async (req) => {
           prototype_pollution: !!(framework.match(/express|next|nest|node/) || server.includes("node")),
           deserialization: !!framework.match(/java|php|rails|django|asp/),
         },
-      }, "recon-engine");
+      };
+
+      // Try RPC first, then fall back to direct upsert so a broken RPC never
+      // silently loses the world-model seed.
+      const { error: rpcErr } = await db.rpc("merge_world_model", { _target_id: targetId, _patch: patch });
+      if (rpcErr) {
+        await log(db, targetId, taskId, "warn", `world-model RPC failed, falling back to direct upsert: ${rpcErr.message}`);
+        const { data: existing } = await db.from("target_world_model").select("model").eq("target_id", targetId).maybeSingle();
+        const merged = { ...(existing?.model || {}), ...patch, updatedBy: { "recon-engine": new Date().toISOString() } };
+        const { error: upErr } = await db.from("target_world_model").upsert({ target_id: targetId, model: merged }, { onConflict: "target_id" });
+        if (upErr) await log(db, targetId, taskId, "error", `world-model direct upsert failed: ${upErr.message}`);
+      }
+      await updateWorld(db, targetId, {}, "recon-engine"); // stamp updatedBy
+      await log(db, targetId, taskId, "info", `🌐 world-model seeded (routing=${routing} tech=${server}/${framework})`);
     } catch (e) {
-      console.warn("world-model seed failed:", (e as Error)?.message);
+      await log(db, targetId, taskId, "error", `world-model seed threw: ${(e as Error)?.message}`);
     }
 
     // Mark the recon phase complete so phase-arbiter can advance the pipeline.
