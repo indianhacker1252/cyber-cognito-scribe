@@ -1361,6 +1361,39 @@ serve(async (req) => {
       console.warn("world-model seed failed:", (e as Error)?.message);
     }
 
+    // Mark the recon phase complete so phase-arbiter can advance the pipeline.
+    // Without this write the arbiter's prerequisite gate blocks every later phase.
+    try {
+      await db.from("scan_phase_state").upsert({
+        target_id: targetId,
+        phase: "recon",
+        phase_order: 1,
+        status: "complete",
+        started_at: new Date().toISOString(),
+        completed_at: new Date().toISOString(),
+        last_heartbeat: new Date().toISOString(),
+        findings_count: 0,
+        metadata: {
+          endpoints: insertedCount,
+          subdomains: allSubdomains.length,
+          live_subdomains: liveCount,
+          finished_by: "recon-engine",
+        },
+      }, { onConflict: "target_id,phase" });
+
+      // Kick the arbiter immediately so discovery starts without waiting on cron.
+      fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/phase-arbiter`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}`,
+        },
+        body: JSON.stringify({ targetId }),
+      }).catch(() => {});
+    } catch (e) {
+      console.warn("recon phase-state write failed:", (e as Error)?.message);
+    }
+
     await log(
       db,
       targetId,
