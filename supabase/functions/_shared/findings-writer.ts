@@ -263,7 +263,6 @@ export async function recordFinding(input: RecordFindingInput): Promise<RecordFi
     // Skipped when the oracle already granted promotion.
     try {
       if (oracleGranted) throw new Error("__skip_ai_gate__");
-    try {
       const ev = (input.evidence || {}) as any;
       const hasHardMarker =
         tier === "exploited" ||
