@@ -287,7 +287,9 @@ export default function OwaspChecklist() {
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-1">
                       {list.map((r) => (
                         <div key={r.check_name} className="flex items-center gap-2 text-xs">
-                          {isDone(r.status)
+                          {hasEvidence(r.status)
+                            ? <CheckCircle2 className="h-3.5 w-3.5 text-amber-500 shrink-0" />
+                            : isDone(r.status)
                             ? <CheckCircle2 className="h-3.5 w-3.5 text-green-500 shrink-0" />
                             : <Circle className="h-3.5 w-3.5 text-muted-foreground shrink-0" />}
                           <span className="font-mono truncate">{r.check_name}</span>
