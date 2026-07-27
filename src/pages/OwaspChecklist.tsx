@@ -93,7 +93,13 @@ export default function OwaspChecklist() {
     cats.get(r.category)!.push(r);
   }
 
-  const isDone = (s: string | null) => s === "evidence" || s === "passed" || s === "complete";
+  // A check is "done" once the scanner module has executed for it. `evidence`
+  // = vuln proven, `passed`/`complete` = explicitly cleared, `attempted` =
+  // module ran but produced no finding (which is a valid "no-vuln" outcome
+  // and MUST count toward progress — otherwise 83/83 attempted renders as 0%).
+  const isDone = (s: string | null) =>
+    s === "evidence" || s === "passed" || s === "complete" || s === "attempted";
+  const hasEvidence = (s: string | null) => s === "evidence";
 
   const reseed = async (id: string) => {
     setBusy(id);
