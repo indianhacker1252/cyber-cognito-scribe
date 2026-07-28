@@ -8,15 +8,16 @@
 
 1. [Architecture Overview](#architecture-overview)
 2. [How It Works](#how-it-works)
-3. [Edge Functions (Backend)](#edge-functions-backend)
-4. [Request Flow](#request-flow)
-5. [Modules & Features](#modules--features)
-6. [Database Schema](#database-schema)
-7. [AI Chatbox](#ai-chatbox)
-8. [False Positive Elimination](#false-positive-elimination)
-9. [Intel Feed Integration](#intel-feed-integration)
-10. [Local Development](#local-development)
-11. [Configuration](#configuration)
+3. [Project Charter & Working Plan](PROJECT_CHARTER.md)
+4. [Edge Functions (Backend)](#edge-functions-backend)
+5. [Request Flow](#request-flow)
+6. [Modules & Features](#modules--features)
+7. [Database Schema](#database-schema)
+8. [AI Chatbox](#ai-chatbox)
+9. [False Positive Elimination](#false-positive-elimination)
+10. [Intel Feed Integration](#intel-feed-integration)
+11. [Local Development](#local-development)
+12. [Configuration](#configuration)
 
 ---
 
