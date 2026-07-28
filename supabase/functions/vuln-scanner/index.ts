@@ -1675,12 +1675,25 @@ serve(async (req) => {
           .map((w: any) => w.vuln_class),
       );
 
-      // Override: never let strategy disable protected classes.
-      for (const cls of PROTECTED_CLASSES) {
-        if (disabledClasses.has(cls)) {
-          disabledClasses.delete(cls);
-          await log(db, targetId, taskId, "info", `🚫 Strategy engine tried to disable protected ${cls} — OVERRIDDEN`);
+      // Override: never let strategy disable protected classes — unless the target
+      // has explicitly opted in via metadata.disable_protected_override = true
+      // (used when protected classes are being neutralized by redirects/WAF and
+      // burning credits without ever producing a finding).
+      const { data: tgtRow } = await db
+        .from("target_workspaces")
+        .select("metadata")
+        .eq("id", targetId)
+        .maybeSingle();
+      const allowDisableProtected = !!(tgtRow?.metadata as any)?.disable_protected_override;
+      if (!allowDisableProtected) {
+        for (const cls of PROTECTED_CLASSES) {
+          if (disabledClasses.has(cls)) {
+            disabledClasses.delete(cls);
+            await log(db, targetId, taskId, "info", `🚫 Strategy engine tried to disable protected ${cls} — OVERRIDDEN`);
+          }
         }
+      } else {
+        await log(db, targetId, taskId, "info", `⚙️  disable_protected_override=true — strategy engine may disable protected classes on this target`);
       }
 
       if (disabledClasses.size > 0) {
