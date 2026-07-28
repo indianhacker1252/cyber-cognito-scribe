@@ -24,6 +24,7 @@ import OwaspCoverage from "./pages/OwaspCoverage";
 import OwaspChecklist from "./pages/OwaspChecklist";
 import KillChains from "./pages/KillChains";
 import NotFound from "./pages/NotFound";
+import Diagnostics from "./pages/Diagnostics";
 
 const queryClient = new QueryClient();
 
@@ -56,6 +57,7 @@ const App = () => (
                     <Route path="/coverage" element={<OwaspCoverage />} />
                     <Route path="/owasp-checklist" element={<OwaspChecklist />} />
                     <Route path="/kill-chains" element={<KillChains />} />
+                    <Route path="/diagnostics" element={<Diagnostics />} />
                     <Route path="*" element={<NotFound />} />
                   </Routes>
                 </Layout>

@@ -1,4 +1,4 @@
-import { LayoutDashboard, Crosshair, Terminal, ShieldAlert, ClipboardCheck, Activity, Rss, Settings, ShieldOff, Swords, Brain, Crown, Package, ShieldCheck, GitBranch } from "lucide-react";
+import { LayoutDashboard, Crosshair, Terminal, ShieldAlert, ClipboardCheck, Activity, Rss, Settings, ShieldOff, Swords, Brain, Crown, Package, ShieldCheck, GitBranch, Stethoscope } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
 import { useLocation } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
@@ -25,6 +25,7 @@ const navItems = [
   { title: "Kill Chains", url: "/kill-chains", icon: GitBranch },
   { title: "Approvals", url: "/approvals", icon: ClipboardCheck },
   { title: "System Health", url: "/system-health", icon: Activity },
+  { title: "Diagnostics", url: "/diagnostics", icon: Stethoscope },
   { title: "Intel Feed", url: "/intel-feed", icon: Rss },
   { title: "False Positives", url: "/false-positives", icon: ShieldOff },
   { title: "Attack Viz", url: "/attack-viz", icon: Swords },
