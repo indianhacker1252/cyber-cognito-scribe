@@ -475,9 +475,38 @@ export default function FindingDetailsDialog({ open, onOpenChange, finding }: Pr
             </TabsContent>
 
             <TabsContent value="provenance" className="space-y-2">
-              <p className="text-[10px] font-mono text-muted-foreground">
-                Origin & dedup keys — trace every finding back to the scanner that produced it.
-              </p>
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-[10px] font-mono text-muted-foreground">
+                  Origin & dedup keys — trace every finding back to the scanner that produced it.
+                </p>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="font-mono text-[10px] gap-1"
+                  onClick={async () => {
+                    if (!finding.target_id) { toast.error("No target on finding"); return; }
+                    toast.info("Asking the Brain…");
+                    const { data } = await supabase
+                      .from("planner_traces" as any)
+                      .select("trace_id, reasoning, actions, provider, created_at")
+                      .eq("target_id", finding.target_id)
+                      .order("created_at", { ascending: false })
+                      .limit(20);
+                    const vc = String(finding.vuln_class || finding.finding_type || "").toLowerCase();
+                    const hit = (data as any[] || []).find((t) => {
+                      const txt = JSON.stringify(t.actions || []).toLowerCase() + " " + String(t.reasoning || "").toLowerCase();
+                      return vc && txt.includes(vc);
+                    }) || (data as any[] || [])[0];
+                    if (!hit) { toast.error("No planner trace found for this target"); return; }
+                    toast.success(`Trace #${String(hit.trace_id).slice(0,8)} · ${hit.provider}`, {
+                      description: (hit.reasoning || "(no reasoning)").slice(0, 400),
+                      duration: 15000,
+                    });
+                  }}
+                >
+                  <BrainCircuit className="h-3 w-3" /> Ask Brain why
+                </Button>
+              </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-[11px] font-mono">
                 <div className="rounded border border-border bg-muted/20 p-2">
                   <div className="text-muted-foreground text-[10px] uppercase">Scanner / Source</div>
