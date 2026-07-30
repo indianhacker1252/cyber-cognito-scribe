@@ -213,6 +213,121 @@ export type Database = {
           },
         ]
       }
+      agent_events: {
+        Row: {
+          id: number
+          kind: string
+          payload: Json
+          session_id: string
+          step: number | null
+          target_id: string
+          ts: string
+        }
+        Insert: {
+          id?: number
+          kind: string
+          payload?: Json
+          session_id: string
+          step?: number | null
+          target_id: string
+          ts?: string
+        }
+        Update: {
+          id?: number
+          kind?: string
+          payload?: Json
+          session_id?: string
+          step?: number | null
+          target_id?: string
+          ts?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "agent_events_session_id_fkey"
+            columns: ["session_id"]
+            isOneToOne: false
+            referencedRelation: "agent_sessions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      agent_sessions: {
+        Row: {
+          budget_credits: number
+          budget_seconds: number
+          completed_at: string | null
+          created_at: string
+          credits_used: number
+          error_message: string | null
+          goal: string | null
+          id: string
+          last_heartbeat: string | null
+          metadata: Json
+          model: string
+          provider: string
+          runtime_host: string | null
+          runtime_pid: string | null
+          started_at: string | null
+          status: string
+          steps_taken: number
+          target_id: string
+          updated_at: string
+          user_id: string | null
+        }
+        Insert: {
+          budget_credits?: number
+          budget_seconds?: number
+          completed_at?: string | null
+          created_at?: string
+          credits_used?: number
+          error_message?: string | null
+          goal?: string | null
+          id?: string
+          last_heartbeat?: string | null
+          metadata?: Json
+          model?: string
+          provider?: string
+          runtime_host?: string | null
+          runtime_pid?: string | null
+          started_at?: string | null
+          status?: string
+          steps_taken?: number
+          target_id: string
+          updated_at?: string
+          user_id?: string | null
+        }
+        Update: {
+          budget_credits?: number
+          budget_seconds?: number
+          completed_at?: string | null
+          created_at?: string
+          credits_used?: number
+          error_message?: string | null
+          goal?: string | null
+          id?: string
+          last_heartbeat?: string | null
+          metadata?: Json
+          model?: string
+          provider?: string
+          runtime_host?: string | null
+          runtime_pid?: string | null
+          started_at?: string | null
+          status?: string
+          steps_taken?: number
+          target_id?: string
+          updated_at?: string
+          user_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "agent_sessions_target_id_fkey"
+            columns: ["target_id"]
+            isOneToOne: false
+            referencedRelation: "target_workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       agent_tasks: {
         Row: {
           created_at: string
@@ -3176,6 +3291,7 @@ export type Database = {
           tech_fingerprint: Json
           tech_stack: string[]
           updated_at: string
+          use_agent_runtime: boolean
           waf_profile: Json
         }
         Insert: {
@@ -3201,6 +3317,7 @@ export type Database = {
           tech_fingerprint?: Json
           tech_stack?: string[]
           updated_at?: string
+          use_agent_runtime?: boolean
           waf_profile?: Json
         }
         Update: {
@@ -3226,6 +3343,7 @@ export type Database = {
           tech_fingerprint?: Json
           tech_stack?: string[]
           updated_at?: string
+          use_agent_runtime?: boolean
           waf_profile?: Json
         }
         Relationships: []
@@ -3255,6 +3373,56 @@ export type Database = {
             columns: ["target_id"]
             isOneToOne: true
             referencedRelation: "target_workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      tool_invocations: {
+        Row: {
+          args: Json
+          cost_credits: number
+          created_at: string
+          id: number
+          latency_ms: number | null
+          ok: boolean
+          result: Json | null
+          session_id: string
+          step: number | null
+          target_id: string
+          tool: string
+        }
+        Insert: {
+          args?: Json
+          cost_credits?: number
+          created_at?: string
+          id?: number
+          latency_ms?: number | null
+          ok?: boolean
+          result?: Json | null
+          session_id: string
+          step?: number | null
+          target_id: string
+          tool: string
+        }
+        Update: {
+          args?: Json
+          cost_credits?: number
+          created_at?: string
+          id?: number
+          latency_ms?: number | null
+          ok?: boolean
+          result?: Json | null
+          session_id?: string
+          step?: number | null
+          target_id?: string
+          tool?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "tool_invocations_session_id_fkey"
+            columns: ["session_id"]
+            isOneToOne: false
+            referencedRelation: "agent_sessions"
             referencedColumns: ["id"]
           },
         ]
@@ -3473,6 +3641,37 @@ export type Database = {
       assert_finding_submittable: {
         Args: { _finding_id: string }
         Returns: boolean
+      }
+      claim_agent_session: {
+        Args: { _host: string }
+        Returns: {
+          budget_credits: number
+          budget_seconds: number
+          completed_at: string | null
+          created_at: string
+          credits_used: number
+          error_message: string | null
+          goal: string | null
+          id: string
+          last_heartbeat: string | null
+          metadata: Json
+          model: string
+          provider: string
+          runtime_host: string | null
+          runtime_pid: string | null
+          started_at: string | null
+          status: string
+          steps_taken: number
+          target_id: string
+          updated_at: string
+          user_id: string | null
+        }
+        SetofOptions: {
+          from: "*"
+          to: "agent_sessions"
+          isOneToOne: true
+          isSetofReturn: false
+        }
       }
       consume_scan_credit: {
         Args: { _scan_type: string; _target_id: string }
