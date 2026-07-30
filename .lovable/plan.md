@@ -1,82 +1,149 @@
-# Why this tool isn't performing like XBOW — honest gap analysis
+# Option B — Rebuild as a real XBOW-style agent
 
-You've asked "why doesn't this work like XBOW?" Here is the real answer, without spin.
+The current tool is a **stateless fan-out of edge functions** capped at 50s each, orchestrated by cron ticks. XBOW/Mythos are **long-lived agents** with a single reasoning loop, a persistent target state, and real tools (browser, shell, HTTP proxy) they can call for minutes/hours. To match that, we replace the orchestration layer, not the detectors.
 
-## What XBOW actually is (so we're comparing to the right thing)
+The Supabase database and the existing detector code become the **tool surface** for a new agent runtime that lives outside edge functions.
 
-XBOW is a single **autonomous AI pentester** that:
-1. Given a target, spawns a long-lived agent with a **shell + browser + HTTP client** as tools.
-2. Uses a frontier LLM (Claude/GPT) as the *only* brain — no rule engine, no "phase arbiter", no 83-item checklist.
-3. The agent **reads pages, writes payloads, executes them, reads responses, and iterates** — like a human, in one loop, for hours.
-4. Reports only findings it **proved by exploitation** (screenshot, exfiltrated data, callback).
+---
 
-They win HackerOne benchmarks because the loop is: *LLM → tool → observation → LLM*, tight, stateful, and unbounded.
+## Target architecture
 
-## What we actually built
+```text
+   ┌─────────────────────── Lovable UI (unchanged shell) ───────────────────────┐
+   │  BrainPanel · Findings · OWASP · Diagnostics · ScanControl                 │
+   └───────────────▲──────────────────────────────────────────────▲─────────────┘
+                   │ Supabase Realtime (agent_events, findings)   │ REST
+                   │                                              │
+   ┌───────────────┴──────────────────────────┐    ┌──────────────┴─────────────┐
+   │  Agent Runtime  (long-lived worker)      │    │  Supabase (state + tools)  │
+   │  ────────────────────────────────────    │    │  target_world_model        │
+   │  • Per-target Operator loop (hours)      │◄──►│  agent_sessions            │
+   │  • LLM: Gemini / GPT / Claude via SDK    │    │  agent_events (append-log) │
+   │  • ReAct: plan → tool → observe → learn  │    │  tool_invocations          │
+   │  • Tools: http, browser, shell, oracle,  │    │  findings + evidence       │
+   │    cve, mutator, chain-runner            │    │  owasp_checklist           │
+   └──────────────┬───────────────────────────┘    └────────────────────────────┘
+                  │
+                  ▼
+     Playwright browser · headless shell · HTTP client with proxy · OOB listener
+```
 
-We built a **workflow orchestrator that calls small deterministic scanners and asks the LLM to label results**. That is a fundamentally different architecture. Concretely:
+Key idea: **one agent per target**, not 154 jobs per target. The agent decides what to do next; edge functions become dumb tool endpoints it can call when it wants a fanned-out primitive.
 
-| Layer | XBOW | Us |
-|---|---|---|
-| Brain | 1 LLM, long context, full trajectory | ~15 edge functions each doing one call |
-| Tools | shell, headless browser, raw HTTP | pre-baked payload lists + regex matchers |
-| State | one agent memory, grows over hours | 70 Postgres tables, no agent sees them all |
-| Loop | LLM decides next action every step | `phase-arbiter` cron enqueues fixed phases |
-| Proof | agent must demonstrate impact | trigger `enforce_finding_proof_gate` string-matches "root:" |
-| Runtime | hours on one target | 50s per edge function, then dies |
+---
 
-## The five root causes
+## Phase plan (concrete, in build order)
 
-### 1. No real agent loop
-`ai-strategist`, `agent-planner`, `mythos-agent` are **single-shot LLM calls** that emit a JSON plan, then die. XBOW's agent runs `while(!done) { llm.step() }` for hours. Our edge-function 50s ceiling makes that architecturally impossible — the loop has to live somewhere with no timeout (a worker VM, Durable Object, or a long-running Deno process on a real host).
+### Phase 1 — Runtime host (unblocks everything)
 
-### 2. LLM never touches the target
-The LLM writes JSON like `{"technique":"sqli","param":"id"}`. A deterministic Deno function then fires a hard-coded payload from `payloads-att.ts` and regexes the response. The model **never sees the HTTP response**, so it can't adapt, can't spot weird behavior, can't chain. That's why findings feel "guess-passed" — because they literally are: regex-vs-payload, not model-vs-target.
+Edge Functions cannot host this. Pick one:
 
-### 3. No browser, no shell
-Modern bugs (DOM XSS, SPA auth, CSRF-in-fetch, prototype pollution, most IDORs) require a real browser session. We have zero Playwright/Puppeteer in the runtime. `xss-reflection-promoter` was added to require DOM proof — and correctly rejects everything, because we never actually render a DOM. Same for shell: we can't run `sqlmap`, `ffuf`, `nuclei`, `httpx` — the tools human pentesters use.
+- **Recommended:** Fly.io Machine (or Railway) running a Node/TS worker container. One machine per active target, autoscaled. Cheap, long-lived, has shell + browser.
+- Alternative: a single always-on VPS with a queue.
 
-### 4. Fragmented state, no memory
-70 tables, and no single component reads more than 3–4 of them. `world-model` exists but is written by one function and read by almost nothing. The LLM in call N has no idea what the LLM in call N-1 saw. XBOW's agent has the entire trajectory in context.
+Deliverables:
+- `runtime/` folder in repo with Dockerfile, `pnpm start` boots the agent.
+- Supabase service-role key + `LOVABLE_API_KEY` injected as env.
+- Health endpoint + graceful shutdown on SIGTERM (checkpoints state).
 
-### 5. Wrong success metric baked in
-`enforce_finding_proof_gate` demotes anything without the substring `root:` or `CYBERSCOPE_PROVEN` in the response. That is a *heuristic for command injection on Linux*. It silently kills every legitimate finding of every other class. That's why the Findings tab is empty even on juicy targets.
+### Phase 2 — State model (single source of truth)
 
-## What the current codebase IS good for
+Add tables (keep existing ones):
+- `agent_sessions(id, target_id, status, started_at, ended_at, budget_credits, budget_seconds)`
+- `agent_events(id, session_id, ts, kind, payload jsonb)` — append-only log the UI streams via Realtime. `kind ∈ {plan, thought, tool_call, tool_result, finding, decision, error}`.
+- `tool_invocations(id, session_id, tool, args, result, latency_ms, cost_credits)`
 
-Not nothing — it is a decent **recon + surface-mapper + checklist tracker**:
-- Subdomain enum, JS analysis, endpoint discovery — works.
-- OWASP checklist as a coverage dashboard — works.
-- CVE version matching — works.
-- Job queue + neural log UI — works.
+Retire `scan_jobs` fan-out as the orchestrator (keep table for the few background primitives the agent still fans out).
 
-It is not, and with edge-functions-only cannot become, an autonomous exploiter.
+### Phase 3 — Operator loop (the "brain")
 
-## The honest fix path
+One file: `runtime/src/operator.ts`.
 
-There are two directions. Pick one — doing both half-way is what got us here.
+```ts
+while (!done && withinBudget()) {
+  const ctx = await loadWorldModel(targetId);
+  const plan = await llm.plan(ctx, recentEvents);   // structured: next_tool + why
+  emit('plan', plan);
+  const result = await tools[plan.tool](plan.args); // real tool call
+  emit('tool_result', result);
+  await updateWorldModel(targetId, plan, result);   // learn
+  done = plan.tool === 'finish' || goalMet(ctx);
+}
+```
 
-### Option A — Accept what we are: ship a great **assisted VAPT platform**
-Stop pretending to be XBOW. Reposition as "AI-assisted recon + triage + reporting":
-- Rip out `enforce_finding_proof_gate` (or scope it to command injection only).
-- Delete `ai-strategist`, `agent-planner`, `mythos-*`, `chain-finder`, `exploit-runtime` — they don't earn their credit cost.
-- Keep recon, checklist, CVE mapping, findings UI, report generator.
-- Add **human-in-the-loop**: findings land as "candidate", auditor confirms in the Validation Workspace (already built).
-- Small: ~1 week, delivers a working tool, kills the credit drain.
+Rules:
+- Uses AI SDK `streamText` + tool calling with `stopWhen: stepCountIs(200)`.
+- Every step persisted to `agent_events` before the next LLM call (crash-safe resume).
+- Model = `google/gemini-3.6-flash` default, fallback chain unchanged.
 
-### Option B — Actually build XBOW: move the agent off edge functions
-This is real work, weeks not days:
-1. **Get a long-lived runtime.** A single Fly.io/Railway/Docker worker per scan, no 50s ceiling. Edge functions become thin RPC around it.
-2. **Give the agent real tools:** headless Chromium (Playwright), a jailed shell with `curl/ffuf/nuclei/sqlmap`, raw TCP.
-3. **One LLM, one loop, one context.** Claude Sonnet or GPT-5 with tool-calling, running `while(!done)`, full trajectory in context, checkpointed to Postgres every step.
-4. **Kill the phase arbiter.** The agent decides what to do next. Period. No cron, no fan-out, no `PHASE_ORDER`.
-5. **Proof = the agent says "I proved it and here's the artifact"** (screenshot, exfiltrated row, OOB callback). Trigger goes away.
-6. Keep the current DB + UI as the *observer* — read-only view of what the agent did.
+### Phase 4 — Tool surface (what the agent can actually do)
 
-## Recommendation
+Real tools, not "queue a job":
 
-**Option A this week, Option B as a separate v2 project.** The current architecture cannot be patched into XBOW — every "fix" of the last month has been adding another edge function to compensate for the fact that no single component owns the exploit loop. Stop patching, decide the shape.
+| Tool | Impl |
+| --- | --- |
+| `http.request` | Node fetch through mitm proxy; records req/resp to evidence |
+| `browser.visit` | Playwright page; returns DOM, console, network, screenshot |
+| `browser.exec_js` | For DOM XSS / prototype pollution proofs |
+| `shell.run` | Sandboxed `bash -c` (nuclei, ffuf, subfinder, sqlmap-lite) |
+| `oob.listener` | Allocates interact.sh subdomain, streams hits back |
+| `oracle.check` | Existing `_shared/proof-oracles.ts` |
+| `cve.lookup` | Existing `cve-mapper` |
+| `mutate.payload` | Existing UCB1 mutator |
+| `chain.run` | Existing exploit-runtime |
+| `findings.record` | Writes to DB with proof gate |
+| `finish` | Marks session complete |
 
-## What I need from you
+Each tool has a Zod `inputSchema`, compact serializable output, and destructive ones set `needsApproval: true`.
 
-Which direction? Once you pick, I write a concrete implementation plan for *that* direction only — no more sweeping multi-pass changes across a codebase that's already fighting itself.
+### Phase 5 — World model as agent memory
+
+Replace ad-hoc `target_world_model.model` blob with structured slots the LLM sees every turn:
+- `surface`: endpoints, params, forms, auth surfaces, tech stack, CVEs
+- `beliefs`: WAF class, auth model, framework, redirect traps
+- `attempts`: `{class, param, payload_family, outcome, confidence}[]` — feeds UCB1 and stops repeat attempts
+- `hypotheses`: open questions with priority
+- `budget`: credits/time remaining
+
+Injected into every plan prompt; agent updates it via a dedicated `memory.write` tool.
+
+### Phase 6 — UI streaming
+
+- `BrainPanel` subscribes to `agent_events` for the active `session_id` via Realtime and renders the 3 lanes (Plan / Act / Observe) from event kinds directly.
+- `ScanControl` calls a new `POST /sessions/:id/stop` on the runtime (SIGTERM to that agent).
+- `Findings`, `OWASP`, `Diagnostics` keep reading their existing tables — the agent writes to them through tools, so they light up in real time.
+
+### Phase 7 — Cutover
+
+1. Ship runtime + Phase 2 tables behind a feature flag `USE_AGENT_RUNTIME`.
+2. New scans start an `agent_session` instead of enqueueing 154 jobs.
+3. Old `scan_jobs`/`phase-arbiter` cron kept alive 2 weeks for regressions, then deleted.
+4. Delete: `phase-arbiter`, `phase-arbiter-tick`, `scan-orchestrator`, `scan-job-worker`, and every edge function that only existed to be enqueued.
+
+---
+
+## What survives from the current codebase
+
+Kept and reused as tools/libraries: `_shared/proof-oracles.ts`, `_shared/exploit-runtime.ts`, `_shared/ai-mutator.ts`, `_shared/payloads-att.ts`, `_shared/cve-mapper.ts`, `_shared/world-model.ts`, `_shared/findings-writer.ts`, `injection-matrix`, `subdomain-enum`, `recon-engine`, `nvd-intel-sync`. UI shell, auth, credits, OWASP checklist table, findings table.
+
+Retired: `phase-arbiter*`, `scan-orchestrator`, `scan-job-worker`, `enqueue-*`, the cron ticks, and every "queue then hope" flow.
+
+---
+
+## Timeline (rough)
+
+- **Week 1:** Phase 1 (runtime host) + Phase 2 (tables) + skeleton loop that just calls `http.request` and writes events.
+- **Week 2:** Phase 3 + 4: full tool surface incl. browser and oob; port oracles.
+- **Week 3:** Phase 5 world model + Phase 6 UI streaming; parity scan on `networkbulls.com`.
+- **Week 4:** Phase 7 cutover, delete dead code, tune prompts, add authenticated-scan tool.
+
+---
+
+## What I need from you before I start building
+
+1. **Runtime host choice:** Fly.io Machine (my recommendation) or something else you already pay for?
+2. **Extra LLM keys:** confirm we can use existing `LOVABLE_API_KEY` only, or also wire the OpenAI/Anthropic keys you mentioned earlier as first-class in the agent.
+3. **Browser tool scope:** OK to run Playwright inside the runtime container (adds ~400MB image, needed for real DOM XSS / auth flows)?
+4. **Cutover risk:** OK to leave old orchestrator running in parallel for 2 weeks, or hard-swap on day 1?
+
+Answer those four and I'll start Phase 1 in the next turn.
