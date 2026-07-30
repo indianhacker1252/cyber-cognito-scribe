@@ -1,7 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { Badge } from "@/components/ui/badge";
-import { Brain, Zap, Eye, ChevronRight } from "lucide-react";
+import { Brain, Zap, Eye, ChevronRight, Cpu } from "lucide-react";
+
+type AgentEvent = { id: string; kind: string; step: number | null; payload: any; created_at: string };
+
 
 // Three-lane Live Brain panel:
 //   PLAN    = latest agent-planner turns (reasoning + proposed actions)
@@ -157,6 +161,88 @@ export function BrainPanel({ targetId }: { targetId: string | null }) {
           )}
         </section>
       </div>
+
+      <AgentRuntimeLane targetId={targetId} />
     </div>
   );
 }
+
+// Option-B lane: live stream of agent_events (Plan/Act/Observe from the VPS runtime).
+function AgentRuntimeLane({ targetId }: { targetId: string }) {
+  const [events, setEvents] = useState<AgentEvent[]>([]);
+  const [sessionId, setSessionId] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const { data: s } = await supabase
+        .from("agent_sessions" as any)
+        .select("id")
+        .eq("target_id", targetId)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (cancelled || !s) return;
+      const sid = (s as any).id as string;
+      setSessionId(sid);
+      const { data: ev } = await supabase
+        .from("agent_events" as any)
+        .select("id,kind,step,payload,created_at")
+        .eq("session_id", sid)
+        .order("created_at", { ascending: false })
+        .limit(50);
+      if (!cancelled) setEvents(((ev || []) as any[]).reverse());
+    })();
+    return () => { cancelled = true; };
+  }, [targetId]);
+
+  useEffect(() => {
+    if (!sessionId) return;
+    const channel = supabase
+      .channel(`agent-events-${sessionId}`)
+      .on("postgres_changes",
+        { event: "INSERT", schema: "public", table: "agent_events", filter: `session_id=eq.${sessionId}` },
+        (payload) => setEvents((prev) => [...prev.slice(-99), payload.new as AgentEvent]))
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [sessionId]);
+
+  if (!sessionId) {
+    return (
+      <div className="rounded border border-dashed border-border bg-background/40 p-3 text-xs text-muted-foreground">
+        <Cpu className="inline h-3.5 w-3.5 mr-1 opacity-60" />
+        Agent runtime idle — click <span className="text-primary">Start Agent Scan</span> to launch the VPS operator loop.
+      </div>
+    );
+  }
+
+  const color = (k: string) =>
+    k === "thought" ? "text-blue-400 border-blue-500/40"
+    : k === "tool_call" ? "text-yellow-400 border-yellow-500/40"
+    : k === "tool_result" ? "text-green-400 border-green-500/40"
+    : k === "decision" ? "text-primary border-primary/40"
+    : k === "error" ? "text-red-400 border-red-500/40"
+    : "text-muted-foreground border-border";
+
+  return (
+    <section className="rounded border border-primary/30 bg-background/60 p-3 space-y-2">
+      <div className="flex items-center gap-1.5 text-xs text-primary font-mono">
+        <Cpu className="h-3.5 w-3.5 animate-pulse" /> AGENT RUNTIME · session {sessionId.slice(0, 8)}
+        <span className="ml-auto text-muted-foreground">{events.length} events</span>
+      </div>
+      <div className="max-h-64 overflow-y-auto space-y-1 font-mono text-[11px]">
+        {events.length === 0 && <div className="text-muted-foreground">Waiting for VPS worker…</div>}
+        {events.slice().reverse().map((e) => (
+          <div key={e.id} className={`border-l-2 pl-2 ${color(e.kind)}`}>
+            <span className="opacity-60">#{e.step ?? "-"}</span>{" "}
+            <span className="uppercase">{e.kind}</span>{" "}
+            <span className="text-foreground/80">
+              {e.payload?.msg || e.payload?.tool || e.payload?.text || e.payload?.summary || JSON.stringify(e.payload).slice(0, 160)}
+            </span>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
