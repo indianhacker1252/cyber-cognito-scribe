@@ -1,0 +1,10 @@
+services:
+  agent:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    # Scale with:  docker compose up -d --scale agent=5
+    deploy:
+      replicas: 1
+    # Shared memory needed for Chromium
+    shm_size: "1gb"
