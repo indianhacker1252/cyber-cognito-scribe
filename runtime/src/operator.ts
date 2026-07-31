@@ -79,8 +79,9 @@ Start with recon. Think step-by-step. Use ONE tool per turn.`,
           await emit(session.id, session.target_id, "tool_call", { tool: tc.toolName, args: tc.args }, stepCount);
         }
         for (const tr of toolResults ?? []) {
-          const summary = JSON.stringify(tr.result).slice(0, 2000);
-          await emit(session.id, session.target_id, "tool_result", { tool: tr.toolName, summary }, stepCount);
+          const r = (tr as any).result ?? (tr as any).output ?? {};
+          const summary = JSON.stringify(r).slice(0, 2000);
+          await emit(session.id, session.target_id, "tool_result", { tool: (tr as any).toolName, summary }, stepCount);
         }
         await updateSession(session.id, { steps_taken: stepCount });
 

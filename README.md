@@ -2,6 +2,30 @@
 
 **CyberScope** is an autonomous, AI-driven Vulnerability Assessment and Penetration Testing (VAPT) platform. It combines automated reconnaissance, OWASP Top 10 scanning, deep audit analysis, CVE correlation, and intelligence feed ingestion into a single unified tool — with a built-in AI chatbox that can execute security operations on command.
 
+## Option B — Long-Lived Agent Runtime (XBOW-style)
+
+A Docker/VPS runtime under `runtime/` runs a persistent ReAct operator loop that
+claims queued `agent_sessions` and drives real browser + HTTP + shell tools with
+streaming logs into `agent_events`.
+
+### Quick start (VPS)
+
+```bash
+cd runtime
+cp .env.example .env    # set SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY,
+                        # and one of LOVABLE_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY
+docker compose up -d --build
+```
+
+### Providers supported
+- `lovable`  — Lovable AI Gateway (default, uses `LOVABLE_API_KEY`)
+- `openai`   — `gpt-4o-mini` / `gpt-4.1-mini` via `OPENAI_API_KEY`
+- `gemini`   — `gemini-2.5-flash` via native `@ai-sdk/google` and `GEMINI_API_KEY`
+
+Pick the provider per target from the **Start Agent Scan** button on the Targets
+page; live Plan / Act / Observe events stream into the Brain Panel.
+
+
 ---
 
 ## Table of Contents

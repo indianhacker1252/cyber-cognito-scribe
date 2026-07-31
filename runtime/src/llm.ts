@@ -1,4 +1,5 @@
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
+import { createGoogleGenerativeAI } from "@ai-sdk/google";
 
 export function pickProvider(provider: string, model: string) {
   if (provider === "openai") {
@@ -15,12 +16,10 @@ export function pickProvider(provider: string, model: string) {
   if (provider === "gemini") {
     const key = process.env.GEMINI_API_KEY;
     if (!key) throw new Error("GEMINI_API_KEY not set");
-    const p = createOpenAICompatible({
-      name: "gemini",
-      baseURL: "https://generativelanguage.googleapis.com/v1beta/openai",
-      headers: { Authorization: `Bearer ${key}` },
-    });
-    return p(model.replace(/^google\//, ""));
+    // Use native Google provider — the OpenAI-compat endpoint omits `index`
+    // on tool_call deltas which breaks AI SDK 5 stream parsing.
+    const google = createGoogleGenerativeAI({ apiKey: key });
+    return google(model.replace(/^google\//, ""));
   }
   // default: lovable gateway
   const key = process.env.LOVABLE_API_KEY;
