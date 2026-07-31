@@ -423,9 +423,11 @@ export default function Targets() {
                   </div>
 
                 {/* Per-target scan control: progress + start/abort/restart */}
-                <div className="mt-2">
+                <div className="mt-2 space-y-2">
                   <ScanControl targetId={target.id} targetDomain={target.domain || target.name} />
+                  <AgentSessionStarter targetId={target.id} />
                 </div>
+
 
 
 
