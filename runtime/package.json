@@ -9,7 +9,7 @@
     "dev": "tsx watch src/index.ts"
   },
   "dependencies": {
-    "@ai-sdk/openai-compatible": "^3.0.18",
+    "@ai-sdk/openai-compatible": "^1.0.47",
     "@supabase/supabase-js": "^2.45.0",
     "ai": "^5.0.223",
     "playwright": "^1.48.0",
