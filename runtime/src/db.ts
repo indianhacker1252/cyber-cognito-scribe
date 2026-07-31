@@ -29,7 +29,9 @@ export async function claimSession(host: string): Promise<Session | null> {
     console.error("[db] claim_agent_session error:", error.message);
     return null;
   }
-  return (data as Session) ?? null;
+  const s = data as Session | null;
+  if (!s || !s.id) return null;
+  return s;
 }
 
 export async function emit(
