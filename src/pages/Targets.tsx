@@ -21,6 +21,8 @@ import { WafDriftMonitor } from "@/components/WafDriftMonitor";
 import { AdvancedScannerPanel } from "@/components/AdvancedScannerPanel";
 import { ScopeGateDialog } from "@/components/ScopeGateDialog";
 import { ScanControl } from "@/components/ScanControl";
+import { AgentSessionStarter } from "@/components/AgentSessionStarter";
+
 
 
 const statusColors: Record<string, string> = {
