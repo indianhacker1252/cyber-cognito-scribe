@@ -18,8 +18,6 @@ export function pickProvider(provider: string, model: string) {
     if (!key) throw new Error("GEMINI_API_KEY not set");
     // Use native Google provider — the OpenAI-compat endpoint omits `index`
     // on tool_call deltas which breaks AI SDK 5 stream parsing.
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { createGoogleGenerativeAI } = require("@ai-sdk/google");
     const google = createGoogleGenerativeAI({ apiKey: key });
     return google(model.replace(/^google\//, ""));
   }
