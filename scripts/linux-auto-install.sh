@@ -106,6 +106,53 @@ EOF
   green "Native worker running on port ${PORT}. Token: ${token}"
 }
 
+install_local_agent() {
+  install_docker
+  green "Installing the CyberScope Option-B long-lived agent runtime locally..."
+  local RUNTIME_DIR="$ROOT_DIR/runtime"
+  if [[ ! -d "$RUNTIME_DIR" ]]; then
+    warn "runtime/ directory not found at $RUNTIME_DIR — skipping."
+    return
+  fi
+
+  local ENV_FILE="$RUNTIME_DIR/.env"
+  if [[ ! -f "$ENV_FILE" ]]; then
+    green "Configuring runtime/.env — paste the values from Lovable → Project Settings."
+    read -rp "SUPABASE_URL (https://xxxx.supabase.co): " SB_URL
+    read -rp "SUPABASE_SERVICE_ROLE_KEY: " SB_SRK
+    read -rp "LOVABLE_API_KEY (optional, enter to skip): " LOV_KEY
+    read -rp "OPENAI_API_KEY (optional): " OAI_KEY
+    read -rp "GEMINI_API_KEY (optional): " GEM_KEY
+    cat > "$ENV_FILE" <<EOF
+SUPABASE_URL=${SB_URL}
+SUPABASE_SERVICE_ROLE_KEY=${SB_SRK}
+LOVABLE_API_KEY=${LOV_KEY}
+OPENAI_API_KEY=${OAI_KEY}
+GEMINI_API_KEY=${GEM_KEY}
+RUNTIME_HOST_ID=$(hostname)-$(openssl rand -hex 3)
+POLL_INTERVAL_MS=3000
+EOF
+    green "Wrote $ENV_FILE"
+  else
+    green "Reusing existing $ENV_FILE"
+  fi
+
+  local REPLICAS=1
+  yellow "How many parallel agent workers to run? [1]: "
+  read -r REPLICAS || true
+  REPLICAS="${REPLICAS:-1}"
+
+  ( cd "$RUNTIME_DIR" && \
+    if docker compose version >/dev/null 2>&1; then
+      sudo_cmd docker compose up -d --build --scale agent="$REPLICAS"
+    else
+      sudo_cmd docker-compose up -d --build --scale agent="$REPLICAS"
+    fi )
+
+  green "Local agent runtime is up. It will poll agent_sessions and pick up queued scans within ~3s."
+  green "Logs:  cd $RUNTIME_DIR && sudo docker compose logs -f agent"
+}
+
 main() {
   echo "CyberScope guided installer"
   echo "This script asks before each major requirement. Run on Debian/Ubuntu/Kali."
@@ -114,7 +161,9 @@ main() {
   ask "Install Playwright Chromium for browser-based testing?" Y && install_playwright
   ask "Start the bundled Docker stack (local database + Ollama + worker)?" Y && start_stack
   ask "Install the native systemd worker service too?" n && install_systemd_worker
+  ask "Install & start the long-lived Option-B agent runtime locally (XBOW/Mythos-style)?" Y && install_local_agent
   green "Done. Paste the printed Worker, Database, and Local AI values into Settings."
+  green "Then in the app: open a target → Start Agent Scan — the local runtime will claim it."
 }
 
 main "$@"
