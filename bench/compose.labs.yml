@@ -1,0 +1,15 @@
+services:
+  juiceshop:
+    image: bkimminich/juice-shop
+    restart: unless-stopped
+    ports: ["3000:3000"]
+
+  dvwa:
+    image: vulnerables/web-dvwa
+    restart: unless-stopped
+    ports: ["8080:80"]
+
+  webgoat:
+    image: webgoat/webgoat
+    restart: unless-stopped
+    ports: ["8888:8080", "9090:9090"]

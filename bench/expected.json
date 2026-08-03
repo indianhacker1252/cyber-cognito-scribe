@@ -1,0 +1,14 @@
+{
+  "juiceshop": {
+    "url": "http://localhost:3000",
+    "expected_classes": ["xss", "sqli", "idor", "jwt", "ssrf", "open_redirect"]
+  },
+  "dvwa": {
+    "url": "http://localhost:8080",
+    "expected_classes": ["xss", "sqli", "command_injection", "csrf", "file_upload", "path_traversal"]
+  },
+  "webgoat": {
+    "url": "http://localhost:8888",
+    "expected_classes": ["xxe", "ssrf", "jwt", "path_traversal", "insecure_deserialization"]
+  }
+}
