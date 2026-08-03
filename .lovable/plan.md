@@ -1,149 +1,101 @@
-# Option B — Rebuild as a real XBOW-style agent
+# Local Agent Stack for VAPT — Plan
 
-The current tool is a **stateless fan-out of edge functions** capped at 50s each, orchestrated by cron ticks. XBOW/Mythos are **long-lived agents** with a single reasoning loop, a persistent target state, and real tools (browser, shell, HTTP proxy) they can call for minutes/hours. To match that, we replace the orchestration layer, not the detectors.
+## 1. Which local agents to bundle
 
-The Supabase database and the existing detector code become the **tool surface** for a new agent runtime that lives outside edge functions.
+Group by role. Each is open-source, scriptable, and safe to auto-install on Debian/Ubuntu/Kali.
 
----
+### A. Reasoning / LLM brain (local, offline-capable)
+- **Ollama** (already partially wired) — runtime for local models.
+  - Models to pull: `qwen2.5-coder:7b` (tool-use + code), `llama3.1:8b` (general reasoning), `deepseek-r1:7b` (chain-of-thought planning), `nomic-embed-text` (embeddings for RAG over recon output).
+- **Optional heavy**: `qwen2.5:32b` for boxes with ≥24GB VRAM — gated behind a prompt.
 
-## Target architecture
+### B. Long-lived operator agent (the XBOW-style loop)
+- **Our `runtime/` container** (Node + Playwright + AI SDK) — this IS the agent. Installer should:
+  - Build the Docker image
+  - Register a systemd unit `cyberscope-agent.service` so it survives reboots
+  - Auto-scale replicas based on CPU cores (`nproc / 2`, min 1, max 8)
+
+### C. Recon / attack tooling the agent shells out to
+Kali-grade CLIs, all apt- or go-installable:
+- Recon: `subfinder`, `amass`, `assetfinder`, `httpx`, `dnsx`, `naabu`, `katana`, `waybackurls`, `gau`
+- Vuln: `nuclei` (+ templates), `nikto`, `wpscan`, `sslscan`, `testssl.sh`
+- Fuzzing: `ffuf`, `feroxbuster`, `dirsearch`, `arjun`, `paramspider`
+- Exploit: `sqlmap`, `dalfox` (XSS), `commix` (cmdi), `tplmap` (SSTI), `NoSQLMap`
+- Chain / infra: `nmap`, `masscan`, `whatweb`, `wafw00f`, `gowitness` (screenshots)
+- OOB: self-hosted **interactsh-server** (Docker) so SSRF/RCE callbacks land on the user's own box, not a shared service
+
+### D. Browser + headless
+- Playwright Chromium (already in runtime image)
+- **CDP proxy** via `mitmproxy` container — lets the agent intercept/replay requests (the "Repeater/Intruder" gap you called out)
+
+### E. Data plane
+- Local **Postgres 16** (already in `deploy/docker-compose.yml`) as a mirror/cache for offline runs
+- **Redis** for the loop-guard + idempotency keys (currently done in Postgres — Redis makes it 20× faster)
+- **MinIO** for evidence blobs (screenshots, HAR files, PoC payloads)
+
+## 2. Installer changes (`scripts/linux-auto-install.sh`)
+
+Add these prompted steps in order (each `ask` gated):
 
 ```text
-   ┌─────────────────────── Lovable UI (unchanged shell) ───────────────────────┐
-   │  BrainPanel · Findings · OWASP · Diagnostics · ScanControl                 │
-   └───────────────▲──────────────────────────────────────────────▲─────────────┘
-                   │ Supabase Realtime (agent_events, findings)   │ REST
-                   │                                              │
-   ┌───────────────┴──────────────────────────┐    ┌──────────────┴─────────────┐
-   │  Agent Runtime  (long-lived worker)      │    │  Supabase (state + tools)  │
-   │  ────────────────────────────────────    │    │  target_world_model        │
-   │  • Per-target Operator loop (hours)      │◄──►│  agent_sessions            │
-   │  • LLM: Gemini / GPT / Claude via SDK    │    │  agent_events (append-log) │
-   │  • ReAct: plan → tool → observe → learn  │    │  tool_invocations          │
-   │  • Tools: http, browser, shell, oracle,  │    │  findings + evidence       │
-   │    cve, mutator, chain-runner            │    │  owasp_checklist           │
-   └──────────────┬───────────────────────────┘    └────────────────────────────┘
-                  │
-                  ▼
-     Playwright browser · headless shell · HTTP client with proxy · OOB listener
+[?] Install Ollama and pull recommended models?           (Y/n)
+[?] Install ProjectDiscovery suite (subfinder/httpx/…)?   (Y/n)
+[?] Install exploitation CLIs (sqlmap/dalfox/commix/…)?   (Y/n)
+[?] Install nuclei templates + custom CyberScope pack?    (Y/n)
+[?] Start self-hosted interactsh-server for OOB?          (Y/n)
+[?] Start mitmproxy sidecar for request interception?     (Y/n)
+[?] Register cyberscope-agent as systemd (auto-boot)?     (Y/n)
+[?] Auto-scale agent replicas to $(nproc)/2 workers?      (Y/n)
 ```
 
-Key idea: **one agent per target**, not 154 jobs per target. The agent decides what to do next; edge functions become dumb tool endpoints it can call when it wants a fanned-out primitive.
+Each maps to one shell function (`install_ollama`, `install_pd_suite`, `install_exploit_clis`, `install_nuclei`, `start_interactsh`, `start_mitm`, `register_systemd`, `scale_replicas`). Everything writes into `/opt/cyberscope-agent/` and logs to `journalctl -u cyberscope-agent`.
 
----
+Add a final **`doctor`** step: runs `cyberscope-agent --selftest` which pings Supabase, Ollama, interactsh, and Playwright, then prints a green/red table.
 
-## Phase plan (concrete, in build order)
+## 3. How the agent uses them
 
-### Phase 1 — Runtime host (unblocks everything)
+Extend `runtime/src/tools/index.ts` with:
+- `recon.subfinder` / `recon.httpx` / `recon.katana`
+- `vuln.nuclei` (templates + severity filter)
+- `exploit.sqlmap` / `exploit.dalfox` (only when `target_is_exploit_authorized`)
+- `oob.register` → returns an interactsh URL for the current step
+- `proxy.replay` → mitmproxy scripting API for tampered replays
 
-Edge Functions cannot host this. Pick one:
+Add allowlist entries for each in `SHELL_ALLOWLIST`. All results stream into `agent_events` so BrainPanel shows them live.
 
-- **Recommended:** Fly.io Machine (or Railway) running a Node/TS worker container. One machine per active target, autoscaled. Cheap, long-lived, has shell + browser.
-- Alternative: a single always-on VPS with a queue.
+## 4. Honest answer: is this ready to beat XBOW / Mythos?
 
-Deliverables:
-- `runtime/` folder in repo with Dockerfile, `pnpm start` boots the agent.
-- Supabase service-role key + `LOVABLE_API_KEY` injected as env.
-- Health endpoint + graceful shutdown on SIGTERM (checkpoints state).
+**No, not yet.** Where we stand:
 
-### Phase 2 — State model (single source of truth)
+| Capability                          | XBOW / Mythos | CyberScope today |
+|-------------------------------------|:-------------:|:----------------:|
+| Long-lived agent w/ browser + shell | ✅            | ✅ (runtime built, needs field hours) |
+| Deterministic proof oracles         | ✅            | ⚠️ partial (`proof-oracles.ts` exists, few classes wired) |
+| Multi-step exploit chains executed  | ✅            | ⚠️ runtime present, chains rarely fire end-to-end |
+| World-model persistence             | ✅            | ✅ (`target_world_model`) |
+| Adaptive mutator (bandit)           | ✅            | ✅ (`ai-mutator` UCB1) |
+| OOB infra owned by operator         | ✅            | ❌ (planned above) |
+| Request interception / replay       | ✅            | ❌ (mitmproxy planned) |
+| Local model fallback                | partial       | ✅ (Ollama) |
+| Trained on 100k+ real bounties      | ✅            | ❌ (no training data pipeline) |
+| Continuous benchmark harness        | ✅            | ❌ |
 
-Add tables (keep existing ones):
-- `agent_sessions(id, target_id, status, started_at, ended_at, budget_credits, budget_seconds)`
-- `agent_events(id, session_id, ts, kind, payload jsonb)` — append-only log the UI streams via Realtime. `kind ∈ {plan, thought, tool_call, tool_result, finding, decision, error}`.
-- `tool_invocations(id, session_id, tool, args, result, latency_ms, cost_credits)`
+**Gaps that matter most to close first (in order):**
+1. Self-hosted **interactsh** — without OOB, SSRF/blind-RCE/blind-SQLi are guesswork.
+2. **mitmproxy** replay tool — required for real Intruder/Repeater-style tampering.
+3. Wire **nuclei + PD suite** into the runtime agent as first-class tools (not shell probes).
+4. **Benchmark harness**: 10 known-vuln targets (Juice Shop, DVWA, WebGoat, HTB retired, PortSwigger labs) scored on every deploy — this is what tells us if we're actually improving.
+5. **Evidence-based scoring** — reject findings without oracle proof at DB level (trigger exists, tighten thresholds).
 
-Retire `scan_jobs` fan-out as the orchestrator (keep table for the few background primitives the agent still fans out).
+Realistic call: after this plan lands + 2–3 weeks of benchmark-driven iteration, we're competitive on **web app OWASP Top 10** for known-vuln targets. Matching XBOW/Mythos on novel real-world targets needs the training-data + eval loop, which is a quarter of work, not a week.
 
-### Phase 3 — Operator loop (the "brain")
+## Deliverables of this plan (one implementation pass)
 
-One file: `runtime/src/operator.ts`.
+1. Extend `scripts/linux-auto-install.sh` with the 8 new prompted steps + `doctor` selftest.
+2. Add `deploy/compose.tools.yml` for interactsh + mitmproxy + redis + minio.
+3. Add 5 new tools to `runtime/src/tools/index.ts` (subfinder, httpx, nuclei, oob, replay) with allowlist.
+4. Add `runtime/src/selftest.ts` invoked by `--selftest`.
+5. Update `README.md` with the new one-liner: `curl -fsSL … | bash` → guided install.
+6. Ship a `bench/` folder with 3 seed targets (Juice Shop + DVWA + WebGoat via Docker) and a `bench/run.ts` that scores agent runs.
 
-```ts
-while (!done && withinBudget()) {
-  const ctx = await loadWorldModel(targetId);
-  const plan = await llm.plan(ctx, recentEvents);   // structured: next_tool + why
-  emit('plan', plan);
-  const result = await tools[plan.tool](plan.args); // real tool call
-  emit('tool_result', result);
-  await updateWorldModel(targetId, plan, result);   // learn
-  done = plan.tool === 'finish' || goalMet(ctx);
-}
-```
-
-Rules:
-- Uses AI SDK `streamText` + tool calling with `stopWhen: stepCountIs(200)`.
-- Every step persisted to `agent_events` before the next LLM call (crash-safe resume).
-- Model = `google/gemini-3.6-flash` default, fallback chain unchanged.
-
-### Phase 4 — Tool surface (what the agent can actually do)
-
-Real tools, not "queue a job":
-
-| Tool | Impl |
-| --- | --- |
-| `http.request` | Node fetch through mitm proxy; records req/resp to evidence |
-| `browser.visit` | Playwright page; returns DOM, console, network, screenshot |
-| `browser.exec_js` | For DOM XSS / prototype pollution proofs |
-| `shell.run` | Sandboxed `bash -c` (nuclei, ffuf, subfinder, sqlmap-lite) |
-| `oob.listener` | Allocates interact.sh subdomain, streams hits back |
-| `oracle.check` | Existing `_shared/proof-oracles.ts` |
-| `cve.lookup` | Existing `cve-mapper` |
-| `mutate.payload` | Existing UCB1 mutator |
-| `chain.run` | Existing exploit-runtime |
-| `findings.record` | Writes to DB with proof gate |
-| `finish` | Marks session complete |
-
-Each tool has a Zod `inputSchema`, compact serializable output, and destructive ones set `needsApproval: true`.
-
-### Phase 5 — World model as agent memory
-
-Replace ad-hoc `target_world_model.model` blob with structured slots the LLM sees every turn:
-- `surface`: endpoints, params, forms, auth surfaces, tech stack, CVEs
-- `beliefs`: WAF class, auth model, framework, redirect traps
-- `attempts`: `{class, param, payload_family, outcome, confidence}[]` — feeds UCB1 and stops repeat attempts
-- `hypotheses`: open questions with priority
-- `budget`: credits/time remaining
-
-Injected into every plan prompt; agent updates it via a dedicated `memory.write` tool.
-
-### Phase 6 — UI streaming
-
-- `BrainPanel` subscribes to `agent_events` for the active `session_id` via Realtime and renders the 3 lanes (Plan / Act / Observe) from event kinds directly.
-- `ScanControl` calls a new `POST /sessions/:id/stop` on the runtime (SIGTERM to that agent).
-- `Findings`, `OWASP`, `Diagnostics` keep reading their existing tables — the agent writes to them through tools, so they light up in real time.
-
-### Phase 7 — Cutover
-
-1. Ship runtime + Phase 2 tables behind a feature flag `USE_AGENT_RUNTIME`.
-2. New scans start an `agent_session` instead of enqueueing 154 jobs.
-3. Old `scan_jobs`/`phase-arbiter` cron kept alive 2 weeks for regressions, then deleted.
-4. Delete: `phase-arbiter`, `phase-arbiter-tick`, `scan-orchestrator`, `scan-job-worker`, and every edge function that only existed to be enqueued.
-
----
-
-## What survives from the current codebase
-
-Kept and reused as tools/libraries: `_shared/proof-oracles.ts`, `_shared/exploit-runtime.ts`, `_shared/ai-mutator.ts`, `_shared/payloads-att.ts`, `_shared/cve-mapper.ts`, `_shared/world-model.ts`, `_shared/findings-writer.ts`, `injection-matrix`, `subdomain-enum`, `recon-engine`, `nvd-intel-sync`. UI shell, auth, credits, OWASP checklist table, findings table.
-
-Retired: `phase-arbiter*`, `scan-orchestrator`, `scan-job-worker`, `enqueue-*`, the cron ticks, and every "queue then hope" flow.
-
----
-
-## Timeline (rough)
-
-- **Week 1:** Phase 1 (runtime host) + Phase 2 (tables) + skeleton loop that just calls `http.request` and writes events.
-- **Week 2:** Phase 3 + 4: full tool surface incl. browser and oob; port oracles.
-- **Week 3:** Phase 5 world model + Phase 6 UI streaming; parity scan on `networkbulls.com`.
-- **Week 4:** Phase 7 cutover, delete dead code, tune prompts, add authenticated-scan tool.
-
----
-
-## What I need from you before I start building
-
-1. **Runtime host choice:** Fly.io Machine (my recommendation) or something else you already pay for?
-2. **Extra LLM keys:** confirm we can use existing `LOVABLE_API_KEY` only, or also wire the OpenAI/Anthropic keys you mentioned earlier as first-class in the agent.
-3. **Browser tool scope:** OK to run Playwright inside the runtime container (adds ~400MB image, needed for real DOM XSS / auth flows)?
-4. **Cutover risk:** OK to leave old orchestrator running in parallel for 2 weeks, or hard-swap on day 1?
-
-Answer those four and I'll start Phase 1 in the next turn.
+Approve and I'll execute all 6 in one pass.

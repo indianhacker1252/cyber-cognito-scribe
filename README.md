@@ -8,22 +8,69 @@ A Docker/VPS runtime under `runtime/` runs a persistent ReAct operator loop that
 claims queued `agent_sessions` and drives real browser + HTTP + shell tools with
 streaming logs into `agent_events`.
 
-### Quick start (VPS)
+### One-liner install (Debian/Ubuntu/Kali)
+
+```bash
+git clone <this-repo> /opt/cyberscope && cd /opt/cyberscope
+sudo bash scripts/linux-auto-install.sh
+```
+
+The guided installer prompts before each step and installs:
+
+| Step | What |
+|------|------|
+| Docker + Compose plugin | Container runtime |
+| Security CLIs | nmap, nikto, sslscan, ffuf, jq, openssl |
+| Playwright Chromium | Headless browser for XSS/DOM proofs |
+| **Ollama + local models** | qwen2.5-coder:7b, llama3.1:8b, nomic-embed-text (offline LLM fallback) |
+| **ProjectDiscovery suite** | subfinder, httpx, dnsx, naabu, katana, nuclei, gau, waybackurls |
+| **Exploit CLIs** | sqlmap, dalfox, commix, wpscan, arjun, feroxbuster |
+| Nuclei templates | Full CVE + misconfig template pack |
+| **interactsh-server** | Self-hosted OOB (SSRF / blind-RCE / blind-SQLi callbacks) |
+| **mitmproxy sidecar** | Request interception & replay (Intruder/Repeater style) |
+| Local Postgres + Ollama stack | Offline data + LLM plane |
+| Option-B agent runtime | Long-lived ReAct agent (Node + Playwright + AI SDK) |
+| systemd auto-boot | `cyberscope-agent-runtime.service` |
+| Replica auto-scale | `nproc/2` parallel agents |
+| **Doctor selftest** | Verifies Supabase, LLM, browser, OOB reachable |
+
+The agent uses these tools directly (see `runtime/src/tools/index.ts`):
+`http.request`, `browser.visit`, `browser.exec_js`, `shell.run`,
+`recon.subfinder`, `recon.httpx`, `recon.katana`, `vuln.nuclei`,
+`oob.register`, `oob.poll`, `proxy.replay`, `memory.write`, `findings.record`.
+
+### Manual VPS quick start
 
 ```bash
 cd runtime
 cp .env.example .env    # set SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY,
                         # and one of LOVABLE_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY
 docker compose up -d --build
+docker compose exec agent tsx src/selftest.ts   # doctor
+```
+
+Optional sidecars (interactsh, mitmproxy, redis, minio):
+```bash
+docker compose -f deploy/compose.tools.yml up -d
 ```
 
 ### Providers supported
 - `lovable`  — Lovable AI Gateway (default, uses `LOVABLE_API_KEY`)
 - `openai`   — `gpt-4o-mini` / `gpt-4.1-mini` via `OPENAI_API_KEY`
 - `gemini`   — `gemini-2.5-flash` via native `@ai-sdk/google` and `GEMINI_API_KEY`
+- `ollama`   — local `qwen2.5-coder` / `llama3.1` (offline; no key needed)
 
 Pick the provider per target from the **Start Agent Scan** button on the Targets
 page; live Plan / Act / Observe events stream into the Brain Panel.
+
+### Benchmark harness
+
+Score the agent against known-vuln labs (Juice Shop, DVWA, WebGoat):
+```bash
+docker compose -f bench/compose.labs.yml up -d
+tsx bench/run.ts
+```
+
 
 
 ---

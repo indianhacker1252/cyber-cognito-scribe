@@ -1,0 +1,40 @@
+# Optional tooling sidecars for CyberScope local runtime.
+# Start with: docker compose -f compose.tools.yml up -d
+services:
+  interactsh:
+    image: projectdiscovery/interactsh-server:latest
+    restart: unless-stopped
+    command: ["-http-port", "8443", "-dns-port", "8853"]
+    ports:
+      - "8443:8443"
+      - "8853:8853/udp"
+
+  mitmproxy:
+    image: mitmproxy/mitmproxy
+    restart: unless-stopped
+    command: ["mitmweb", "--web-host", "0.0.0.0", "--web-port", "8081", "--listen-port", "8080"]
+    ports:
+      - "8081:8081"   # web UI
+      - "8082:8080"   # proxy port
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
+  minio:
+    image: minio/minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: cyberscope
+      MINIO_ROOT_PASSWORD: cyberscope-evidence
+    volumes:
+      - minio_data:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+
+volumes:
+  minio_data:
