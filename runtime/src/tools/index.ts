@@ -17,7 +17,17 @@ export async function closeBrowser() {
   if (sharedBrowser) { await sharedBrowser.close(); sharedBrowser = null; }
 }
 
-const SHELL_ALLOWLIST = new Set(["curl", "dig", "whois", "nmap", "jq", "host", "nslookup"]);
+const SHELL_ALLOWLIST = new Set([
+  "curl", "dig", "whois", "nmap", "jq", "host", "nslookup",
+  // ProjectDiscovery + fuzzers
+  "subfinder", "httpx", "dnsx", "naabu", "katana", "nuclei",
+  "assetfinder", "waybackurls", "gau", "ffuf", "feroxbuster",
+  "arjun", "gobuster", "wafw00f", "whatweb", "sslscan", "testssl.sh",
+  // exploit CLIs (still gated by target_is_exploit_authorized in operator prompt)
+  "sqlmap", "dalfox", "commix", "wpscan",
+]);
+
+const INTERACTSH_URL = process.env.INTERACTSH_URL || "";
 
 export function buildTools(ctx: { sessionId: string; targetId: string }) {
   return {
