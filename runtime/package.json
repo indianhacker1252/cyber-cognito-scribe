@@ -6,7 +6,9 @@
   "scripts": {
     "start": "tsx src/index.ts",
     "build": "tsc -p .",
-    "dev": "tsx watch src/index.ts"
+    "dev": "tsx watch src/index.ts",
+    "doctor": "tsx src/selftest.ts",
+    "bench": "tsx ../bench/run.ts"
   },
   "dependencies": {
     "@ai-sdk/google": "^2.0.86",
