@@ -1,7 +1,8 @@
-import { streamText, stepCountIs } from "ai";
+import { streamText, generateText, stepCountIs } from "ai";
 import { emit, heartbeat, updateSession, getTarget, getWorldModel, type Session } from "./db.js";
 import { pickProvider } from "./llm.js";
 import { buildTools, closeBrowser } from "./tools/index.js";
+import { closeOracleBrowser } from "./oracles.js";
 
 const SYSTEM_PROMPT = `You are CyberScope Operator, an autonomous VAPT agent modeled on XBOW.
 
