@@ -37,14 +37,28 @@ export async function runSession(session: Session) {
   const worldModel = await getWorldModel(session.target_id);
   const goal = session.goal ?? `Perform a full VAPT scan of ${target.domain || target.url || target.name}. Find and prove real vulnerabilities across OWASP A01-A10.`;
 
+  const model = pickProvider(session.provider, session.model);
+
+  // --- P1 PLANNER: produce ranked sub-goals before executor starts ---
+  let planText = "";
+  try {
+    const pr = await generateText({
+      model,
+      system: "You are the PLANNER for a VAPT agent. Output a numbered list (max 8) of concrete, testable sub-goals ranked by ROI, each with a one-line success criterion. No prose before/after.",
+      prompt: `TARGET: ${JSON.stringify({ domain: target.domain, url: target.url, tech: target.tech_stack ?? target.detected_tech ?? null })}\nWORLD MODEL: ${JSON.stringify(worldModel).slice(0, 2000)}\nGOAL: ${goal}`,
+    });
+    planText = pr.text;
+  } catch (e: any) {
+    planText = `(planner failed: ${String(e?.message ?? e)}) — executor will improvise from goal.`;
+  }
   await emit(session.id, session.target_id, "plan", {
     msg: "session started",
     goal,
     target: { id: target.id, domain: target.domain, url: target.url },
     world_model: worldModel,
+    sub_goals: planText,
   });
 
-  const model = pickProvider(session.provider, session.model);
   const tools = buildTools({ sessionId: session.id, targetId: session.target_id });
 
   const startTs = Date.now();
