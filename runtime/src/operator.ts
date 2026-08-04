@@ -116,6 +116,24 @@ For each sub-goal: hypothesize → probe → verify with an oracle. Use ONE tool
     for await (const _chunk of result.textStream) { /* drain */ }
     const finalText = await result.text;
 
+    // --- P1 CRITIC: post-session review over plan vs findings ---
+    try {
+      const { data: findings } = await (await import("./db.js")).db
+        .from("vulnerability_findings")
+        .select("vuln_class,severity,proof_tier,affected_url")
+        .eq("target_id", session.target_id)
+        .order("created_at", { ascending: false })
+        .limit(30);
+      const cr = await generateText({
+        model,
+        system: "You are the CRITIC. Compare the plan's sub-goals against confirmed findings. For each sub-goal: state COVERED / PARTIAL / MISSED with one-line justification. End with 2 concrete next-session recommendations. Terse.",
+        prompt: `PLAN:\n${planText}\n\nFINDINGS (recent):\n${JSON.stringify(findings ?? [], null, 2)}\n\nAGENT FINAL SUMMARY:\n${finalText.slice(0, 1500)}`,
+      });
+      await emit(session.id, session.target_id, "critique", { stage: "post_session", review: cr.text }, stepCount);
+    } catch (e: any) {
+      await emit(session.id, session.target_id, "critique", { stage: "post_session", error: String(e?.message ?? e) }, stepCount);
+    }
+
     await emit(session.id, session.target_id, "decision", { msg: "session complete", final: finalText.slice(0, 2000) }, stepCount);
     await updateSession(session.id, { status: "completed", completed_at: new Date().toISOString(), steps_taken: stepCount });
   } catch (err: any) {
