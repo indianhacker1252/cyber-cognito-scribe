@@ -1,7 +1,8 @@
-import { streamText, stepCountIs } from "ai";
+import { streamText, generateText, stepCountIs } from "ai";
 import { emit, heartbeat, updateSession, getTarget, getWorldModel, type Session } from "./db.js";
 import { pickProvider } from "./llm.js";
 import { buildTools, closeBrowser } from "./tools/index.js";
+import { closeOracleBrowser } from "./oracles.js";
 
 const SYSTEM_PROMPT = `You are CyberScope Operator, an autonomous VAPT agent modeled on XBOW.
 
@@ -36,14 +37,28 @@ export async function runSession(session: Session) {
   const worldModel = await getWorldModel(session.target_id);
   const goal = session.goal ?? `Perform a full VAPT scan of ${target.domain || target.url || target.name}. Find and prove real vulnerabilities across OWASP A01-A10.`;
 
+  const model = pickProvider(session.provider, session.model);
+
+  // --- P1 PLANNER: produce ranked sub-goals before executor starts ---
+  let planText = "";
+  try {
+    const pr = await generateText({
+      model,
+      system: "You are the PLANNER for a VAPT agent. Output a numbered list (max 8) of concrete, testable sub-goals ranked by ROI, each with a one-line success criterion. No prose before/after.",
+      prompt: `TARGET: ${JSON.stringify({ domain: target.domain, url: target.url, tech: target.tech_stack ?? target.detected_tech ?? null })}\nWORLD MODEL: ${JSON.stringify(worldModel).slice(0, 2000)}\nGOAL: ${goal}`,
+    });
+    planText = pr.text;
+  } catch (e: any) {
+    planText = `(planner failed: ${String(e?.message ?? e)}) — executor will improvise from goal.`;
+  }
   await emit(session.id, session.target_id, "plan", {
     msg: "session started",
     goal,
     target: { id: target.id, domain: target.domain, url: target.url },
     world_model: worldModel,
+    sub_goals: planText,
   });
 
-  const model = pickProvider(session.provider, session.model);
   const tools = buildTools({ sessionId: session.id, targetId: session.target_id });
 
   const startTs = Date.now();
@@ -60,6 +75,9 @@ export async function runSession(session: Session) {
 `GOAL:
 ${goal}
 
+PLAN (ranked sub-goals — attack in this order, tick each off before moving on):
+${planText}
+
 TARGET:
 ${JSON.stringify({ domain: target.domain, url: target.url, tech: target.tech_stack ?? target.detected_tech ?? null }, null, 2)}
 
@@ -68,7 +86,7 @@ ${JSON.stringify(worldModel).slice(0, 4000)}
 
 BUDGET: ${session.budget_credits} credits, ${session.budget_seconds}s.
 
-Start with recon. Think step-by-step. Use ONE tool per turn.`,
+For each sub-goal: hypothesize → probe → verify with an oracle. Use ONE tool per turn. Persist beliefs with memory.write. Only call findings.record after concrete proof — the runtime WILL re-verify with a deterministic oracle and reject unproven findings.`,
       }],
       tools,
       stopWhen: stepCountIs(200),
@@ -76,12 +94,12 @@ Start with recon. Think step-by-step. Use ONE tool per turn.`,
         stepCount += 1;
         if (text) await emit(session.id, session.target_id, "thought", { text }, stepCount);
         for (const tc of toolCalls ?? []) {
-          await emit(session.id, session.target_id, "tool_call", { tool: tc.toolName, args: tc.args }, stepCount);
+          await emit(session.id, session.target_id, "act", { tool: tc.toolName, args: tc.args }, stepCount);
         }
         for (const tr of toolResults ?? []) {
           const r = (tr as any).result ?? (tr as any).output ?? {};
           const summary = JSON.stringify(r).slice(0, 2000);
-          await emit(session.id, session.target_id, "tool_result", { tool: (tr as any).toolName, summary }, stepCount);
+          await emit(session.id, session.target_id, "observe", { tool: (tr as any).toolName, summary }, stepCount);
         }
         await updateSession(session.id, { steps_taken: stepCount });
 
@@ -97,6 +115,24 @@ Start with recon. Think step-by-step. Use ONE tool per turn.`,
     // Drain the stream
     for await (const _chunk of result.textStream) { /* drain */ }
     const finalText = await result.text;
+
+    // --- P1 CRITIC: post-session review over plan vs findings ---
+    try {
+      const { data: findings } = await (await import("./db.js")).db
+        .from("vulnerability_findings")
+        .select("vuln_class,severity,proof_tier,affected_url")
+        .eq("target_id", session.target_id)
+        .order("created_at", { ascending: false })
+        .limit(30);
+      const cr = await generateText({
+        model,
+        system: "You are the CRITIC. Compare the plan's sub-goals against confirmed findings. For each sub-goal: state COVERED / PARTIAL / MISSED with one-line justification. End with 2 concrete next-session recommendations. Terse.",
+        prompt: `PLAN:\n${planText}\n\nFINDINGS (recent):\n${JSON.stringify(findings ?? [], null, 2)}\n\nAGENT FINAL SUMMARY:\n${finalText.slice(0, 1500)}`,
+      });
+      await emit(session.id, session.target_id, "critique", { stage: "post_session", review: cr.text }, stepCount);
+    } catch (e: any) {
+      await emit(session.id, session.target_id, "critique", { stage: "post_session", error: String(e?.message ?? e) }, stepCount);
+    }
 
     await emit(session.id, session.target_id, "decision", { msg: "session complete", final: finalText.slice(0, 2000) }, stepCount);
     await updateSession(session.id, { status: "completed", completed_at: new Date().toISOString(), steps_taken: stepCount });
@@ -114,4 +150,4 @@ Start with recon. Think step-by-step. Use ONE tool per turn.`,
   }
 }
 
-export { closeBrowser };
+export { closeBrowser, closeOracleBrowser };
