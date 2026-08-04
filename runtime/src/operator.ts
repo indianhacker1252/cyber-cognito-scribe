@@ -75,6 +75,9 @@ export async function runSession(session: Session) {
 `GOAL:
 ${goal}
 
+PLAN (ranked sub-goals — attack in this order, tick each off before moving on):
+${planText}
+
 TARGET:
 ${JSON.stringify({ domain: target.domain, url: target.url, tech: target.tech_stack ?? target.detected_tech ?? null }, null, 2)}
 
@@ -83,7 +86,7 @@ ${JSON.stringify(worldModel).slice(0, 4000)}
 
 BUDGET: ${session.budget_credits} credits, ${session.budget_seconds}s.
 
-Start with recon. Think step-by-step. Use ONE tool per turn.`,
+For each sub-goal: hypothesize → probe → verify with an oracle. Use ONE tool per turn. Persist beliefs with memory.write. Only call findings.record after concrete proof — the runtime WILL re-verify with a deterministic oracle and reject unproven findings.`,
       }],
       tools,
       stopWhen: stepCountIs(200),
@@ -91,12 +94,12 @@ Start with recon. Think step-by-step. Use ONE tool per turn.`,
         stepCount += 1;
         if (text) await emit(session.id, session.target_id, "thought", { text }, stepCount);
         for (const tc of toolCalls ?? []) {
-          await emit(session.id, session.target_id, "tool_call", { tool: tc.toolName, args: tc.args }, stepCount);
+          await emit(session.id, session.target_id, "act", { tool: tc.toolName, args: tc.args }, stepCount);
         }
         for (const tr of toolResults ?? []) {
           const r = (tr as any).result ?? (tr as any).output ?? {};
           const summary = JSON.stringify(r).slice(0, 2000);
-          await emit(session.id, session.target_id, "tool_result", { tool: (tr as any).toolName, summary }, stepCount);
+          await emit(session.id, session.target_id, "observe", { tool: (tr as any).toolName, summary }, stepCount);
         }
         await updateSession(session.id, { steps_taken: stepCount });
 
