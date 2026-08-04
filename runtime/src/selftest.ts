@@ -52,6 +52,13 @@ await check("interactsh (optional)", async () => {
   return `HTTP ${r.statusCode}`;
 });
 
+for (const bin of ["subfinder", "httpx", "katana", "nuclei", "nmap", "ffuf", "sqlmap"]) {
+  await check(`shell: ${bin}`, async () => {
+    const { stdout } = await pexec(bin, ["-version"]).catch(async () => pexec(bin, ["--version"]));
+    return (stdout || "").split("\n")[0].slice(0, 60) || "present";
+  });
+}
+
 const w = 32;
 console.log("\nCyberScope runtime selftest\n" + "-".repeat(w + 12));
 for (const r of rows) {
