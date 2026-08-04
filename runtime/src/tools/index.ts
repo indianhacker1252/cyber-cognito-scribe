@@ -4,7 +4,8 @@ import { request } from "undici";
 import { chromium, type Browser } from "playwright";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { db, mergeWorldModel } from "../db.js";
+import { db, mergeWorldModel, emit } from "../db.js";
+import { runOracle } from "../oracles.js";
 
 const pexec = promisify(execFile);
 
