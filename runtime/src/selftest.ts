@@ -1,6 +1,9 @@
 // CyberScope agent runtime selftest — pings Supabase, LLM, browser, OOB.
 import { chromium } from "playwright";
 import { request } from "undici";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+const pexec = promisify(execFile);
 
 type Row = { name: string; ok: boolean; detail: string };
 const rows: Row[] = [];
@@ -48,6 +51,13 @@ await check("interactsh (optional)", async () => {
   const r = await request(url, { headersTimeout: 3000 });
   return `HTTP ${r.statusCode}`;
 });
+
+for (const bin of ["subfinder", "httpx", "katana", "nuclei", "nmap", "ffuf", "sqlmap"]) {
+  await check(`shell: ${bin}`, async () => {
+    const { stdout } = await pexec(bin, ["-version"]).catch(async () => pexec(bin, ["--version"]));
+    return (stdout || "").split("\n")[0].slice(0, 60) || "present";
+  });
+}
 
 const w = 32;
 console.log("\nCyberScope runtime selftest\n" + "-".repeat(w + 12));
