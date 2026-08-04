@@ -1,6 +1,9 @@
 // CyberScope agent runtime selftest — pings Supabase, LLM, browser, OOB.
 import { chromium } from "playwright";
 import { request } from "undici";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+const pexec = promisify(execFile);
 
 type Row = { name: string; ok: boolean; detail: string };
 const rows: Row[] = [];
