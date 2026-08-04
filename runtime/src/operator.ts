@@ -150,4 +150,4 @@ For each sub-goal: hypothesize → probe → verify with an oracle. Use ONE tool
   }
 }
 
-export { closeBrowser };
+export { closeBrowser, closeOracleBrowser };
