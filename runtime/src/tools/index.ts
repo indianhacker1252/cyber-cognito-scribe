@@ -142,6 +142,20 @@ export function buildTools(ctx: { sessionId: string; targetId: string }) {
         evidence: z.record(z.string(), z.any()).optional(),
       }),
       execute: async (f) => {
+        // Deterministic proof gate — reject if oracle can't confirm.
+        const oracle = await runOracle(f.vuln_class, f.affected_url, f.evidence ?? {});
+        await emit(ctx.sessionId, ctx.targetId, "critique", {
+          stage: "proof_oracle",
+          vuln_class: f.vuln_class,
+          affected_url: f.affected_url,
+          ok: oracle.ok,
+          reason: oracle.reason,
+          details: oracle.details,
+        });
+        if (!oracle.ok) {
+          return { ok: false, rejected: true, reason: `proof oracle failed: ${oracle.reason}` };
+        }
+        const proofTier = oracle.details ? "confirmed" : (f.proof_tier ?? "suspected");
         const { data, error } = await db.from("vulnerability_findings").insert({
           target_id: ctx.targetId,
           finding_type: f.vuln_class,
@@ -150,15 +164,15 @@ export function buildTools(ctx: { sessionId: string; targetId: string }) {
           title: f.title,
           severity: f.severity,
           affected_url: f.affected_url,
-          proof_tier: f.proof_tier,
+          proof_tier: proofTier,
           description: f.description,
           request_raw: f.request_raw,
           response_raw: f.response_raw,
-          evidence: { ...(f.evidence ?? {}), session_id: ctx.sessionId },
-          hard_evidence: f.evidence ?? {},
+          evidence: { ...(f.evidence ?? {}), session_id: ctx.sessionId, oracle: { reason: oracle.reason, details: oracle.details } },
+          hard_evidence: { ...(f.evidence ?? {}), oracle_reason: oracle.reason },
         }).select("id").maybeSingle();
         if (error) return { ok: false, error: error.message };
-        return { ok: true, finding_id: data?.id };
+        return { ok: true, finding_id: data?.id, proof: oracle.reason };
       },
     }),
 
