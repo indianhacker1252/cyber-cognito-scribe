@@ -1,101 +1,82 @@
-# Local Agent Stack for VAPT — Plan
+# Gap Analysis: Our Tool vs XBOW / Mythos
 
-## 1. Which local agents to bundle
+## Where we stand today
+- **Long-lived agent runtime** (`runtime/`) with ReAct loop, browser (Playwright), HTTP, shell allowlist (subfinder/httpx/katana/nuclei/sqlmap/dalfox/...), OOB (interactsh), proxy replay, memory + findings tools.
+- **World model** table + agent_sessions / agent_events / planner_traces with RLS.
+- **Edge functions** (~120) for legacy phase-based scanning, kept in parallel.
+- **Installer** provisions Ollama, PD suite, exploit CLIs, interactsh, mitmproxy, systemd units, doctor selftest.
+- **Bench harness** (Juice Shop / DVWA / WebGoat) with precision/recall scorer.
 
-Group by role. Each is open-source, scriptable, and safe to auto-install on Debian/Ubuntu/Kali.
+## Real gaps vs XBOW / Mythos
 
-### A. Reasoning / LLM brain (local, offline-capable)
-- **Ollama** (already partially wired) — runtime for local models.
-  - Models to pull: `qwen2.5-coder:7b` (tool-use + code), `llama3.1:8b` (general reasoning), `deepseek-r1:7b` (chain-of-thought planning), `nomic-embed-text` (embeddings for RAG over recon output).
-- **Optional heavy**: `qwen2.5:32b` for boxes with ≥24GB VRAM — gated behind a prompt.
+### 1. Agent brain is too shallow (biggest gap)
+- Single system prompt, one flat message, no scratchpad, no belief/hypothesis tracking between steps.
+- No planner ↔ executor split (XBOW runs a planner that emits sub-goals, executor that runs tools, critic that scores proof).
+- No cost/step budget accounting fed back to the model.
+- No retry-on-tool-error with reflection; tool failure just becomes another observation.
 
-### B. Long-lived operator agent (the XBOW-style loop)
-- **Our `runtime/` container** (Node + Playwright + AI SDK) — this IS the agent. Installer should:
-  - Build the Docker image
-  - Register a systemd unit `cyberscope-agent.service` so it survives reboots
-  - Auto-scale replicas based on CPU cores (`nproc / 2`, min 1, max 8)
+### 2. Memory is a JSON blob, not retrievable knowledge
+- `world_model` merged with shallow patch; no vector recall, no per-endpoint notes, no "prior attempt" index the model queries.
+- Findings from edge-function scanners are not surfaced back into the agent's context.
 
-### C. Recon / attack tooling the agent shells out to
-Kali-grade CLIs, all apt- or go-installable:
-- Recon: `subfinder`, `amass`, `assetfinder`, `httpx`, `dnsx`, `naabu`, `katana`, `waybackurls`, `gau`
-- Vuln: `nuclei` (+ templates), `nikto`, `wpscan`, `sslscan`, `testssl.sh`
-- Fuzzing: `ffuf`, `feroxbuster`, `dirsearch`, `arjun`, `paramspider`
-- Exploit: `sqlmap`, `dalfox` (XSS), `commix` (cmdi), `tplmap` (SSTI), `NoSQLMap`
-- Chain / infra: `nmap`, `masscan`, `whatweb`, `wafw00f`, `gowitness` (screenshots)
-- OOB: self-hosted **interactsh-server** (Docker) so SSRF/RCE callbacks land on the user's own box, not a shared service
+### 3. Weak proof discipline
+- `findings.record` trusts the model's `proof_tier`. No server-side oracle check before insert (SQLi baseline diff, XSS DOM alert capture, SSRF OOB match, IDOR cross-account replay).
+- No screenshot / HAR / raw-request artifact storage per finding.
 
-### D. Browser + headless
-- Playwright Chromium (already in runtime image)
-- **CDP proxy** via `mitmproxy` container — lets the agent intercept/replay requests (the "Repeater/Intruder" gap you called out)
+### 4. Recon is broad but not correlated
+- Subfinder → httpx → katana run as isolated tool calls. Results are not deduped, scored, or turned into a ranked attack surface the planner iterates over.
+- No JS secret / API route extraction from katana output feeding back into fuzzers.
 
-### E. Data plane
-- Local **Postgres 16** (already in `deploy/docker-compose.yml`) as a mirror/cache for offline runs
-- **Redis** for the loop-guard + idempotency keys (currently done in Postgres — Redis makes it 20× faster)
-- **MinIO** for evidence blobs (screenshots, HAR files, PoC payloads)
+### 5. Exploit chaining is not real
+- `chain-finder` / `exploit-chain-runner` exist as edge functions but the long-lived agent never invokes them and has no in-runtime chain executor with shared session/cookie state.
 
-## 2. Installer changes (`scripts/linux-auto-install.sh`)
+### 6. No differential / multi-session testing
+- Auth-bypass and IDOR need two authenticated contexts side by side. Agent has one browser context.
 
-Add these prompted steps in order (each `ask` gated):
+### 7. Learning loop is stubbed
+- Bench scorer writes history.json but nothing feeds precision/recall back into payload ranking or prompt selection.
 
-```text
-[?] Install Ollama and pull recommended models?           (Y/n)
-[?] Install ProjectDiscovery suite (subfinder/httpx/…)?   (Y/n)
-[?] Install exploitation CLIs (sqlmap/dalfox/commix/…)?   (Y/n)
-[?] Install nuclei templates + custom CyberScope pack?    (Y/n)
-[?] Start self-hosted interactsh-server for OOB?          (Y/n)
-[?] Start mitmproxy sidecar for request interception?     (Y/n)
-[?] Register cyberscope-agent as systemd (auto-boot)?     (Y/n)
-[?] Auto-scale agent replicas to $(nproc)/2 workers?      (Y/n)
-```
+### 8. Observability
+- `BrainPanel` shows events but no per-session cost, tokens, tool-latency, or proof-oracle verdicts.
 
-Each maps to one shell function (`install_ollama`, `install_pd_suite`, `install_exploit_clis`, `install_nuclei`, `start_interactsh`, `start_mitm`, `register_systemd`, `scale_replicas`). Everything writes into `/opt/cyberscope-agent/` and logs to `journalctl -u cyberscope-agent`.
+## Fix plan (ordered by ROI)
 
-Add a final **`doctor`** step: runs `cyberscope-agent --selftest` which pings Supabase, Ollama, interactsh, and Playwright, then prints a green/red table.
+### P1 — Planner / Executor / Critic split (runtime)
+- Split `operator.ts` into `planner.ts` (emits next sub-goal + success criteria), `executor.ts` (current tool loop, scoped to one sub-goal), `critic.ts` (scores whether success criteria met, decides continue/abandon).
+- Persist each as `agent_events` of type `plan` / `act` / `critique` so `BrainPanel` renders three lanes.
 
-## 3. How the agent uses them
+### P2 — Deterministic proof gate in `findings.record`
+- Before insert, re-run a proof oracle in-runtime:
+  - SQLi: baseline vs payload timing/error diff via `http.request`.
+  - Reflected/DOM XSS: `browser.exec_js` dialog capture.
+  - SSRF: match `oob.poll` for correlation_id in evidence.
+  - Open redirect: parse `Location` host != target host.
+- Reject with reason if oracle fails; downgrade to `suspected` only when explicitly allowed.
 
-Extend `runtime/src/tools/index.ts` with:
-- `recon.subfinder` / `recon.httpx` / `recon.katana`
-- `vuln.nuclei` (templates + severity filter)
-- `exploit.sqlmap` / `exploit.dalfox` (only when `target_is_exploit_authorized`)
-- `oob.register` → returns an interactsh URL for the current step
-- `proxy.replay` → mitmproxy scripting API for tampered replays
+### P3 — Structured memory
+- New tables: `agent_notes(target_id, kind, key, value, embedding)` and `endpoint_catalog(target_id, url, method, params, auth_required, tech, last_probed, verdicts jsonb)`.
+- New tools: `memory.query(kind, key_like)`, `endpoints.list(filter)`, `endpoints.mark(url, verdict)`.
+- Recon tools write into `endpoint_catalog` instead of blob.
 
-Add allowlist entries for each in `SHELL_ALLOWLIST`. All results stream into `agent_events` so BrainPanel shows them live.
+### P4 — In-runtime chain executor
+- Port `chain-finder` logic into `runtime/src/chains.ts` with shared cookie jar across steps.
+- New tool `chain.run(steps)` that executes ordered http/browser calls and returns aggregated proof.
 
-## 4. Honest answer: is this ready to beat XBOW / Mythos?
+### P5 — Multi-context auth testing
+- Agent supports N named browser contexts (`browser.visit({ context: "userA" })`).
+- New tool `auth.login(context, creds)` + `auth.compare(url, ctxA, ctxB)` for IDOR/BAC proofs.
 
-**No, not yet.** Where we stand:
+### P6 — Learning loop closes
+- After each session, compute per-technique success rate, write to `technique_stats`.
+- `ai-mutator` UCB1 reads `technique_stats` for arm priors.
+- Nightly bench run posts precision/recall delta to a `bench_runs` table; UI card in Diagnostics.
 
-| Capability                          | XBOW / Mythos | CyberScope today |
-|-------------------------------------|:-------------:|:----------------:|
-| Long-lived agent w/ browser + shell | ✅            | ✅ (runtime built, needs field hours) |
-| Deterministic proof oracles         | ✅            | ⚠️ partial (`proof-oracles.ts` exists, few classes wired) |
-| Multi-step exploit chains executed  | ✅            | ⚠️ runtime present, chains rarely fire end-to-end |
-| World-model persistence             | ✅            | ✅ (`target_world_model`) |
-| Adaptive mutator (bandit)           | ✅            | ✅ (`ai-mutator` UCB1) |
-| OOB infra owned by operator         | ✅            | ❌ (planned above) |
-| Request interception / replay       | ✅            | ❌ (mitmproxy planned) |
-| Local model fallback                | partial       | ✅ (Ollama) |
-| Trained on 100k+ real bounties      | ✅            | ❌ (no training data pipeline) |
-| Continuous benchmark harness        | ✅            | ❌ |
+### P7 — Observability
+- Record token count + cost + latency per step in `agent_events.meta`.
+- BrainPanel: cost meter, tool-latency histogram, proof-oracle pass/fail badges.
 
-**Gaps that matter most to close first (in order):**
-1. Self-hosted **interactsh** — without OOB, SSRF/blind-RCE/blind-SQLi are guesswork.
-2. **mitmproxy** replay tool — required for real Intruder/Repeater-style tampering.
-3. Wire **nuclei + PD suite** into the runtime agent as first-class tools (not shell probes).
-4. **Benchmark harness**: 10 known-vuln targets (Juice Shop, DVWA, WebGoat, HTB retired, PortSwigger labs) scored on every deploy — this is what tells us if we're actually improving.
-5. **Evidence-based scoring** — reject findings without oracle proof at DB level (trigger exists, tighten thresholds).
+## Honest verdict
+We match XBOW/Mythos on **surface capability** (long-lived runtime, browser, OOB, PD-suite, shell). We lose on **agent reasoning depth, proof rigor, and learning loop**. P1 + P2 + P3 close ~70% of the qualitative gap; P4–P7 close the rest.
 
-Realistic call: after this plan lands + 2–3 weeks of benchmark-driven iteration, we're competitive on **web app OWASP Top 10** for known-vuln targets. Matching XBOW/Mythos on novel real-world targets needs the training-data + eval loop, which is a quarter of work, not a week.
-
-## Deliverables of this plan (one implementation pass)
-
-1. Extend `scripts/linux-auto-install.sh` with the 8 new prompted steps + `doctor` selftest.
-2. Add `deploy/compose.tools.yml` for interactsh + mitmproxy + redis + minio.
-3. Add 5 new tools to `runtime/src/tools/index.ts` (subfinder, httpx, nuclei, oob, replay) with allowlist.
-4. Add `runtime/src/selftest.ts` invoked by `--selftest`.
-5. Update `README.md` with the new one-liner: `curl -fsSL … | bash` → guided install.
-6. Ship a `bench/` folder with 3 seed targets (Juice Shop + DVWA + WebGoat via Docker) and a `bench/run.ts` that scores agent runs.
-
-Approve and I'll execute all 6 in one pass.
+## Next step
+Approve this plan and I'll ship P1 + P2 in the next turn (runtime-only, no schema churn beyond one new column on `agent_events`).
