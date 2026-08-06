@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Pause, Play, Terminal, Trash2, Globe, Link, Bug, Shield, ChevronDown, ChevronRight, Target } from "lucide-react";
 import { toast } from "sonner";
 import { BrainPanel } from "@/components/BrainPanel";
+import { MythosPanel } from "@/components/MythosPanel";
 
 const logColors: Record<string, string> = {
   thought: "text-cyber-cyan",
