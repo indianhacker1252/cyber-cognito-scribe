@@ -327,6 +327,8 @@ export default function NeuralLog() {
 
             {/* AI brain: NOW / NEXT / HYPOTHESES */}
             <BrainPanel targetId={selectedTarget} />
+            <MythosPanel targetId={selectedTarget} />
+
 
 
 
