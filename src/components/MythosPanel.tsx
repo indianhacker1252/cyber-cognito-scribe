@@ -25,10 +25,11 @@ export function MythosPanel({ targetId }: { targetId: string | null }) {
     if (!targetId) return;
     let alive = true;
     const load = async () => {
+      const sb: any = supabase;
       const [{ data: exps }, { data: mts }] = await Promise.all([
-        supabase.from("agent_experiences").select("*").eq("target_id", targetId)
+        sb.from("agent_experiences").select("*").eq("target_id", targetId)
           .order("created_at", { ascending: false }).limit(30),
-        supabase.from("agent_metrics").select("*").eq("target_id", targetId)
+        sb.from("agent_metrics").select("*").eq("target_id", targetId)
           .order("created_at", { ascending: false }).limit(200),
       ]);
       if (!alive) return;
