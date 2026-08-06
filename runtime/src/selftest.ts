@@ -1,9 +1,15 @@
-// CyberScope agent runtime selftest — pings Supabase, LLM, browser, OOB.
+// CyberScope agent runtime selftest — pings Supabase, LLM, browser, OOB, + runs pending migrations.
 import { chromium } from "playwright";
 import { request } from "undici";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { readFileSync, readdirSync, existsSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { createClient } from "@supabase/supabase-js";
 const pexec = promisify(execFile);
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
 
 type Row = { name: string; ok: boolean; detail: string };
 const rows: Row[] = [];
