@@ -4,7 +4,7 @@ import { request } from "undici";
 import { chromium, type Browser } from "playwright";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { db, mergeWorldModel, emit } from "../db.js";
+import { db, mergeWorldModel, emit, recordExperience, similarExperiences, metric } from "../db.js";
 import { runOracle } from "../oracles.js";
 import {
   loadContexts, getContext, persistContext, mergeSetCookies, cookieHeaderFor,
@@ -412,7 +412,7 @@ export function buildTools(ctx: { sessionId: string; targetId: string }) {
     }),
 
     "findings.record": tool({
-      description: "Record a confirmed vulnerability finding. ONLY call after concrete proof (oracle hit, DOM alert, OOB callback, or successful chain.run).",
+      description: "Record a confirmed vulnerability finding. ONLY call after concrete proof (oracle hit, DOM alert, OOB callback, or successful chain.run). Runtime re-verifies deterministically and rejects unproven findings — a rejection is auto-logged as a 'dead_end' experience.",
       inputSchema: z.object({
         title: z.string(),
         vuln_class: z.string(),
@@ -422,15 +422,29 @@ export function buildTools(ctx: { sessionId: string; targetId: string }) {
         request_raw: z.string().optional(),
         response_raw: z.string().optional(),
         description: z.string(),
+        technique: z.string().optional(),
+        tech_tags: z.array(z.string()).default([]),
         evidence: z.record(z.string(), z.any()).optional(),
       }),
       execute: async (f) => {
+        await metric(ctx.sessionId, ctx.targetId, "oracle_calls", 1, { vuln_class: f.vuln_class });
         const oracle = await runOracle(f.vuln_class, f.affected_url, f.evidence ?? {});
         await emit(ctx.sessionId, ctx.targetId, "critique", {
           stage: "proof_oracle", vuln_class: f.vuln_class, affected_url: f.affected_url,
           ok: oracle.ok, reason: oracle.reason, details: oracle.details,
         });
-        if (!oracle.ok) return { ok: false, rejected: true, reason: `proof oracle failed: ${oracle.reason}` };
+        let endpointPattern: string | null = null;
+        try { const u = new URL(f.affected_url); endpointPattern = `${u.host}${u.pathname}`; } catch {}
+        if (!oracle.ok) {
+          await metric(ctx.sessionId, ctx.targetId, "findings_rejected_by_oracle", 1, { vuln_class: f.vuln_class });
+          await recordExperience({
+            target_id: ctx.targetId, session_id: ctx.sessionId,
+            vuln_class: f.vuln_class, technique: f.technique ?? null, endpoint_pattern: endpointPattern,
+            tech_tags: f.tech_tags, outcome: "dead_end", confidence: 0.2,
+            notes: `oracle rejected: ${oracle.reason}`,
+          });
+          return { ok: false, rejected: true, reason: `proof oracle failed: ${oracle.reason}` };
+        }
         const proofTier = oracle.details ? "confirmed" : (f.proof_tier ?? "suspected");
         const { data, error } = await db.from("vulnerability_findings").insert({
           target_id: ctx.targetId, finding_type: f.vuln_class, vuln_class: f.vuln_class,
@@ -441,9 +455,66 @@ export function buildTools(ctx: { sessionId: string; targetId: string }) {
           hard_evidence: { ...(f.evidence ?? {}), oracle_reason: oracle.reason },
         }).select("id").maybeSingle();
         if (error) return { ok: false, error: error.message };
+        await metric(ctx.sessionId, ctx.targetId, "findings_confirmed", 1, { vuln_class: f.vuln_class, severity: f.severity });
+        await recordExperience({
+          target_id: ctx.targetId, session_id: ctx.sessionId,
+          vuln_class: f.vuln_class, technique: f.technique ?? null, endpoint_pattern: endpointPattern,
+          tech_tags: f.tech_tags, outcome: "confirmed", confidence: 0.9,
+          proof_snippet: oracle.reason, notes: f.title,
+        });
         return { ok: true, finding_id: data?.id, proof: oracle.reason };
       },
     }),
+
+    // -------- Mythos L2/L5: experience replay (agent memory) --------
+    "experiences.similar": tool({
+      description: "Query prior experiences for this target (and cross-target by tech tags) to learn which vuln classes/techniques worked before. Call at start of each new sub-goal.",
+      inputSchema: z.object({
+        tech_tags: z.array(z.string()).default([]),
+        limit: z.number().int().min(1).max(50).default(20),
+      }),
+      execute: async ({ tech_tags, limit }) => {
+        const rows = await similarExperiences(ctx.targetId, tech_tags, limit);
+        return { count: rows.length, experiences: rows };
+      },
+    }),
+
+    "experiences.record": tool({
+      description: "Log a hypothesis outcome (partial/dead_end) so future sessions skip dead paths. `confirmed` outcomes are auto-recorded by findings.record — do NOT double-log.",
+      inputSchema: z.object({
+        vuln_class: z.string(),
+        technique: z.string().optional(),
+        endpoint_pattern: z.string().optional(),
+        tech_tags: z.array(z.string()).default([]),
+        outcome: z.enum(["rejected","partial","dead_end"]),
+        confidence: z.number().min(0).max(1).default(0.3),
+        notes: z.string().optional(),
+      }),
+      execute: async (e) => {
+        await recordExperience({
+          target_id: ctx.targetId, session_id: ctx.sessionId,
+          vuln_class: e.vuln_class, technique: e.technique ?? null,
+          endpoint_pattern: e.endpoint_pattern ?? null, tech_tags: e.tech_tags,
+          outcome: e.outcome, confidence: e.confidence, notes: e.notes ?? null,
+        });
+        return { ok: true };
+      },
+    }),
+
+    // -------- Mythos L3: metrics --------
+    "metrics.inc": tool({
+      description: "Increment a session metric counter (e.g. 'endpoints_discovered', 'chain_success'). Use sparingly for signals not otherwise captured.",
+      inputSchema: z.object({
+        metric: z.string(),
+        value: z.number().default(1),
+        tags: z.record(z.string(), z.any()).default({}),
+      }),
+      execute: async ({ metric: m, value, tags }) => {
+        await metric(ctx.sessionId, ctx.targetId, m, value, tags);
+        return { ok: true };
+      },
+    }),
+
 
     "recon.subfinder": tool({
       description: "Passive+active subdomain enumeration via subfinder. Returns unique subdomains.",

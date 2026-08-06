@@ -85,3 +85,38 @@ export async function getWorldModel(targetId: string) {
   const { data } = await db.from("target_world_model").select("model").eq("target_id", targetId).maybeSingle();
   return (data?.model as Record<string, unknown>) ?? {};
 }
+
+// -------- Mythos L2 (experience replay) --------
+export async function recordExperience(row: {
+  target_id: string; session_id?: string | null;
+  vuln_class: string; technique?: string | null; endpoint_pattern?: string | null;
+  tech_tags?: string[]; outcome: "confirmed" | "rejected" | "partial" | "dead_end";
+  confidence?: number; proof_snippet?: string | null; notes?: string | null;
+}) {
+  const { error } = await db.from("agent_experiences").insert(row);
+  if (error) console.error("[db] recordExperience:", error.message);
+}
+export async function similarExperiences(targetId: string, techTags: string[] = [], limit = 20) {
+  const { data } = await db.from("agent_experiences")
+    .select("vuln_class,technique,endpoint_pattern,outcome,confidence,proof_snippet,notes,created_at,target_id")
+    .eq("target_id", targetId)
+    .order("created_at", { ascending: false }).limit(limit);
+  if (data && data.length) return data;
+  if (techTags.length) {
+    const { data: cross } = await db.from("agent_experiences")
+      .select("vuln_class,technique,endpoint_pattern,outcome,confidence,proof_snippet,notes,created_at,target_id")
+      .overlaps("tech_tags", techTags)
+      .order("created_at", { ascending: false }).limit(limit);
+    return cross ?? [];
+  }
+  return [];
+}
+
+// -------- Mythos L3 (metrics) --------
+export async function metric(sessionId: string, targetId: string, name: string, value = 1, tags: Record<string, unknown> = {}) {
+  const { error } = await db.from("agent_metrics").insert({
+    session_id: sessionId, target_id: targetId, metric: name, value, tags,
+  });
+  if (error) console.error("[db] metric:", error.message);
+}
+

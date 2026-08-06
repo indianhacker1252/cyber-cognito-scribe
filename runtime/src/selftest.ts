@@ -1,9 +1,15 @@
-// CyberScope agent runtime selftest — pings Supabase, LLM, browser, OOB.
+// CyberScope agent runtime selftest — pings Supabase, LLM, browser, OOB, + runs pending migrations.
 import { chromium } from "playwright";
 import { request } from "undici";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { readFileSync, readdirSync, existsSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { createClient } from "@supabase/supabase-js";
 const pexec = promisify(execFile);
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
 
 type Row = { name: string; ok: boolean; detail: string };
 const rows: Row[] = [];
@@ -39,6 +45,27 @@ await check("playwright chromium", async () => {
   await p.goto("about:blank"); await b.close();
   return "launched + navigated";
 });
+
+await check("apply pending migrations", async () => {
+  const dir = join(__dirname, "..", "migrations");
+  if (!existsSync(dir)) return "no migrations dir";
+  const url = process.env.SUPABASE_URL; const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key) throw new Error("supabase env missing");
+  const sb = createClient(url, key, { auth: { persistSession: false } });
+  const files = readdirSync(dir).filter(f => f.endsWith(".sql")).sort();
+  let applied = 0;
+  for (const f of files) {
+    const sql = readFileSync(join(dir, f), "utf8");
+    const { error } = await sb.rpc("exec_sql", { query: sql });
+    if (error && !/already exists|does not exist|function .* does not exist/i.test(error.message)) {
+      throw new Error(`${f}: ${error.message} (run this SQL manually in Cloud → SQL Editor)`);
+    }
+    applied += 1;
+  }
+  return `${applied} file(s) attempted (idempotent)`;
+});
+
+
 
 await check("ollama (optional)", async () => {
   const url = process.env.OLLAMA_URL || "http://host.docker.internal:11434";
