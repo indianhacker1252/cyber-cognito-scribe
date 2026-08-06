@@ -39,12 +39,11 @@ await check("supabase reachable", async () => {
   return `HTTP ${r.statusCode}`;
 });
 
-await check("supabase reachable", async () => {
-  const r = await request(`${process.env.SUPABASE_URL}/rest/v1/`, {
-    headers: { apikey: process.env.SUPABASE_SERVICE_ROLE_KEY ?? "" },
-  });
-  if (r.statusCode >= 500) throw new Error(`status ${r.statusCode}`);
-  return `HTTP ${r.statusCode}`;
+await check("playwright chromium", async () => {
+  const b = await chromium.launch({ headless: true, args: ["--no-sandbox"] });
+  const p = await (await b.newContext()).newPage();
+  await p.goto("about:blank"); await b.close();
+  return "launched + navigated";
 });
 
 await check("apply pending migrations", async () => {
@@ -58,14 +57,14 @@ await check("apply pending migrations", async () => {
   for (const f of files) {
     const sql = readFileSync(join(dir, f), "utf8");
     const { error } = await sb.rpc("exec_sql", { query: sql });
-    if (error && !/already exists|does not exist/i.test(error.message)) {
-      // exec_sql may not exist — fall back to running via psql sidecar if available.
-      throw new Error(`${f}: ${error.message} (run this SQL manually in Cloud → SQL)`);
+    if (error && !/already exists|does not exist|function .* does not exist/i.test(error.message)) {
+      throw new Error(`${f}: ${error.message} (run this SQL manually in Cloud → SQL Editor)`);
     }
     applied += 1;
   }
-  return `${applied} file(s) applied/idempotent`;
+  return `${applied} file(s) attempted (idempotent)`;
 });
+
 
 
 await check("ollama (optional)", async () => {
