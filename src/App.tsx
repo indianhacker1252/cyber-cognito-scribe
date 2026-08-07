@@ -25,6 +25,7 @@ import OwaspChecklist from "./pages/OwaspChecklist";
 import KillChains from "./pages/KillChains";
 import NotFound from "./pages/NotFound";
 import Diagnostics from "./pages/Diagnostics";
+import OAuthConsent from "./pages/OAuthConsent";
 
 const queryClient = new QueryClient();
 
@@ -37,6 +38,7 @@ const App = () => (
         <AuthProvider>
           <Routes>
             <Route path="/auth" element={<Auth />} />
+            <Route path="/.lovable/oauth/consent" element={<OAuthConsent />} />
             <Route path="/*" element={
               <ProtectedRoute>
                 <Layout>
