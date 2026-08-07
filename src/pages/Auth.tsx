@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { lovable } from "@/integrations/lovable";
 import { Button } from "@/components/ui/button";
@@ -10,14 +10,26 @@ import { toast } from "sonner";
 import { Crosshair, Loader2 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 
+// Only allow same-origin relative paths for post-auth redirect.
+function safeNext(raw: string | null): string {
+  if (!raw) return "/";
+  try {
+    const decoded = decodeURIComponent(raw);
+    if (decoded.startsWith("/") && !decoded.startsWith("//")) return decoded;
+  } catch { /* ignore */ }
+  return "/";
+}
+
 export default function AuthPage() {
   const nav = useNavigate();
+  const [sp] = useSearchParams();
+  const next = safeNext(sp.get("next"));
   const { session } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
 
-  useEffect(() => { if (session) nav("/", { replace: true }); }, [session, nav]);
+  useEffect(() => { if (session) nav(next, { replace: true }); }, [session, nav, next]);
 
   const signIn = async () => {
     setBusy(true);
@@ -25,14 +37,14 @@ export default function AuthPage() {
     setBusy(false);
     if (error) return toast.error(error.message);
     toast.success("Signed in");
-    nav("/", { replace: true });
+    nav(next, { replace: true });
   };
 
   const signUp = async () => {
     setBusy(true);
     const { error } = await supabase.auth.signUp({
       email, password,
-      options: { emailRedirectTo: `${window.location.origin}/` },
+      options: { emailRedirectTo: `${window.location.origin}${next}` },
     });
     setBusy(false);
     if (error) return toast.error(error.message);
@@ -41,7 +53,9 @@ export default function AuthPage() {
 
   const google = async () => {
     setBusy(true);
-    const r = await lovable.auth.signInWithOAuth("google", { redirect_uri: window.location.origin });
+    const r = await lovable.auth.signInWithOAuth("google", {
+      redirect_uri: `${window.location.origin}${next}`,
+    });
     if (r.error) { setBusy(false); toast.error(r.error.message); }
   };
 
