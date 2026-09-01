@@ -3705,6 +3705,7 @@ export type Database = {
         Args: { _scope?: string; _target_id?: string }
         Returns: Json
       }
+      run_weekly_retention_cleanup: { Args: never; Returns: Json }
       seed_owasp_checklist: { Args: { _target_id: string }; Returns: number }
       target_is_exploit_authorized: {
         Args: { _target_id: string }
