@@ -105,9 +105,18 @@ For each sub-goal: recall (experiences.similar / notes.search) â†’ hypothesize â
       }],
       tools,
       stopWhen: stepCountIs(200),
-      onStepFinish: async ({ toolCalls, toolResults, text }) => {
+      onStepFinish: async ({ toolCalls, toolResults, text, usage }: any) => {
         stepCount += 1;
+        const stepStart = Date.now();
         if (text) await emit(session.id, session.target_id, "thought", { text }, stepCount);
+        // P7 observability â€” token accounting per step (AI SDK v5 shape).
+        if (usage) {
+          const inTok = Number(usage.inputTokens ?? usage.promptTokens ?? 0);
+          const outTok = Number(usage.outputTokens ?? usage.completionTokens ?? 0);
+          if (inTok) await metric(session.id, session.target_id, "tokens_in", inTok, { provider: session.provider });
+          if (outTok) await metric(session.id, session.target_id, "tokens_out", outTok, { provider: session.provider });
+          if (inTok + outTok) await metric(session.id, session.target_id, "tokens_total", inTok + outTok);
+        }
         for (const tc of toolCalls ?? []) {
           toolCounts[tc.toolName] = (toolCounts[tc.toolName] ?? 0) + 1;
           await emit(session.id, session.target_id, "act", { tool: tc.toolName, args: tc.args }, stepCount);
@@ -118,6 +127,7 @@ For each sub-goal: recall (experiences.similar / notes.search) â†’ hypothesize â
           const summary = JSON.stringify(r).slice(0, 2000);
           await emit(session.id, session.target_id, "observe", { tool: (tr as any).toolName, summary }, stepCount);
         }
+        await metric(session.id, session.target_id, "step_latency_ms", Date.now() - stepStart);
         await updateSession(session.id, { steps_taken: stepCount });
 
         const secs = (Date.now() - startTs) / 1000;
