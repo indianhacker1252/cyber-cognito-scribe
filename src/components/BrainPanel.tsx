@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { Badge } from "@/components/ui/badge";
-import { Brain, Zap, Eye, ChevronRight, Cpu } from "lucide-react";
+import { Brain, Zap, Eye, ChevronRight, Cpu, Gauge } from "lucide-react";
 
 type AgentEvent = { id: string; kind: string; step: number | null; payload: any; created_at: string };
 
