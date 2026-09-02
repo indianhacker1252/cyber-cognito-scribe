@@ -163,6 +163,96 @@ export function BrainPanel({ targetId }: { targetId: string | null }) {
       </div>
 
       <AgentRuntimeLane targetId={targetId} />
+      <ObservabilityLane targetId={targetId} />
+    </div>
+  );
+}
+
+// P7 observability — tokens, step latency, tool mix for the latest agent session.
+function ObservabilityLane({ targetId }: { targetId: string }) {
+  const q = useQuery({
+    queryKey: ["brain-observability", targetId],
+    queryFn: async () => {
+      const { data: s } = await supabase
+        .from("agent_sessions" as any)
+        .select("id,status,provider,model,steps_taken,started_at,completed_at")
+        .eq("target_id", targetId)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (!s) return null;
+      const sid = (s as any).id as string;
+      const { data: m } = await supabase
+        .from("agent_metrics" as any)
+        .select("metric,value,tags,created_at")
+        .eq("session_id", sid)
+        .order("created_at", { ascending: false })
+        .limit(500);
+      const rows = (m || []) as any[];
+      const sum = (name: string) => rows.filter(r => r.metric === name).reduce((a, r) => a + Number(r.value || 0), 0);
+      const perTool: Record<string, { calls: number }> = {};
+      for (const r of rows.filter(r => r.metric === "tool_calls")) {
+        const t = String(r.tags?.tool ?? "unknown");
+        perTool[t] = perTool[t] || { calls: 0 };
+        perTool[t].calls += Number(r.value || 0);
+      }
+      const latencies = rows.filter(r => r.metric === "step_latency_ms").map(r => Number(r.value || 0));
+      const p50 = latencies.length ? latencies.sort((a,b)=>a-b)[Math.floor(latencies.length/2)] : 0;
+      const p95 = latencies.length ? latencies.sort((a,b)=>a-b)[Math.floor(latencies.length*0.95)] : 0;
+      return {
+        session: s,
+        tokens_in: sum("tokens_in"),
+        tokens_out: sum("tokens_out"),
+        tool_calls: sum("tool_calls"),
+        errors: sum("session_errors"),
+        coverage: rows.find(r => r.metric === "plan_coverage")?.value ?? null,
+        perTool: Object.entries(perTool).sort((a,b) => b[1].calls - a[1].calls).slice(0, 8),
+        p50, p95,
+      };
+    },
+    refetchInterval: 6000,
+    enabled: !!targetId,
+  });
+
+  if (!q.data) return null;
+  const { session, tokens_in, tokens_out, tool_calls, errors, coverage, perTool, p50, p95 } = q.data as any;
+  const dur = session.completed_at && session.started_at
+    ? Math.round((+new Date(session.completed_at) - +new Date(session.started_at)) / 1000) : null;
+
+  return (
+    <section className="rounded border border-primary/30 bg-background/60 p-3 space-y-2">
+      <div className="flex items-center gap-1.5 text-xs text-primary font-mono">
+        <Gauge className="h-3.5 w-3.5" /> OBSERVABILITY · {session.provider}/{session.model} · {session.status}
+        {dur !== null && <span className="ml-auto text-muted-foreground">{dur}s</span>}
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-6 gap-2 text-[11px] font-mono">
+        <Stat label="steps" value={session.steps_taken ?? 0} />
+        <Stat label="tokens in" value={tokens_in.toLocaleString()} />
+        <Stat label="tokens out" value={tokens_out.toLocaleString()} />
+        <Stat label="tool calls" value={tool_calls} />
+        <Stat label="p50 / p95 ms" value={`${p50} / ${p95}`} />
+        <Stat label="coverage" value={coverage !== null ? `${Math.round(Number(coverage)*100)}%` : "—"}
+              tone={coverage !== null && Number(coverage) < 0.5 ? "warn" : "ok"} />
+      </div>
+      {perTool.length > 0 && (
+        <div className="flex flex-wrap gap-1 pt-1">
+          {perTool.map(([t, v]: any) => (
+            <Badge key={t} variant="outline" className="text-[10px] font-mono border-primary/30">
+              {t} <span className="ml-1 text-primary">{v.calls}</span>
+            </Badge>
+          ))}
+        </div>
+      )}
+      {errors > 0 && <div className="text-[11px] text-red-400 font-mono">{errors} session error(s)</div>}
+    </section>
+  );
+}
+
+function Stat({ label, value, tone = "ok" }: { label: string; value: any; tone?: "ok" | "warn" }) {
+  return (
+    <div className="rounded border border-border bg-background/40 px-2 py-1.5">
+      <div className="text-muted-foreground text-[10px] uppercase">{label}</div>
+      <div className={tone === "warn" ? "text-yellow-400" : "text-foreground"}>{value}</div>
     </div>
   );
 }
