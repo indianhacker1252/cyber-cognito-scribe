@@ -163,18 +163,153 @@ var create_target_default = defineTool4({
   }
 });
 
+// src/lib/mcp/tools/run-scan.ts
+import { defineTool as defineTool5 } from "npm:@lovable.dev/mcp-js@0.26.1";
+import { z as z5 } from "npm:zod@^3.25.76";
+var run_scan_default = defineTool5({
+  name: "run_scan",
+  title: "Start a scan",
+  description: "Kick off a new autonomous scan session for a target the signed-in user owns. Returns the agent_session id you can poll with explain_finding / list_findings.",
+  inputSchema: {
+    target_id: z5.string().uuid().describe("Target to scan (must belong to the caller)."),
+    mode: z5.enum(["quick", "deep", "chain"]).default("deep").describe("quick=recon+top-10, deep=full OWASP, chain=multi-step exploit chains."),
+    max_iterations: z5.number().int().min(1).max(50).default(12)
+  },
+  annotations: { readOnlyHint: false, idempotentHint: false, openWorldHint: true },
+  handler: async ({ target_id, mode, max_iterations }, ctx) => {
+    if (!ctx.isAuthenticated()) {
+      return { content: [{ type: "text", text: "Not authenticated" }], isError: true };
+    }
+    const supabase = supabaseForUser(ctx);
+    const { data: target, error: tErr } = await supabase.from("targets").select("id,url").eq("id", target_id).maybeSingle();
+    if (tErr) return { content: [{ type: "text", text: tErr.message }], isError: true };
+    if (!target) {
+      return { content: [{ type: "text", text: "Target not found or not authorized" }], isError: true };
+    }
+    const { data: session, error: sErr } = await supabase.from("agent_sessions").insert({
+      target_id,
+      user_id: ctx.getUserId(),
+      status: "queued",
+      mode,
+      max_iterations,
+      trigger: "mcp"
+    }).select("id,status,created_at").single();
+    if (sErr) return { content: [{ type: "text", text: sErr.message }], isError: true };
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Queued ${mode} scan for ${target.url}. session_id=${session.id}`
+        }
+      ],
+      structuredContent: { session_id: session.id, status: session.status, target_url: target.url }
+    };
+  }
+});
+
+// src/lib/mcp/tools/explain-finding.ts
+import { defineTool as defineTool6 } from "npm:@lovable.dev/mcp-js@0.26.1";
+import { z as z6 } from "npm:zod@^3.25.76";
+var explain_finding_default = defineTool6({
+  name: "explain_finding",
+  title: "Explain a finding",
+  description: "Return a human-readable explanation of one vulnerability finding: what it is, the proof oracle verdict, the request/response evidence, and remediation guidance.",
+  inputSchema: {
+    finding_id: z6.string().uuid()
+  },
+  annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+  handler: async ({ finding_id }, ctx) => {
+    if (!ctx.isAuthenticated()) {
+      return { content: [{ type: "text", text: "Not authenticated" }], isError: true };
+    }
+    const supabase = supabaseForUser(ctx);
+    const { data: f, error } = await supabase.from("vulnerability_findings").select("id,title,severity,vuln_type,cvss_score,description,recommendation,evidence,confidence,status,url,parameter,target_id,created_at").eq("id", finding_id).maybeSingle();
+    if (error) return { content: [{ type: "text", text: error.message }], isError: true };
+    if (!f) return { content: [{ type: "text", text: "Finding not found or not authorized" }], isError: true };
+    const { data: proofs } = await supabase.from("proof_evidence").select("oracle,verdict,detail,created_at").eq("finding_id", finding_id).order("created_at", { ascending: false }).limit(10);
+    const lines = [
+      `# ${f.title}`,
+      `Severity: ${f.severity}  \u2022  Type: ${f.vuln_type}  \u2022  Confidence: ${f.confidence ?? "?"}%`,
+      f.cvss_score ? `CVSS: ${f.cvss_score}` : "",
+      f.url ? `URL: ${f.url}${f.parameter ? `  (param: ${f.parameter})` : ""}` : "",
+      "",
+      "## What it is",
+      f.description ?? "(no description)",
+      "",
+      "## Proof oracle verdicts",
+      (proofs ?? []).length === 0 ? "(no oracle verdicts on record \u2014 treat as suspected only)" : (proofs ?? []).map((p) => `- ${p.oracle}: ${p.verdict}${p.detail ? ` \u2014 ${JSON.stringify(p.detail).slice(0, 200)}` : ""}`).join("\n"),
+      "",
+      "## Remediation",
+      f.recommendation ?? "(no recommendation on record)"
+    ].filter(Boolean).join("\n");
+    return {
+      content: [{ type: "text", text: lines }],
+      structuredContent: {
+        finding: {
+          id: f.id,
+          title: f.title,
+          severity: f.severity,
+          vuln_type: f.vuln_type,
+          confidence: f.confidence,
+          url: f.url,
+          parameter: f.parameter,
+          cvss_score: f.cvss_score,
+          status: f.status
+        },
+        proof_evidence: proofs ?? []
+      }
+    };
+  }
+});
+
+// src/lib/mcp/tools/list-running-agents.ts
+import { defineTool as defineTool7 } from "npm:@lovable.dev/mcp-js@0.26.1";
+import { z as z7 } from "npm:zod@^3.25.76";
+var list_running_agents_default = defineTool7({
+  name: "list_running_agents",
+  title: "List running agent sessions",
+  description: "List the caller's currently queued or running autonomous scan sessions.",
+  inputSchema: {
+    include_completed: z7.boolean().default(false).describe("Also include completed/failed sessions."),
+    limit: z7.number().int().min(1).max(100).default(25)
+  },
+  annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+  handler: async ({ include_completed, limit }, ctx) => {
+    if (!ctx.isAuthenticated()) {
+      return { content: [{ type: "text", text: "Not authenticated" }], isError: true };
+    }
+    const supabase = supabaseForUser(ctx);
+    let q = supabase.from("agent_sessions").select("id,target_id,status,mode,created_at,updated_at,iteration,max_iterations").order("created_at", { ascending: false }).limit(limit);
+    if (!include_completed) q = q.in("status", ["queued", "running", "planning"]);
+    const { data, error } = await q;
+    if (error) return { content: [{ type: "text", text: error.message }], isError: true };
+    return {
+      content: [{ type: "text", text: JSON.stringify(data ?? []) }],
+      structuredContent: { sessions: data ?? [] }
+    };
+  }
+});
+
 // src/lib/mcp/index.ts
 var projectRef = "npeiemvldvcdsbeofkfc";
 var mcp_default = defineMcp({
   name: "cyberscope-ai",
   title: "CyberScope AI",
-  version: "0.1.0",
-  instructions: "Tools for CyberScope AI, an autonomous VAPT platform. Use `list_targets` and `list_findings` to inspect the signed-in user's scan targets and vulnerabilities, `get_finding` for full evidence on one finding, and `create_target` to add an authorized in-scope target.",
+  version: "0.2.0",
+  instructions: "Tools for CyberScope AI, an autonomous VAPT platform. Read: `list_targets`, `list_findings`, `get_finding`, `explain_finding`, `list_running_agents`. Write: `create_target` to add an authorized in-scope target, `run_scan` to kick off a scan session (quick / deep / chain). Every finding carries proof-oracle evidence \u2014 always call `explain_finding` before reporting a vulnerability to a human.",
   auth: auth.oauth.issuer({
     issuer: `https://${projectRef}.supabase.co/auth/v1`,
     acceptedAudiences: "authenticated"
   }),
-  tools: [list_targets_default, list_findings_default, get_finding_default, create_target_default]
+  tools: [
+    list_targets_default,
+    list_findings_default,
+    get_finding_default,
+    create_target_default,
+    run_scan_default,
+    explain_finding_default,
+    list_running_agents_default
+  ]
 });
 
 // lovable-mcp-supabase-entry.ts

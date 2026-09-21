@@ -12,7 +12,7 @@
   "mcp": {
     "server": {
       "name": "cyberscope-ai",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "title": "CyberScope AI"
     },
     "tools": [
@@ -133,6 +133,102 @@
           "required": [
             "name"
           ],
+          "additionalProperties": false,
+          "$schema": "http://json-schema.org/draft-07/schema#"
+        },
+        "outputSchema": null
+      },
+      {
+        "name": "run_scan",
+        "title": "Start a scan",
+        "description": "Kick off a new autonomous scan session for a target the signed-in user owns. Returns the agent_session id you can poll with explain_finding / list_findings.",
+        "annotations": {
+          "readOnlyHint": false,
+          "idempotentHint": false,
+          "openWorldHint": true
+        },
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "target_id": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Target to scan (must belong to the caller)."
+            },
+            "mode": {
+              "type": "string",
+              "enum": [
+                "quick",
+                "deep",
+                "chain"
+              ],
+              "default": "deep",
+              "description": "quick=recon+top-10, deep=full OWASP, chain=multi-step exploit chains."
+            },
+            "max_iterations": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 50,
+              "default": 12
+            }
+          },
+          "required": [
+            "target_id"
+          ],
+          "additionalProperties": false,
+          "$schema": "http://json-schema.org/draft-07/schema#"
+        },
+        "outputSchema": null
+      },
+      {
+        "name": "explain_finding",
+        "title": "Explain a finding",
+        "description": "Return a human-readable explanation of one vulnerability finding: what it is, the proof oracle verdict, the request/response evidence, and remediation guidance.",
+        "annotations": {
+          "readOnlyHint": true,
+          "idempotentHint": true,
+          "openWorldHint": false
+        },
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "finding_id": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "required": [
+            "finding_id"
+          ],
+          "additionalProperties": false,
+          "$schema": "http://json-schema.org/draft-07/schema#"
+        },
+        "outputSchema": null
+      },
+      {
+        "name": "list_running_agents",
+        "title": "List running agent sessions",
+        "description": "List the caller's currently queued or running autonomous scan sessions.",
+        "annotations": {
+          "readOnlyHint": true,
+          "idempotentHint": true,
+          "openWorldHint": false
+        },
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "include_completed": {
+              "type": "boolean",
+              "default": false,
+              "description": "Also include completed/failed sessions."
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 25
+            }
+          },
           "additionalProperties": false,
           "$schema": "http://json-schema.org/draft-07/schema#"
         },
