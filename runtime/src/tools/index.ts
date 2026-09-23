@@ -333,6 +333,48 @@ export function buildTools(ctx: { sessionId: string; targetId: string }) {
       },
     }),
 
+    "auth.compare": tool({
+      description: "Send the same request under two auth contexts (e.g. 'anon' vs 'user' vs 'admin') and diff status/length/body-hash. Core primitive for IDOR / broken-access-control proofs. Returns diff summary + both responses (truncated).",
+      inputSchema: z.object({
+        url: z.string().url(),
+        method: z.enum(["GET","POST","PUT","PATCH","DELETE","OPTIONS","HEAD"]).default("GET"),
+        headers: z.record(z.string(), z.string()).optional(),
+        body: z.string().optional(),
+        as_a: z.string().default("anon"),
+        as_b: z.string(),
+        timeout_ms: z.number().int().min(500).max(30000).default(10000),
+      }),
+      execute: async (a) => {
+        const ctxA = getContext(ctx.targetId, a.as_a);
+        const ctxB = getContext(ctx.targetId, a.as_b);
+        const common = { url: a.url, method: a.method, headers: a.headers, body: a.body, timeout_ms: a.timeout_ms, update_jar: false };
+        const [rA, rB] = await Promise.all([
+          httpRequestAs({ ctx: ctxA, ...common }),
+          httpRequestAs({ ctx: ctxB, ...common }),
+        ]);
+        if ("error" in rA || "error" in rB) {
+          return { ok: false, error: (rA as any).error ?? (rB as any).error, a: rA, b: rB };
+        }
+        const bodyA = (rA as any).body ?? ""; const bodyB = (rB as any).body ?? "";
+        const lenA = bodyA.length; const lenB = bodyB.length;
+        const sameStatus = (rA as any).status === (rB as any).status;
+        const sameLen = lenA === lenB;
+        const sameBody = bodyA === bodyB;
+        // Heuristic access-control signals.
+        const authLikeStatusesA = [401, 403].includes((rA as any).status);
+        const authLikeStatusesB = [401, 403].includes((rB as any).status);
+        const suspectIdor = (rA as any).status === 200 && (rB as any).status === 200 && !sameBody && Math.abs(lenA - lenB) > 40;
+        const suspectBac = authLikeStatusesA !== authLikeStatusesB;
+        return {
+          ok: true,
+          same_status: sameStatus, same_length: sameLen, same_body: sameBody,
+          suspect_idor: suspectIdor, suspect_bac: suspectBac,
+          a: { context: a.as_a, status: (rA as any).status, length: lenA, body: bodyA.slice(0, 2048) },
+          b: { context: a.as_b, status: (rB as any).status, length: lenB, body: bodyB.slice(0, 2048) },
+        };
+      },
+    }),
+
     // ---------------- P4: in-runtime chain executor ----------------
     "chain.run": tool({
       description: "Execute an ordered exploit chain in-process. Steps share a cookie jar via `as`. Each step can (1) send an HTTP request, (2) capture a value from the response via JSONPath-ish or regex, (3) reference captures in later steps as ${var}. Returns per-step outcomes + confirmation of chain success.",
