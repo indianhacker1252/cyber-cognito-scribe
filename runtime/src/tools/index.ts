@@ -576,7 +576,7 @@ export function buildTools(ctx: { sessionId: string; targetId: string }) {
       execute: async ({ hosts, timeout_ms }) => {
         try {
           const { stdout } = await pexec("httpx", ["-silent","-json","-title","-tech-detect","-status-code","-l","/dev/stdin"], { timeout: timeout_ms, maxBuffer: 1024 * 512, input: hosts.join("\n") } as any);
-          const rows = stdout.split("\n").filter(Boolean).map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+          const rows = String(stdout).split("\n").filter(Boolean).map((l: string) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
           return { count: rows.length, hosts: rows.slice(0, 200) };
         } catch (e: any) { return { error: String(e?.message ?? e) }; }
       },
