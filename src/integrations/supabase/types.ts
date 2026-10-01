@@ -737,6 +737,59 @@ export type Database = {
         }
         Relationships: []
       }
+      attack_surface: {
+        Row: {
+          auth_required: boolean
+          created_at: string
+          id: string
+          last_probed: string | null
+          method: string
+          params: Json
+          priority_score: number
+          target_id: string
+          tech: string[]
+          updated_at: string
+          url: string
+          verdicts: Json
+        }
+        Insert: {
+          auth_required?: boolean
+          created_at?: string
+          id?: string
+          last_probed?: string | null
+          method?: string
+          params?: Json
+          priority_score?: number
+          target_id: string
+          tech?: string[]
+          updated_at?: string
+          url: string
+          verdicts?: Json
+        }
+        Update: {
+          auth_required?: boolean
+          created_at?: string
+          id?: string
+          last_probed?: string | null
+          method?: string
+          params?: Json
+          priority_score?: number
+          target_id?: string
+          tech?: string[]
+          updated_at?: string
+          url?: string
+          verdicts?: Json
+        }
+        Relationships: [
+          {
+            foreignKeyName: "attack_surface_target_id_fkey"
+            columns: ["target_id"]
+            isOneToOne: false
+            referencedRelation: "target_workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       auth_profiles: {
         Row: {
           auth_type: string
@@ -791,6 +844,36 @@ export type Database = {
           session_extract_regex?: string | null
           target_id?: string
           updated_at?: string
+        }
+        Relationships: []
+      }
+      bench_runs: {
+        Row: {
+          bench_name: string
+          detail: Json
+          f1: number | null
+          id: string
+          precision: number | null
+          ran_at: string
+          recall: number | null
+        }
+        Insert: {
+          bench_name: string
+          detail?: Json
+          f1?: number | null
+          id?: string
+          precision?: number | null
+          ran_at?: string
+          recall?: number | null
+        }
+        Update: {
+          bench_name?: string
+          detail?: Json
+          f1?: number | null
+          id?: string
+          precision?: number | null
+          ran_at?: string
+          recall?: number | null
         }
         Relationships: []
       }
@@ -3377,6 +3460,39 @@ export type Database = {
           },
         ]
       }
+      technique_stats: {
+        Row: {
+          id: string
+          last_used: string | null
+          target_class: string
+          technique: string
+          tries: number
+          ucb1_score: number
+          updated_at: string
+          wins: number
+        }
+        Insert: {
+          id?: string
+          last_used?: string | null
+          target_class?: string
+          technique: string
+          tries?: number
+          ucb1_score?: number
+          updated_at?: string
+          wins?: number
+        }
+        Update: {
+          id?: string
+          last_used?: string | null
+          target_class?: string
+          technique?: string
+          tries?: number
+          ucb1_score?: number
+          updated_at?: string
+          wins?: number
+        }
+        Relationships: []
+      }
       tool_invocations: {
         Row: {
           args: Json
@@ -3704,6 +3820,10 @@ export type Database = {
       purge_history: {
         Args: { _scope?: string; _target_id?: string }
         Returns: Json
+      }
+      record_technique_outcome: {
+        Args: { _target_class: string; _technique: string; _won: boolean }
+        Returns: undefined
       }
       run_weekly_retention_cleanup: { Args: never; Returns: Json }
       seed_owasp_checklist: { Args: { _target_id: string }; Returns: number }
