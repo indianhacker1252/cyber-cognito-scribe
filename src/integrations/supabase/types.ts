@@ -251,6 +251,51 @@ export type Database = {
           },
         ]
       }
+      agent_experiences: {
+        Row: {
+          confidence: number | null
+          created_at: string
+          endpoint_pattern: string | null
+          id: string
+          notes: string | null
+          outcome: string
+          proof_snippet: string | null
+          session_id: string | null
+          target_id: string | null
+          tech_tags: string[]
+          technique: string | null
+          vuln_class: string
+        }
+        Insert: {
+          confidence?: number | null
+          created_at?: string
+          endpoint_pattern?: string | null
+          id?: string
+          notes?: string | null
+          outcome: string
+          proof_snippet?: string | null
+          session_id?: string | null
+          target_id?: string | null
+          tech_tags?: string[]
+          technique?: string | null
+          vuln_class: string
+        }
+        Update: {
+          confidence?: number | null
+          created_at?: string
+          endpoint_pattern?: string | null
+          id?: string
+          notes?: string | null
+          outcome?: string
+          proof_snippet?: string | null
+          session_id?: string | null
+          target_id?: string | null
+          tech_tags?: string[]
+          technique?: string | null
+          vuln_class?: string
+        }
+        Relationships: []
+      }
       agent_sessions: {
         Row: {
           budget_credits: number
@@ -737,6 +782,59 @@ export type Database = {
         }
         Relationships: []
       }
+      attack_surface: {
+        Row: {
+          auth_required: boolean
+          created_at: string
+          id: string
+          last_probed: string | null
+          method: string
+          params: Json
+          priority_score: number
+          target_id: string
+          tech: string[]
+          updated_at: string
+          url: string
+          verdicts: Json
+        }
+        Insert: {
+          auth_required?: boolean
+          created_at?: string
+          id?: string
+          last_probed?: string | null
+          method?: string
+          params?: Json
+          priority_score?: number
+          target_id: string
+          tech?: string[]
+          updated_at?: string
+          url: string
+          verdicts?: Json
+        }
+        Update: {
+          auth_required?: boolean
+          created_at?: string
+          id?: string
+          last_probed?: string | null
+          method?: string
+          params?: Json
+          priority_score?: number
+          target_id?: string
+          tech?: string[]
+          updated_at?: string
+          url?: string
+          verdicts?: Json
+        }
+        Relationships: [
+          {
+            foreignKeyName: "attack_surface_target_id_fkey"
+            columns: ["target_id"]
+            isOneToOne: false
+            referencedRelation: "target_workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       auth_profiles: {
         Row: {
           auth_type: string
@@ -791,6 +889,36 @@ export type Database = {
           session_extract_regex?: string | null
           target_id?: string
           updated_at?: string
+        }
+        Relationships: []
+      }
+      bench_runs: {
+        Row: {
+          bench_name: string
+          detail: Json
+          f1: number | null
+          id: string
+          precision: number | null
+          ran_at: string
+          recall: number | null
+        }
+        Insert: {
+          bench_name: string
+          detail?: Json
+          f1?: number | null
+          id?: string
+          precision?: number | null
+          ran_at?: string
+          recall?: number | null
+        }
+        Update: {
+          bench_name?: string
+          detail?: Json
+          f1?: number | null
+          id?: string
+          precision?: number | null
+          ran_at?: string
+          recall?: number | null
         }
         Relationships: []
       }
@@ -2726,6 +2854,51 @@ export type Database = {
         }
         Relationships: []
       }
+      proof_evidence: {
+        Row: {
+          created_at: string
+          detail: Json
+          finding_id: string | null
+          id: string
+          oracle: string
+          target_id: string | null
+          verdict: string
+        }
+        Insert: {
+          created_at?: string
+          detail?: Json
+          finding_id?: string | null
+          id?: string
+          oracle: string
+          target_id?: string | null
+          verdict: string
+        }
+        Update: {
+          created_at?: string
+          detail?: Json
+          finding_id?: string | null
+          id?: string
+          oracle?: string
+          target_id?: string | null
+          verdict?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "proof_evidence_finding_id_fkey"
+            columns: ["finding_id"]
+            isOneToOne: false
+            referencedRelation: "vulnerability_findings"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "proof_evidence_target_id_fkey"
+            columns: ["target_id"]
+            isOneToOne: false
+            referencedRelation: "target_workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       rag_corpus: {
         Row: {
           content: string
@@ -3377,6 +3550,39 @@ export type Database = {
           },
         ]
       }
+      technique_stats: {
+        Row: {
+          id: string
+          last_used: string | null
+          target_class: string
+          technique: string
+          tries: number
+          ucb1_score: number
+          updated_at: string
+          wins: number
+        }
+        Insert: {
+          id?: string
+          last_used?: string | null
+          target_class?: string
+          technique: string
+          tries?: number
+          ucb1_score?: number
+          updated_at?: string
+          wins?: number
+        }
+        Update: {
+          id?: string
+          last_used?: string | null
+          target_class?: string
+          technique?: string
+          tries?: number
+          ucb1_score?: number
+          updated_at?: string
+          wins?: number
+        }
+        Relationships: []
+      }
       tool_invocations: {
         Row: {
           args: Json
@@ -3705,6 +3911,10 @@ export type Database = {
         Args: { _scope?: string; _target_id?: string }
         Returns: Json
       }
+      record_technique_outcome: {
+        Args: { _target_class: string; _technique: string; _won: boolean }
+        Returns: undefined
+      }
       run_weekly_retention_cleanup: { Args: never; Returns: Json }
       seed_owasp_checklist: { Args: { _target_id: string }; Returns: number }
       target_is_exploit_authorized: {
@@ -3734,12 +3944,12 @@ export type Tables<
   DefaultSchemaTableNameOrOptions extends
     | keyof (DefaultSchema["Tables"] & DefaultSchema["Views"])
     | { schema: keyof DatabaseWithoutInternals },
-  TableName extends DefaultSchemaTableNameOrOptions extends {
+  TableName extends (DefaultSchemaTableNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof (DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"] &
         DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Views"])
-    : never = never,
+    : never) = never,
 > = DefaultSchemaTableNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
@@ -3763,11 +3973,11 @@ export type TablesInsert<
   DefaultSchemaTableNameOrOptions extends
     | keyof DefaultSchema["Tables"]
     | { schema: keyof DatabaseWithoutInternals },
-  TableName extends DefaultSchemaTableNameOrOptions extends {
+  TableName extends (DefaultSchemaTableNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"]
-    : never = never,
+    : never) = never,
 > = DefaultSchemaTableNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
@@ -3788,11 +3998,11 @@ export type TablesUpdate<
   DefaultSchemaTableNameOrOptions extends
     | keyof DefaultSchema["Tables"]
     | { schema: keyof DatabaseWithoutInternals },
-  TableName extends DefaultSchemaTableNameOrOptions extends {
+  TableName extends (DefaultSchemaTableNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"]
-    : never = never,
+    : never) = never,
 > = DefaultSchemaTableNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
@@ -3813,11 +4023,11 @@ export type Enums<
   DefaultSchemaEnumNameOrOptions extends
     | keyof DefaultSchema["Enums"]
     | { schema: keyof DatabaseWithoutInternals },
-  EnumName extends DefaultSchemaEnumNameOrOptions extends {
+  EnumName extends (DefaultSchemaEnumNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof DatabaseWithoutInternals[DefaultSchemaEnumNameOrOptions["schema"]]["Enums"]
-    : never = never,
+    : never) = never,
 > = DefaultSchemaEnumNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
@@ -3830,11 +4040,11 @@ export type CompositeTypes<
   PublicCompositeTypeNameOrOptions extends
     | keyof DefaultSchema["CompositeTypes"]
     | { schema: keyof DatabaseWithoutInternals },
-  CompositeTypeName extends PublicCompositeTypeNameOrOptions extends {
+  CompositeTypeName extends (PublicCompositeTypeNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof DatabaseWithoutInternals[PublicCompositeTypeNameOrOptions["schema"]]["CompositeTypes"]
-    : never = never,
+    : never) = never,
 > = PublicCompositeTypeNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
