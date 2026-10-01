@@ -8,6 +8,13 @@
       "when": 1790839037888,
       "tag": "0000_p3_p5_attack_surface_and_learning",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1790839107025,
+      "tag": "0001_p2_p6_proof_evidence_and_experience_seed",
+      "breakpoints": true
     }
   ]
 }

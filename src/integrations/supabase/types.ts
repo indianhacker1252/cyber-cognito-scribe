@@ -251,6 +251,51 @@ export type Database = {
           },
         ]
       }
+      agent_experiences: {
+        Row: {
+          confidence: number | null
+          created_at: string
+          endpoint_pattern: string | null
+          id: string
+          notes: string | null
+          outcome: string
+          proof_snippet: string | null
+          session_id: string | null
+          target_id: string | null
+          tech_tags: string[]
+          technique: string | null
+          vuln_class: string
+        }
+        Insert: {
+          confidence?: number | null
+          created_at?: string
+          endpoint_pattern?: string | null
+          id?: string
+          notes?: string | null
+          outcome: string
+          proof_snippet?: string | null
+          session_id?: string | null
+          target_id?: string | null
+          tech_tags?: string[]
+          technique?: string | null
+          vuln_class: string
+        }
+        Update: {
+          confidence?: number | null
+          created_at?: string
+          endpoint_pattern?: string | null
+          id?: string
+          notes?: string | null
+          outcome?: string
+          proof_snippet?: string | null
+          session_id?: string | null
+          target_id?: string | null
+          tech_tags?: string[]
+          technique?: string | null
+          vuln_class?: string
+        }
+        Relationships: []
+      }
       agent_sessions: {
         Row: {
           budget_credits: number
@@ -2808,6 +2853,51 @@ export type Database = {
           updated_at?: string
         }
         Relationships: []
+      }
+      proof_evidence: {
+        Row: {
+          created_at: string
+          detail: Json
+          finding_id: string | null
+          id: string
+          oracle: string
+          target_id: string | null
+          verdict: string
+        }
+        Insert: {
+          created_at?: string
+          detail?: Json
+          finding_id?: string | null
+          id?: string
+          oracle: string
+          target_id?: string | null
+          verdict: string
+        }
+        Update: {
+          created_at?: string
+          detail?: Json
+          finding_id?: string | null
+          id?: string
+          oracle?: string
+          target_id?: string | null
+          verdict?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "proof_evidence_finding_id_fkey"
+            columns: ["finding_id"]
+            isOneToOne: false
+            referencedRelation: "vulnerability_findings"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "proof_evidence_target_id_fkey"
+            columns: ["target_id"]
+            isOneToOne: false
+            referencedRelation: "target_workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       rag_corpus: {
         Row: {
