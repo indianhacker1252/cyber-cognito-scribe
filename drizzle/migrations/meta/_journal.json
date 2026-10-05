@@ -15,6 +15,13 @@
       "when": 1790839107025,
       "tag": "0001_p2_p6_proof_evidence_and_experience_seed",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1791201794967,
+      "tag": "0002_tighten_rls_internal_tables",
+      "breakpoints": true
     }
   ]
 }
