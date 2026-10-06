@@ -219,7 +219,7 @@ Rules:
       previousAttempts: (ctx.previousAttempts || []).slice(-6),
     },
     seedPayloadsFromPayloadsAllTheThings: seeds.slice(0, MAX_SEEDS),
-    provenWinnerStrategies: winners.map((w) => ({ strategy: w.strategy, notes: w.notes, winRate: w.attempt_count > 0 ? w.succeeded_count / w.attempt_count : 0 })),
+    provenWinnerStrategies: allWinners.map((w) => ({ strategy: w.strategy, notes: w.notes, winRate: w.attempt_count > 0 ? w.succeeded_count / w.attempt_count : 0, ucb1: w.ucb1_score })),
     knownFailedStrategies: losers.map((l) => l.strategy),
     outputSchema: {
       payloads: [{ payload: "string", rationale: "string", expectedSignal: "string", confidence: "0-1 number" }],
