@@ -183,6 +183,8 @@ export async function recordMutationOutcome(
       });
     }
   } catch { /* non-fatal */ }
+  // P6: also feed the cross-target UCB1 table (fire-and-forget).
+  void recordTechniqueOutcome(db, `${vulnClass}:${hash}`, contextHash || "generic", succeeded);
 }
 
 export async function mutateWithAi(
