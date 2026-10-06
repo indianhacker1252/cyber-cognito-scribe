@@ -164,7 +164,55 @@ export function BrainPanel({ targetId }: { targetId: string | null }) {
 
       <AgentRuntimeLane targetId={targetId} />
       <ObservabilityLane targetId={targetId} />
+      <LearningLane />
     </div>
+  );
+}
+
+// P5/P6 learning lane — UCB1 scores from technique_stats show which payload
+// strategies are winning across targets. Updates as scans complete.
+function LearningLane() {
+  const q = useQuery({
+    queryKey: ["brain-learning"],
+    queryFn: async () => {
+      const { data } = await supabase
+        .from("technique_stats" as any)
+        .select("technique,target_class,tries,wins,ucb1_score,updated_at")
+        .order("ucb1_score", { ascending: false })
+        .limit(12);
+      return (data || []) as any[];
+    },
+    refetchInterval: 10000,
+  });
+
+  const rows = q.data || [];
+  return (
+    <section className="rounded border border-primary/30 bg-background/60 p-3 space-y-2">
+      <div className="flex items-center gap-1.5 text-xs text-primary font-mono">
+        <TrendingUp className="h-3.5 w-3.5" /> LEARNING · top UCB1 strategies
+        <span className="ml-auto text-muted-foreground">{rows.length} tracked</span>
+      </div>
+      {rows.length === 0 ? (
+        <div className="text-xs text-muted-foreground">
+          No technique stats yet. Strategies appear here after the mutator records outcomes.
+        </div>
+      ) : (
+        <div className="space-y-1 font-mono text-[11px]">
+          {rows.map((r, i) => {
+            const winRate = r.tries > 0 ? r.wins / r.tries : 0;
+            const tone = winRate >= 0.5 ? "text-green-400" : winRate >= 0.2 ? "text-yellow-400" : "text-muted-foreground";
+            return (
+              <div key={i} className="flex items-center gap-2 border-l-2 border-primary/30 pl-2">
+                <span className="text-primary truncate max-w-[40%]">{r.technique}</span>
+                <span className="text-muted-foreground">[{r.target_class}]</span>
+                <span className={tone}>{r.wins}/{r.tries}</span>
+                <span className="ml-auto text-primary">ucb1 {Number(r.ucb1_score ?? 0).toFixed(3)}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </section>
   );
 }
 
