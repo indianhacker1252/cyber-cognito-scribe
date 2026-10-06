@@ -61,6 +61,43 @@ interface Lesson {
   notes: string;
   succeeded_count: number;
   attempt_count: number;
+  ucb1_score?: number;
+}
+
+/** P6: load cross-target technique stats (UCB1 scores persisted by the
+ *  record_technique_outcome() SQL helper). These bias lesson selection toward
+ *  strategies that win on similar target classes, not just this target. */
+async function loadTechniqueStats(
+  db: any, vulnClass: string, limit = 6,
+): Promise<Lesson[]> {
+  if (!db) return [];
+  try {
+    const { data } = await db.from("technique_stats")
+      .select("technique,target_class,tries,wins,ucb1_score")
+      .ilike("technique", `${vulnClass}%`)
+      .order("ucb1_score", { ascending: false })
+      .limit(limit);
+    return (data || []).map((r: any) => ({
+      strategy: r.technique,
+      notes: `cross-target wins=${r.wins}/${r.tries} on ${r.target_class}`,
+      succeeded_count: r.wins ?? 0,
+      attempt_count: r.tries ?? 0,
+      ucb1_score: r.ucb1_score ?? 0,
+    }));
+  } catch { return []; }
+}
+
+/** P6: persist an outcome to technique_stats via the SQL helper so UCB1
+ *  scores survive across targets and restarts. Non-fatal on error. */
+export async function recordTechniqueOutcome(
+  db: any, technique: string, targetClass: string, won: boolean,
+): Promise<void> {
+  if (!db) return;
+  try {
+    await db.rpc("record_technique_outcome", {
+      _technique: technique, _target_class: targetClass, _won: won,
+    });
+  } catch { /* non-fatal */ }
 }
 
 /** UCB1: score = win_rate + sqrt(2 * ln(totalTrials) / thisTrials).
