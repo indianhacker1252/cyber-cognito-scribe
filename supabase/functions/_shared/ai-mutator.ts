@@ -191,6 +191,9 @@ export async function mutateWithAi(
   const contextHash = contextHashFor(ctx);
   const seeds = await getSeedPayloads(ctx.vulnClass, MAX_SEEDS);
   const { winners, losers } = await loadContextualLessons(db, ctx.vulnClass, contextHash, 6);
+  // P6: merge in cross-target UCB1 winners from technique_stats.
+  const techWinners = await loadTechniqueStats(db, ctx.vulnClass, 4);
+  const allWinners = [...winners, ...techWinners].slice(0, 8);
 
   const systemPrompt = `You are an elite offensive security researcher specialized in ${ctx.vulnClass.toUpperCase()} exploitation.
 Your job: reason about the target's exact context, then propose ${REQUEST_COUNT} NOVEL payload mutations tailored to it.
