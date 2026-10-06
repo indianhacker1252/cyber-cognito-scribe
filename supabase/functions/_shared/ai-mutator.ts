@@ -61,6 +61,43 @@ interface Lesson {
   notes: string;
   succeeded_count: number;
   attempt_count: number;
+  ucb1_score?: number;
+}
+
+/** P6: load cross-target technique stats (UCB1 scores persisted by the
+ *  record_technique_outcome() SQL helper). These bias lesson selection toward
+ *  strategies that win on similar target classes, not just this target. */
+async function loadTechniqueStats(
+  db: any, vulnClass: string, limit = 6,
+): Promise<Lesson[]> {
+  if (!db) return [];
+  try {
+    const { data } = await db.from("technique_stats")
+      .select("technique,target_class,tries,wins,ucb1_score")
+      .ilike("technique", `${vulnClass}%`)
+      .order("ucb1_score", { ascending: false })
+      .limit(limit);
+    return (data || []).map((r: any) => ({
+      strategy: r.technique,
+      notes: `cross-target wins=${r.wins}/${r.tries} on ${r.target_class}`,
+      succeeded_count: r.wins ?? 0,
+      attempt_count: r.tries ?? 0,
+      ucb1_score: r.ucb1_score ?? 0,
+    }));
+  } catch { return []; }
+}
+
+/** P6: persist an outcome to technique_stats via the SQL helper so UCB1
+ *  scores survive across targets and restarts. Non-fatal on error. */
+export async function recordTechniqueOutcome(
+  db: any, technique: string, targetClass: string, won: boolean,
+): Promise<void> {
+  if (!db) return;
+  try {
+    await db.rpc("record_technique_outcome", {
+      _technique: technique, _target_class: targetClass, _won: won,
+    });
+  } catch { /* non-fatal */ }
 }
 
 /** UCB1: score = win_rate + sqrt(2 * ln(totalTrials) / thisTrials).
@@ -146,6 +183,8 @@ export async function recordMutationOutcome(
       });
     }
   } catch { /* non-fatal */ }
+  // P6: also feed the cross-target UCB1 table (fire-and-forget).
+  void recordTechniqueOutcome(db, `${vulnClass}:${hash}`, contextHash || "generic", succeeded);
 }
 
 export async function mutateWithAi(
@@ -154,6 +193,9 @@ export async function mutateWithAi(
   const contextHash = contextHashFor(ctx);
   const seeds = await getSeedPayloads(ctx.vulnClass, MAX_SEEDS);
   const { winners, losers } = await loadContextualLessons(db, ctx.vulnClass, contextHash, 6);
+  // P6: merge in cross-target UCB1 winners from technique_stats.
+  const techWinners = await loadTechniqueStats(db, ctx.vulnClass, 4);
+  const allWinners = [...winners, ...techWinners].slice(0, 8);
 
   const systemPrompt = `You are an elite offensive security researcher specialized in ${ctx.vulnClass.toUpperCase()} exploitation.
 Your job: reason about the target's exact context, then propose ${REQUEST_COUNT} NOVEL payload mutations tailored to it.
@@ -179,7 +221,7 @@ Rules:
       previousAttempts: (ctx.previousAttempts || []).slice(-6),
     },
     seedPayloadsFromPayloadsAllTheThings: seeds.slice(0, MAX_SEEDS),
-    provenWinnerStrategies: winners.map((w) => ({ strategy: w.strategy, notes: w.notes, winRate: w.attempt_count > 0 ? w.succeeded_count / w.attempt_count : 0 })),
+    provenWinnerStrategies: allWinners.map((w) => ({ strategy: w.strategy, notes: w.notes, winRate: w.attempt_count > 0 ? w.succeeded_count / w.attempt_count : 0, ucb1: w.ucb1_score })),
     knownFailedStrategies: losers.map((l) => l.strategy),
     outputSchema: {
       payloads: [{ payload: "string", rationale: "string", expectedSignal: "string", confidence: "0-1 number" }],
