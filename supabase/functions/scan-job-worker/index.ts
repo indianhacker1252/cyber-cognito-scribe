@@ -18,6 +18,7 @@ const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const JOB_ROUTES: Record<string, string> = {
   recon: "recon-engine",
   fuzz: "advanced-fuzzer",
+  advanced_fuzz: "advanced-fuzzer",
   oob: "oob-collector",
   browser: "headless-browser",
   browser_exploit: "browser-exploit",
@@ -76,6 +77,7 @@ const JOB_ROUTES: Record<string, string> = {
 const ACK_TIMEOUT_MS: Record<string, number> = {
   recon: 15000,
   fuzz: 15000,
+  advanced_fuzz: 15000,
   waf_evasion: 12000,
   chain_exploit: 15000,
   llm_attack: 15000,
