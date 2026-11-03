@@ -1,12 +1,99 @@
-import { createClient } from "@supabase/supabase-js";
+// Gateway client — the runtime never holds the service role key.
+// All DB access goes through the runtime-gateway edge function,
+// authenticated with a shared RUNTIME_SECRET.
 
-const url = process.env.SUPABASE_URL!;
-const key = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-if (!url || !key) throw new Error("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required");
+const BASE = `${process.env.SUPABASE_URL ?? ""}/functions/v1/runtime-gateway`;
+const SECRET = process.env.RUNTIME_SECRET ?? "";
+if (!process.env.SUPABASE_URL || !SECRET) {
+  throw new Error("SUPABASE_URL and RUNTIME_SECRET are required");
+}
 
-export const db = createClient(url, key, {
-  auth: { persistSession: false, autoRefreshToken: false },
-});
+type Filter = { op: string; col: string; val: unknown };
+type Order = { col: string; asc?: boolean };
+
+async function call(body: Record<string, unknown>): Promise<{ data: any; error: any; count?: number | null }> {
+  try {
+    const r = await fetch(BASE, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-runtime-secret": SECRET },
+      body: JSON.stringify(body),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) return { data: null, error: { message: j.error ?? `gateway HTTP ${r.status}` } };
+    if (j.error) return { data: null, error: { message: j.error } };
+    return { data: j.data ?? null, error: null, count: j.count ?? null };
+  } catch (e) {
+    return { data: null, error: { message: String((e as Error).message) } };
+  }
+}
+
+// Minimal supabase-js-style chain builder over the gateway.
+class Query {
+  private filters: Filter[] = [];
+  private orders: Order[] = [];
+  private _limit?: number;
+  private _single?: "maybe" | "one";
+  private _select?: string;
+  private _or?: string;
+
+  constructor(
+    private table: string,
+    private op: "query" | "insert" | "upsert" | "update",
+    private payload?: unknown,
+    private opts?: { onConflict?: string; count?: string },
+  ) {}
+
+  select(cols = "*") { this._select = cols; return this; }
+  eq(col: string, val: unknown) { this.filters.push({ op: "eq", col, val }); return this; }
+  neq(col: string, val: unknown) { this.filters.push({ op: "neq", col, val }); return this; }
+  in(col: string, val: unknown[]) { this.filters.push({ op: "in", col, val }); return this; }
+  ilike(col: string, val: string) { this.filters.push({ op: "ilike", col, val }); return this; }
+  overlaps(col: string, val: unknown[]) { this.filters.push({ op: "overlaps", col, val }); return this; }
+  gt(col: string, val: unknown) { this.filters.push({ op: "gt", col, val }); return this; }
+  lt(col: string, val: unknown) { this.filters.push({ op: "lt", col, val }); return this; }
+  or(expr: string) { this._or = expr; return this; }
+  order(col: string, o?: { ascending?: boolean }) { this.orders.push({ col, asc: o?.ascending !== false }); return this; }
+  limit(n: number) { this._limit = n; return this; }
+  maybeSingle() { this._single = "maybe"; return this; }
+  single() { this._single = "one"; return this; }
+
+  then<TResult1 = any, TResult2 = never>(
+    onfulfilled?: ((v: any) => TResult1 | PromiseLike<TResult1>) | null,
+    onrejected?: ((r: any) => TResult2 | PromiseLike<TResult2>) | null,
+  ) {
+    const body: Record<string, unknown> = { op: this.op, table: this.table };
+    if (this.op === "query") {
+      Object.assign(body, {
+        select: this._select, filters: this.filters, or: this._or,
+        order: this.orders, limit: this._limit, single: this._single,
+      });
+    } else if (this.op === "insert") {
+      Object.assign(body, { rows: this.payload, select: this._select, single: this._single });
+    } else if (this.op === "upsert") {
+      Object.assign(body, {
+        rows: this.payload, onConflict: this.opts?.onConflict,
+        count: this.opts?.count === "exact", select: this._select, single: this._single,
+      });
+    } else {
+      Object.assign(body, { patch: this.payload, filters: this.filters });
+    }
+    return call(body).then(onfulfilled, onrejected);
+  }
+}
+
+export const db = {
+  from(table: string) {
+    return {
+      select: (cols = "*") => new Query(table, "query").select(cols),
+      insert: (rows: unknown) => new Query(table, "insert", rows),
+      upsert: (rows: unknown, opts?: { onConflict?: string; count?: string }) => new Query(table, "upsert", rows, opts),
+      update: (patch: unknown) => new Query(table, "update", patch),
+    };
+  },
+  rpc(fn: string, args?: Record<string, unknown>) {
+    return call({ op: "rpc", fn, args });
+  },
+};
 
 export type Session = {
   id: string;
@@ -119,4 +206,3 @@ export async function metric(sessionId: string, targetId: string, name: string, 
   });
   if (error) console.error("[db] metric:", error.message);
 }
-
