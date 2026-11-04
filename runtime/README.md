@@ -10,7 +10,7 @@ cd /opt/cyberscope/runtime
 
 # 2. Create .env (see .env.example)
 cp .env.example .env
-nano .env   # fill in SUPABASE_URL, RUNTIME_SECRET, one LLM key
+nano .env   # fill in SUPABASE_URL and RUNTIME_SECRET
 
 # 3. Build & run with Docker Compose
 docker compose up -d --build
@@ -26,8 +26,7 @@ The container polls `agent_sessions` for `status='queued'` rows, claims them ato
 | Name | Where to get it |
 | --- | --- |
 | `SUPABASE_URL` | Lovable → Project Settings |
-| `RUNTIME_SECRET` | The shared secret set in project secrets (any long random string you choose) |
-| `LOVABLE_API_KEY` | Auto-provisioned; copy from project secrets |
+| `RUNTIME_SECRET` | Copy the shared value from the secure setup form to this machine; never post it in chat |
 | `OPENAI_API_KEY` | Optional; enables provider=openai |
 | `GEMINI_API_KEY` | Optional; enables provider=gemini directly |
 
@@ -36,6 +35,8 @@ The container polls `agent_sessions` for `status='queued'` rows, claims them ato
 The user clicks **Start Agent Scan** in the UI → `agent-start` edge function inserts a row in `agent_sessions` with `status='queued'`. Your VPS worker picks it up within ~3s.
 
 No inbound ports needed — the worker only makes outbound HTTPS to the backend.
+
+Lovable AI requests also pass through `runtime-gateway`. The managed AI key remains in cloud secrets; remove any placeholder `LOVABLE_API_KEY` from the VPS `.env`. Rebuild the container after updating runtime source. Restarting alone does not load source changes.
 
 ## Scaling
 

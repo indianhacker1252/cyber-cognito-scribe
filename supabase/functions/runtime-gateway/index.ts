@@ -4,6 +4,8 @@
 // executes a whitelisted set of table operations with the service role.
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { corsHeaders } from "npm:@supabase/supabase-js@2/cors";
+import { safeFetch } from "../_shared/safe-fetch.ts";
+import { proxyRuntimeAI } from "./ai-proxy.ts";
 
 const ALLOWED_TABLES = new Set([
   "agent_sessions",
@@ -74,21 +76,28 @@ Deno.serve(async (req) => {
 
   try {
     const secret = Deno.env.get("RUNTIME_SECRET");
-    if (!secret) return json({ error: "gateway_not_configured" }, 500);
-    if (req.headers.get("x-runtime-secret") !== secret) return json({ error: "unauthorized" }, 401);
+    if (!secret) return json({ error: "gateway_not_configured", upstream_status: 503 });
+    if (req.headers.get("x-runtime-secret") !== secret) return json({ error: "unauthorized", upstream_status: 401 });
+
+    if (new URL(req.url).searchParams.get("ai") === "chat/completions") {
+      return proxyRuntimeAI(req, Deno.env.get("LOVABLE_API_KEY"), corsHeaders, safeFetch);
+    }
 
     const body = (await req.json()) as Body;
-    const admin = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
+    const url = Deno.env.get("SUPABASE_URL");
+    const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+    if (!url || !key) return json({ error: "gateway_not_configured" });
+    const admin = createClient(url, key);
 
     if (body.op === "rpc") {
-      if (!ALLOWED_RPCS.has(body.fn)) return json({ error: "rpc_not_allowed" }, 403);
+      if (!ALLOWED_RPCS.has(body.fn)) return json({ error: "rpc_not_allowed" });
       const { data, error } = await admin.rpc(body.fn, body.args ?? {});
       if (error) return json({ error: error.message }, 200);
       return json({ data }, 200);
     }
 
     const table = (body as { table?: string }).table;
-    if (!table || !ALLOWED_TABLES.has(table)) return json({ error: "table_not_allowed" }, 403);
+    if (!table || !ALLOWED_TABLES.has(table)) return json({ error: "table_not_allowed" });
 
     if (body.op === "query") {
       let q: any = admin.from(table).select(body.select ?? "*");
@@ -106,7 +115,7 @@ Deno.serve(async (req) => {
     }
 
     const writeOps = WRITE_RULES[table] ?? new Set<string>();
-    if (!writeOps.has(body.op)) return json({ error: "write_not_allowed" }, 403);
+    if (!writeOps.has(body.op)) return json({ error: "write_not_allowed" });
 
     if (body.op === "insert") {
       let q: any = admin.from(table).insert(body.rows);
@@ -138,8 +147,8 @@ Deno.serve(async (req) => {
       return json({ ok: true }, 200);
     }
 
-    return json({ error: "unknown_op" }, 400);
+    return json({ error: "unknown_op" });
   } catch (e) {
-    return json({ error: String((e as Error).message) }, 500);
+    return json({ error: String((e as Error).message) });
   }
 });

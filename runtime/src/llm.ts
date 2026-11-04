@@ -1,5 +1,6 @@
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
+import { createRuntimeAIFetch } from "./gateway-fetch.js";
 
 export function pickProvider(provider: string, model: string) {
   if (provider === "openai") {
@@ -22,12 +23,13 @@ export function pickProvider(provider: string, model: string) {
     return google(model.replace(/^google\//, ""));
   }
   // default: lovable gateway
-  const key = process.env.LOVABLE_API_KEY;
-  if (!key) throw new Error("LOVABLE_API_KEY not set");
+  const baseURL = process.env.SUPABASE_URL;
+  const secret = process.env.RUNTIME_SECRET;
+  if (!baseURL || !secret) throw new Error("SUPABASE_URL and RUNTIME_SECRET are required for cloud AI");
   const p = createOpenAICompatible({
     name: "lovable",
     baseURL: "https://ai.gateway.lovable.dev/v1",
-    headers: { "Lovable-API-Key": key, "X-Lovable-AIG-SDK": "vercel-ai-sdk" },
+    fetch: createRuntimeAIFetch(baseURL, secret),
   });
   return p(model);
 }

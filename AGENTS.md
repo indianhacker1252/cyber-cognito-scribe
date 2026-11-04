@@ -5,3 +5,4 @@
 - **Findings require proof**: XSS needs headless-browser proof; HIGH/CRITICAL findings require human approval before active verification.
 - **LLM primary is gemini-2.5-flash** with fallback chain (Lovable → Gemini → Claude → OpenAI → Ollama) on 402/429.
 - **Runtime is a long-lived daemon** (runtime/, Docker), one process per target, claiming `agent_sessions` rows via `FOR UPDATE SKIP LOCKED`; edge functions stay for short jobs.
+- **Runtime Lovable AI uses the shared-secret runtime-gateway streaming proxy**, never a managed AI key on the VPS; restore upstream errors at the SDK boundary so rejected requests cannot appear as completed scans.
