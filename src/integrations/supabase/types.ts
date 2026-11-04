@@ -296,6 +296,36 @@ export type Database = {
         }
         Relationships: []
       }
+      agent_metrics: {
+        Row: {
+          created_at: string
+          id: string
+          metric: string
+          session_id: string
+          tags: Json | null
+          target_id: string
+          value: number
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          metric: string
+          session_id: string
+          tags?: Json | null
+          target_id: string
+          value?: number
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          metric?: string
+          session_id?: string
+          tags?: Json | null
+          target_id?: string
+          value?: number
+        }
+        Relationships: []
+      }
       agent_sessions: {
         Row: {
           budget_credits: number

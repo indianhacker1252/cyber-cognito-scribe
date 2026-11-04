@@ -36,6 +36,13 @@
       "when": 1791266309490,
       "tag": "0004_p2_proof_gate_promotion",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1793780956776,
+      "tag": "0005_restore_agent_metrics",
+      "breakpoints": true
     }
   ]
 }
