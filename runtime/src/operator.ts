@@ -45,7 +45,7 @@ export async function runSession(session: Session) {
   // ---- Planner: ranked sub-goals informed by experiences ----
   let planText = "";
   try {
-    const pr = await generateText({
+    const pr = await streamText({
       model,
       system: "You are the PLANNER for a VAPT agent. Output a numbered list (max 8) of concrete, testable sub-goals ranked by ROI. Each sub-goal: one line goal + one line success criterion (how the oracle will prove it). Bias toward vuln classes previously CONFIRMED on similar tech; deprioritize classes marked DEAD_END unless a new endpoint pattern justifies retry. No prose before/after.",
       prompt: `TARGET: ${JSON.stringify({ domain: target.domain, url: target.url, tech: techTags })}
@@ -55,8 +55,17 @@ PRIOR DEAD-END CLASSES: ${JSON.stringify([...deadEndClasses])}
 PRIOR EXPERIENCES (top 10): ${JSON.stringify(priorExperiences.slice(0, 10))}
 GOAL: ${goal}`,
     });
-    planText = pr.text;
+    for await (const chunk of pr.fullStream) {
+      if (chunk.type === "error") throw chunk.error;
+    }
+    planText = await pr.text;
   } catch (e: any) {
+    if ([401, 402, 403, 404].includes(Number(e?.statusCode))) {
+      const msg = String(e?.message ?? e);
+      await emit(session.id, session.target_id, "error", { msg });
+      await updateSession(session.id, { status: "failed", error_message: msg, completed_at: new Date().toISOString() });
+      return;
+    }
     planText = `(planner failed: ${String(e?.message ?? e)}) — executor will improvise from goal.`;
   }
   await metric(session.id, session.target_id, "planner_runs", 1);
@@ -138,7 +147,9 @@ For each sub-goal: recall (experiences.similar / notes.search) → hypothesize �
       },
     });
 
-    for await (const _chunk of result.textStream) { /* drain */ }
+    for await (const chunk of result.fullStream) {
+      if (chunk.type === "error") throw chunk.error;
+    }
     const finalText = await result.text;
 
     // ---- Critic + Mythos L5 learning writeback ----
@@ -149,14 +160,18 @@ For each sub-goal: recall (experiences.similar / notes.search) → hypothesize �
         .eq("target_id", session.target_id)
         .order("created_at", { ascending: false })
         .limit(30);
-      const cr = await generateText({
+      const cr = streamText({
         model,
         system: "You are the CRITIC. Compare the plan's sub-goals against confirmed findings. For each sub-goal: state COVERED / PARTIAL / MISSED with one-line justification. End with 2 concrete next-session recommendations. Terse.",
         prompt: `PLAN:\n${planText}\n\nFINDINGS (recent):\n${JSON.stringify(findings ?? [], null, 2)}\n\nAGENT FINAL SUMMARY:\n${finalText.slice(0, 1500)}`,
       });
-      await emit(session.id, session.target_id, "critique", { stage: "post_session", review: cr.text }, stepCount);
+      for await (const chunk of cr.fullStream) {
+        if (chunk.type === "error") throw chunk.error;
+      }
+      const critique = await cr.text;
+      await emit(session.id, session.target_id, "critique", { stage: "post_session", review: critique }, stepCount);
       // Learn: any sub-goal not covered → dead_end experience so future planner deprioritizes it.
-      const missedMatches = cr.text.match(/MISSED[^\n]*/gi) ?? [];
+      const missedMatches = critique.match(/MISSED[^\n]*/gi) ?? [];
       for (const line of missedMatches.slice(0, 5)) {
         const clsMatch = line.match(/(sqli|xss|ssrf|rce|ssti|lfi|xxe|idor|bac|redirect|auth[_ ]bypass|csrf|deserial)/i);
         if (clsMatch) {
