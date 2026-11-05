@@ -1,4 +1,4 @@
-import { streamText, generateText, stepCountIs } from "ai";
+import { streamText, stepCountIs } from "ai";
 import { emit, heartbeat, updateSession, getTarget, getWorldModel, similarExperiences, metric, recordExperience, type Session } from "./db.js";
 import { pickProvider } from "./llm.js";
 import { buildTools, closeBrowser } from "./tools/index.js";
