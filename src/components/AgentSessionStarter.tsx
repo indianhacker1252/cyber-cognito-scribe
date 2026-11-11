@@ -11,7 +11,7 @@ export function AgentSessionStarter({ targetId }: { targetId: string }) {
   const [busy, setBusy] = useState(false);
 
   const modelFor = {
-    lovable: "google/gemini-3.6-flash",
+    lovable: "google/gemini-3.8-flash",
     openai: "gpt-4.1-mini",
     gemini: "gemini-2.0-flash-exp",
   }[provider];

@@ -58,7 +58,7 @@ Provide your confidence score and detailed reasoning about WHY this score.`;
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "google/gemini-2.5-flash",
+        model: "google/gemini-3.8-flash",
         messages: [
           { role: "system", content: "You are a vulnerability triage specialist. Return structured results via the provided tool." },
           { role: "user", content: prompt },

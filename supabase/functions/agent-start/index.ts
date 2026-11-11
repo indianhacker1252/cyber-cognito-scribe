@@ -7,7 +7,7 @@ const Body = z.object({
   target_id: z.string().uuid(),
   goal: z.string().max(2000).optional(),
   provider: z.enum(["lovable", "openai", "gemini"]).default("lovable"),
-  model: z.string().default("google/gemini-3.6-flash"),
+  model: z.string().default("google/gemini-3.8-flash"),
   budget_credits: z.number().int().min(20).max(2000).default(200),
   budget_seconds: z.number().int().min(120).max(21600).default(3600),
 });

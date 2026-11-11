@@ -64,7 +64,7 @@ Propose the next step.`;
       method: "POST",
       headers: { "Content-Type": "application/json", "Authorization": `Bearer ${key}` },
       body: JSON.stringify({
-        model: "google/gemini-2.5-flash",
+        model: "google/gemini-3.8-flash",
         messages: [{ role: "system", content: sys }, { role: "user", content: user }],
         max_tokens: 600,
       }),

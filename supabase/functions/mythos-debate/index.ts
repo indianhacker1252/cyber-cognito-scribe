@@ -38,7 +38,7 @@ async function callAgent(role: "A" | "B", systemPrompt: string, userMsg: string,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "google/gemini-2.5-flash",
+        model: "google/gemini-3.8-flash",
         messages: [{ role: "system", content: systemPrompt }, ...history, { role: "user", content: userMsg }],
         max_tokens: 400,
       }),
@@ -447,7 +447,7 @@ Return JSON only: { "verdict": "true_positive"|"false_positive"|"inconclusive", 
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "google/gemini-2.5-flash-lite", // cheapest model for this gate
+        model: "google/gemini-3.1-flash-lite", // cheapest model for this gate
         messages: [
           {
             role: "system",

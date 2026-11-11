@@ -48,7 +48,7 @@ await check("runtime-gateway reachable", async () => {
 
 await check("cloud AI inference", async () => {
   const result = streamText({
-    model: pickProvider("lovable", process.env.RUNTIME_AI_MODEL || "google/gemini-2.5-flash"),
+    model: pickProvider("lovable", process.env.RUNTIME_AI_MODEL || "google/gemini-3.8-flash"),
     prompt: "Reply with OK only.", maxRetries: 0,
   });
   for await (const chunk of result.fullStream) {

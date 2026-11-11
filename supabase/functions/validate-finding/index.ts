@@ -96,7 +96,7 @@ serve(async (req) => {
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
-            model: "google/gemini-2.5-flash",
+            model: "google/gemini-3.8-flash",
             messages: [
               {
                 role: "system",
@@ -186,7 +186,7 @@ Format the output exactly like a terminal session with timestamps. Be realistic 
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          model: "google/gemini-2.5-flash",
+          model: "google/gemini-3.8-flash",
           messages: [
             {
               role: "system",

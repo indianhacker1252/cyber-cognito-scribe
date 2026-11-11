@@ -82,7 +82,7 @@ Return ONLY the Python script, no markdown fences.`;
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "google/gemini-2.5-flash",
+        model: "google/gemini-3.8-flash",
         messages: [
           { role: "system", content: "You are a professional penetration tester writing safe, non-destructive PoC validation scripts. Return only executable Python code." },
           { role: "user", content: prompt },

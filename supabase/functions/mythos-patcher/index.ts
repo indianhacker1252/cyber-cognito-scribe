@@ -26,7 +26,7 @@ serve(async (req) => {
       method: "POST",
       headers: { Authorization: `Bearer ${LOVABLE_API_KEY}`, "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: "google/gemini-2.5-flash",
+        model: "google/gemini-3.8-flash",
         messages: [
           { role: "system", content: "You are a defensive security engineer. Generate a CONCRETE patch for the given vulnerability. Provide: (1) a code-level fix as a unified diff, (2) a WAF rule (ModSecurity / generic regex), (3) a config-level mitigation. Be specific to the framework." },
           { role: "user", content: `Vulnerability: ${finding.title}\nSeverity: ${finding.severity}\nDescription: ${finding.description || "n/a"}\nPayload: ${finding.payload || "n/a"}\nPoC: ${(finding.poc || "").slice(0, 1500)}\nFramework: ${framework}\nLanguage: ${language}` },

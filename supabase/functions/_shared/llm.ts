@@ -86,7 +86,7 @@ async function callLovable(opts: LlmCallOptions): Promise<LlmResult> {
       method: "POST",
       headers: { Authorization: `Bearer ${LOVABLE_KEY}`, "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: opts.model || "google/gemini-2.5-flash",
+        model: opts.model || "google/gemini-3.8-flash",
         messages: opts.messages,
         temperature: opts.temperature ?? 0.4,
         ...(opts.json ? { response_format: { type: "json_object" } } : {}),

@@ -41,7 +41,7 @@ async function callAi(prompt: string): Promise<any> {
       method: "POST",
       headers: { "Content-Type": "application/json", "Authorization": `Bearer ${key}` },
       body: JSON.stringify({
-        model: "google/gemini-2.5-flash",
+        model: "google/gemini-3.8-flash",
         messages: [
           { role: "system", content: "You are a senior mobile/binary application security auditor. Return strict JSON only." },
           { role: "user", content: prompt },

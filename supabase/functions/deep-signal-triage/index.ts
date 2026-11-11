@@ -69,7 +69,7 @@ Provide mathematicalConsistency as a 0-100 score measuring how statistically sig
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "google/gemini-2.5-flash",
+        model: "google/gemini-3.8-flash",
         messages: [
           { role: "system", content: "You are a mathematically rigorous vulnerability judge. Return structured verdicts via the provided tool. Be extremely strict — only promote findings with clear, reproducible evidence." },
           { role: "user", content: prompt },

@@ -100,7 +100,7 @@ async function aiInterpretReport(report: any): Promise<any> {
       method: "POST",
       headers: { Authorization: `Bearer ${LOVABLE_API_KEY}`, "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: "google/gemini-2.5-flash-lite",
+        model: "google/gemini-3.1-flash-lite",
         messages: [
           { role: "system", content: "You are a security intelligence analyst. Extract structured vulnerability data from disclosed security reports. Return via the tool." },
           { role: "user", content: `Analyze this disclosed security report:\n\nTitle: ${report.title}\nSummary: ${(report.raw_summary || "").slice(0, 500)}\nSeverity: ${report.severity}\n\nExtract: vulnerability class, specific payloads, affected tech stack, WAF bypass logic, bypass techniques, signal strength (high/medium/low), and OWASP category.` },

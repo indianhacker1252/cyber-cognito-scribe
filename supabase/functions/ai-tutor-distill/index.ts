@@ -52,7 +52,7 @@ Deno.serve(async (req) => {
     }
 
     const body = await req.json().catch(() => ({}));
-    const model = body.model || "google/gemini-2.5-flash";
+    const model = body.model || "google/gemini-3.8-flash";
     const sys = `You are a senior offensive-security tutor writing a VAPT playbook
 for a junior model running locally. Output Markdown, dense and concrete.
 For each phase include: goal, exact tools/commands, payload patterns,
